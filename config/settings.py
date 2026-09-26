@@ -48,30 +48,37 @@ class CacheConfig:
     max_entries: int = 500
 
 
+try:
+    from config import Config
+except ImportError:
+    Config = None
+
+
 @dataclass(frozen=True)
 class BotConfig:
-    token: str = field(default_factory=lambda: os.environ.get("BOT_TOKEN", ""))
-    api_id: int = field(default_factory=lambda: int(os.environ.get("API_ID", "0")))
-    api_hash: str = field(default_factory=lambda: os.environ.get("API_HASH", ""))
-    owner_id: int = field(default_factory=lambda: int(os.environ.get("OWNER_ID", "0")))
-    main_channel: int = field(default_factory=lambda: int(os.environ.get("MAIN_CHANNEL", "0")))
-    log_channel: int = field(default_factory=lambda: int(os.environ.get("LOG_CHANNEL", "0")))
-    mongo_uri: str = field(default_factory=lambda: os.environ.get("MONGO_URI", "mongodb://localhost:27017"))
+    token: str = field(default_factory=lambda: getattr(Config, "BOT_TOKEN", None) or os.environ.get("BOT_TOKEN", ""))
+    api_id: int = field(default_factory=lambda: getattr(Config, "API_ID", None) or int(os.environ.get("API_ID", "0")))
+    api_hash: str = field(default_factory=lambda: getattr(Config, "API_HASH", None) or os.environ.get("API_HASH", ""))
+    owner_id: int = field(default_factory=lambda: getattr(Config, "OWNER_ID", None) or int(os.environ.get("OWNER_ID", "0")))
+    main_channel: int = field(default_factory=lambda: getattr(Config, "MAIN_CHANNEL", None) or int(os.environ.get("MAIN_CHANNEL", "0")))
+    log_channel: int = field(default_factory=lambda: getattr(Config, "LOG_CHANNEL", None) or int(os.environ.get("LOG_CHANNEL", "0")))
+    dump_channel: int = field(default_factory=lambda: getattr(Config, "DUMP_CHANNEL", None) or int(os.environ.get("DUMP_CHANNEL", "0")))
+    mongo_uri: str = field(default_factory=lambda: getattr(Config, "MONGO_URI", None) or os.environ.get("MONGO_URI", "mongodb://localhost:27017"))
     items_per_page: int = 10
     max_search_results: int = 15
     max_genres: int = 20
     episodes_per_row: int = 5
     seasons_per_row: int = 4
     slug_max_len: int = 55
-    log_level: str = field(default_factory=lambda: os.environ.get("LOG_LEVEL", "INFO"))
+    log_level: str = field(default_factory=lambda: getattr(Config, "LOG_LEVEL", None) or os.environ.get("LOG_LEVEL", "INFO"))
 
 
 @dataclass(frozen=True)
 class AIConfig:
-    api_key: str = field(default_factory=lambda: os.environ.get("AI_API_KEY", ""))
-    base_url: str = field(default_factory=lambda: os.environ.get("AI_BASE_URL", "https://api.openai.com/v1"))
-    model: str = field(default_factory=lambda: os.environ.get("AI_MODEL", "gpt-4o"))
-    enabled: bool = field(default_factory=lambda: os.environ.get("AI_ENABLED", "true").lower() in ("true", "1", "yes"))
+    api_key: str = field(default_factory=lambda: getattr(Config, "AI_API_KEY", None) or os.environ.get("AI_API_KEY", ""))
+    base_url: str = field(default_factory=lambda: getattr(Config, "AI_BASE_URL", None) or os.environ.get("AI_BASE_URL", "https://api.openai.com/v1"))
+    model: str = field(default_factory=lambda: getattr(Config, "AI_MODEL", None) or os.environ.get("AI_MODEL", "gpt-4o"))
+    enabled: bool = field(default_factory=lambda: getattr(Config, "AI_ENABLED", None) if getattr(Config, "AI_ENABLED", None) is not None else os.environ.get("AI_ENABLED", "true").lower() in ("true", "1", "yes"))
 
 
 @dataclass(frozen=True)

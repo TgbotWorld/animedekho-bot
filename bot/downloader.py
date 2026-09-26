@@ -530,6 +530,145 @@ async def ffmpeg_download(
     return success
 
 
+# ── Video Validation & M3U8 Variant Helpers ───────────────────────────
+
+
+async def resolve_m3u8_variant(master_url: str, target_quality: str, referer: str = "") -> str:
+    """If master_url is an M3U8 master playlist, pick the matching resolution variant URL."""
+    if not master_url or ".m3u8" not in master_url.lower():
+        return master_url
+
+    h_target = None
+    if target_quality.endswith("p") and target_quality[:-1].isdigit():
+        h_target = int(target_quality[:-1])
+
+    if not h_target:
+        return master_url
+
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": referer or _get_origin(master_url) + "/",
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(master_url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return master_url
+                text = await resp.text()
+
+        if "#EXT-X-STREAM-INF" not in text:
+            return master_url
+
+        from urllib.parse import urljoin
+        lines = text.splitlines()
+        variants: list[tuple[int, str]] = []
+        curr_h = 0
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#EXT-X-STREAM-INF:"):
+                res_m = re.search(r"RESOLUTION=\d+x(\d+)", line, re.I)
+                if res_m:
+                    curr_h = int(res_m.group(1))
+                else:
+                    curr_h = 0
+            elif not line.startswith("#") and curr_h > 0:
+                var_url = urljoin(master_url, line)
+                variants.append((curr_h, var_url))
+                curr_h = 0
+
+        if not variants:
+            return master_url
+
+        exact = [u for h, u in variants if h == h_target]
+        if exact:
+            return exact[0]
+
+        # Closest variant
+        variants.sort(key=lambda x: abs(x[0] - h_target))
+        return variants[0][1]
+    except Exception as e:
+        log.debug("resolve_m3u8_variant error: %s", e)
+        return master_url
+
+
+async def validate_video_file(file_path: str, min_size_bytes: int = 500_000) -> tuple[bool, str, dict]:
+    """
+    Validate that the downloaded file is a genuine, uncorrupted, playable video.
+    Checks:
+    1. File existence and minimum size threshold (default 500 KB).
+    2. FFprobe inspection for valid video streams, codecs, and duration.
+    Returns: (is_valid, error_reason, metadata_dict)
+    """
+    if not os.path.exists(file_path):
+        return False, "File does not exist on disk", {}
+
+    size = os.path.getsize(file_path)
+    if size < min_size_bytes:
+        return False, f"File size too small ({size} bytes, min {min_size_bytes})", {}
+
+    ffprobe_bin = shutil.which("ffprobe")
+    if not ffprobe_bin:
+        return True, "", {"size": size}
+
+    cmd = [
+        ffprobe_bin,
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name,width,height,duration:format=duration,size,format_name",
+        "-of", "json",
+        file_path,
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+        if proc.returncode != 0:
+            err_msg = stderr.decode(errors="replace").strip()
+            return False, f"FFprobe validation failed (exit {proc.returncode}): {err_msg[:120]}", {}
+
+        import json
+        data = json.loads(stdout.decode(errors="replace"))
+        streams = data.get("streams", [])
+        format_info = data.get("format", {})
+
+        if not streams:
+            return False, "No valid video stream detected in file (corrupted or empty)", {}
+
+        v_stream = streams[0]
+        w = v_stream.get("width")
+        h = v_stream.get("height")
+        codec = v_stream.get("codec_name")
+
+        if not w or not h or not codec:
+            return False, "Invalid video stream properties (missing dimensions or codec)", {}
+
+        dur = float(v_stream.get("duration") or format_info.get("duration") or 0)
+        info = {
+            "width": w,
+            "height": h,
+            "codec": codec,
+            "duration": dur,
+            "size": size,
+            "format": format_info.get("format_name", "mp4"),
+        }
+        return True, "", info
+
+    except asyncio.TimeoutError:
+        return False, "FFprobe validation timed out (corrupted stream/hung container)", {}
+    except Exception as e:
+        log.warning("Validation exception for %s: %s", file_path, e)
+        if size > 5_000_000:
+            return True, "", {"size": size}
+        return False, f"Validation error: {e}", {}
+
+
 # ── Unified Media Downloader ──────────────────────────────────────────
 
 
@@ -738,6 +877,12 @@ async def download_and_upload(
                 except Exception as pe:
                     log.debug("Poster thumbnail download failed: %s", pe)
 
+        # Resolve M3U8 variant if needed so 480p is not bloated with 1080p stream
+        if not variant_url or variant_url == stream_url:
+            resolved_var = await resolve_m3u8_variant(stream_url, quality, referer=referer)
+            if resolved_var and resolved_var != stream_url:
+                variant_url = resolved_var
+
         success = await download_media(
             stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, referer=referer
         )
@@ -775,6 +920,63 @@ async def download_and_upload(
                 f"└ 💔 File is empty",
                 parse_mode=enums.ParseMode.HTML)
             return False, None
+
+        # Video Integrity Validation (Issue #8 - Point 7)
+        is_valid, val_err, meta = await validate_video_file(output_path)
+        if not is_valid:
+            log.warning("Downloaded video failed integrity validation: %s (error: %s)", filename, val_err)
+            try:
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            except Exception:
+                pass
+
+            from bot.database import db
+            if db:
+                try:
+                    await db.log_download_failure(
+                        title=title, quality=quality, source=referer or "stream",
+                        error=f"Corrupted video rejected: {val_err}", user_id=chat_id,
+                    )
+                except Exception:
+                    pass
+
+            await progress_msg.edit_text(
+                f"❌ <b>Download Corrupted / Invalid</b>\n"
+                f"┌ 📺 {title}\n"
+                f"├ ⚠️ Reason: {val_err[:80]}\n"
+                f"└ 🔄 Discarded corrupted file, retrying fallback...",
+                parse_mode=enums.ParseMode.HTML)
+            return False, None
+
+        # Auto Thumbnail Generator (Issue #8 - Point 9)
+        # If user has not uploaded an explicit custom thumbnail, generate a branded 1280x720 HD thumbnail
+        if not custom_thumb_path:
+            auto_thumb_on = True
+            if db:
+                auto_thumb_on = await db.get_auto_thumb()
+            if auto_thumb_on:
+                try:
+                    from bot.thumbnail import generate_auto_thumbnail
+                    bot_uname = getattr(getattr(client, "me", None), "username", None) or "AnimeDekhoBot"
+                    aud_tag = "Hindi Dub" if "hindi" in title.lower() or "hindi" in language.lower() else "Multi Audio"
+                    ep_m = re.search(r"S(\d+)E(\d+)", filename, re.I)
+                    ep_tag = f"Season {int(ep_m.group(1)):02d} • Episode {int(ep_m.group(2)):02d}" if ep_m else ""
+                    auto_thumb_file = str(_TEMP_BASE / f"autothumb_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg")
+                    gen_thumb = generate_auto_thumbnail(
+                        title=title,
+                        episode_info=ep_tag,
+                        quality=quality,
+                        audio=aud_tag,
+                        poster_path=thumb_path or "",
+                        output_path=auto_thumb_file,
+                        bot_username=bot_uname,
+                    )
+                    if gen_thumb and os.path.exists(gen_thumb):
+                        thumb_path = gen_thumb
+                        log.info("Applied generated Auto Thumbnail for %s", filename)
+                except Exception as ate:
+                    log.warning("Auto thumbnail generation failed: %s", ate)
 
         file_size = os.path.getsize(output_path)
 

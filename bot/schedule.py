@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -126,6 +127,68 @@ class ScheduleService:
 
         return []
 
+    async def fetch_animedubhindi_schedule(self) -> list[dict]:
+        """Fetch Hindi dubbed anime schedule directly from animedubhindi.link/schedule.php."""
+        def _scrape():
+            try:
+                import cloudscraper
+                from bs4 import BeautifulSoup
+
+                scraper = cloudscraper.create_scraper()
+                resp = scraper.get("https://www.animedubhindi.link/schedule.php", timeout=8)
+                if resp.status_code != 200:
+                    return []
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                cards = soup.select(".card")
+                results = []
+
+                for c in cards:
+                    h2 = c.select_one("h2")
+                    title = h2.get_text(strip=True) if h2 else ""
+                    if not title:
+                        continue
+
+                    poster_el = c.select_one("img.poster")
+                    poster = poster_el.get("src", "") if poster_el else ""
+
+                    meta_boxes = [m.get_text(strip=True) for m in c.select(".meta-box")]
+                    season_str = meta_boxes[0] if len(meta_boxes) > 0 else "Season 1"
+                    ep_str = meta_boxes[1] if len(meta_boxes) > 1 else "EP 01"
+
+                    ep_num = 1
+                    ep_match = re.search(r"\d+", ep_str)
+                    if ep_match:
+                        ep_num = int(ep_match.group(0))
+
+                    date_el = c.select_one(".date-block")
+                    date_str = date_el.get_text(strip=True) if date_el else "Today"
+
+                    time_el = c.select_one(".time-block")
+                    time_str = time_el.get_text(strip=True) if time_el else ""
+
+                    langs = [l.get_text(strip=True) for l in c.select(".lang span") if l.get_text(strip=True)]
+                    audio_str = ", ".join(langs) if langs else "Hindi Dub"
+
+                    results.append({
+                        "title": title,
+                        "season": season_str,
+                        "episode": ep_num,
+                        "poster": poster,
+                        "day": date_str,
+                        "time": time_str,
+                        "audio": audio_str,
+                        "source": "animedubhindi",
+                    })
+
+                return results
+            except Exception as e:
+                log.warning("AnimeDubHindi schedule scrape error: %s", e)
+                return []
+
+        return await asyncio.to_thread(_scrape)
+
+
     async def get_today_schedule(self) -> list[dict]:
         """Get anime schedule for today (UTC/IST midnight to midnight)."""
         now = int(time.time())
@@ -150,11 +213,11 @@ class ScheduleService:
         end_ts = start_ts + 86400
         return await self.fetch_schedule(start_ts, end_ts, per_page=30)
 
-    async def get_upcoming_schedule(self, hours: int = 48) -> list[dict]:
-        """Get anime schedule airing in the next N hours."""
+    async def get_upcoming_schedule(self, days: int = 30) -> list[dict]:
+        """Get anime schedule airing in the next N days (default 30 days = 1 month)."""
         now = int(time.time())
-        end_ts = now + (hours * 3600)
-        return await self.fetch_schedule(now, end_ts, per_page=30)
+        end_ts = now + (days * 86400)
+        return await self.fetch_schedule(now, end_ts, per_page=50)
 
     @staticmethod
     def format_countdown(target_ts: int) -> str:
@@ -183,3 +246,85 @@ class ScheduleService:
 
 
 schedule_service = ScheduleService()
+
+
+class AutoScheduleService:
+    """Automated daily schedule publisher for main channel at 12:00 AM IST."""
+
+    def __init__(self):
+        self._running = False
+        self._task: asyncio.Task | None = None
+        self._last_posted_date: str = ""
+
+    def start(self, client: Client):
+        if self._running:
+            return
+        self._running = True
+        self._task = asyncio.create_task(self._loop(client))
+        log.info("AutoScheduleService: Started (12:00 AM IST auto-poster loop).")
+
+    def stop(self):
+        self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+        log.info("AutoScheduleService: Stopped.")
+
+    async def _loop(self, client: Client):
+        await asyncio.sleep(10)
+        ist = timezone(timedelta(hours=5, minutes=30))
+
+        while self._running:
+            try:
+                from bot.database import db
+                from config.settings import settings
+
+                if db and client:
+                    enabled = await db.get_auto_schedule_post()
+                    main_chan = settings.bot.main_channel
+
+                    if enabled and main_chan:
+                        now_ist = datetime.now(ist)
+                        today_str = now_ist.strftime("%Y-%m-%d")
+
+                        if now_ist.hour == 0 and now_ist.minute <= 5 and self._last_posted_date != today_str:
+                            log.info("AutoScheduleService: Triggering 12:00 AM IST daily schedule post for %s", main_chan)
+                            ok = await self.post_daily_schedule(client, main_chan)
+                            if ok:
+                                self._last_posted_date = today_str
+
+            except Exception as e:
+                log.warning("AutoScheduleService loop error: %s", e)
+
+            await asyncio.sleep(60)
+
+    async def post_daily_schedule(self, client: Client, channel_id: int) -> bool:
+        """Fetch today's schedule and post/update it in the channel."""
+        try:
+            from bot.database import db
+            from bot.handlers.schedule import _format_modern_schedule_text, _format_classic_schedule_text, _build_modern_schedule_markup, _build_schedule_menu_markup
+
+            schedules = await schedule_service.get_today_schedule()
+            sched_style = await db.get_sched_style() if db else "classic"
+
+            if sched_style == "modern":
+                text, total_pages = _format_modern_schedule_text(schedules, "today", 1)
+                markup = _build_modern_schedule_markup("today", 1, total_pages)
+            else:
+                text, total_pages = _format_classic_schedule_text(schedules, "today", 1)
+                markup = _build_schedule_menu_markup("today", 1, total_pages)
+
+            await client.send_message(
+                chat_id=channel_id,
+                text=text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=markup,
+            )
+            log.info("AutoScheduleService: Successfully posted daily schedule to %s", channel_id)
+            return True
+        except Exception as e:
+            log.error("AutoScheduleService: Failed posting daily schedule: %s", e)
+            return False
+
+
+auto_schedule_service = AutoScheduleService()
+

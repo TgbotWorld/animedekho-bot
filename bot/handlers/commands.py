@@ -179,6 +179,8 @@ async def cmd_help(client: Client, message: Message):
     is_owner_user = message.from_user and message.from_user.id == settings.bot.owner_id
     owner_help = (
         "\n\n<b>Owner & Admin Commands:</b>\n"
+        "• <b>/settings</b> — Interactive control panel & live toggles\n"
+        "• <b>/commands</b> — Interactive categorized commands guide\n"
         "/stats — View real-time VPS stats and net speed\n"
         "/health — System health & bot diagnostics\n"
         "/users — View total network users\n"
@@ -206,6 +208,8 @@ async def cmd_help(client: Client, message: Message):
         "📖 <b>Commands</b>\n\n"
         "/start — Main menu\n"
         "/search &lt;name&gt; — Search anime or movies\n"
+        "/schedule — Anime airing schedule\n"
+        "/commands — Interactive categorized commands guide\n"
         "/help — This message\n\n"
         "Just type any anime name in chat to search!"
         f"{owner_help}",

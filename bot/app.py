@@ -122,6 +122,11 @@ async def _on_start(client: Client):
     monitor_service.start(client)
     log.info("Episode Monitor Service started (OFF by default)")
 
+    # Init Auto-Schedule Daily 12 AM Publisher (OFF by default)
+    from bot.schedule import auto_schedule_service
+    auto_schedule_service.start(client)
+    log.info("Auto-Schedule 12 AM Publisher started (OFF by default)")
+
     # Set bot commands menu
     from bot.telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
     try:
@@ -130,6 +135,7 @@ async def _on_start(client: Client):
             BotCommand("start", "Main menu"),
             BotCommand("search", "Search anime or movies"),
             BotCommand("schedule", "Anime airing schedule"),
+            BotCommand("commands", "Interactive commands navigator"),
             BotCommand("help", "Show help message"),
         ], scope=BotCommandScopeDefault())
 
@@ -137,6 +143,8 @@ async def _on_start(client: Client):
         if settings.bot.owner_id:
             await client.set_bot_commands([
                 BotCommand("start", "Main menu"),
+                BotCommand("settings", "Visual interactive control panel"),
+                BotCommand("commands", "Categorized commands navigator"),
                 BotCommand("search", "Search anime or movies"),
                 BotCommand("schedule", "Anime airing schedule"),
                 BotCommand("ai", "Autonomous AI Agent"),
@@ -191,6 +199,8 @@ async def _on_stop(client: Client):
     """Called on shutdown — cleanup."""
     from bot.monitor import monitor_service
     await monitor_service.stop()
+    from bot.schedule import auto_schedule_service
+    auto_schedule_service.stop()
     from bot.auto_delete import auto_delete_service
     await auto_delete_service.stop()
     from bot.userbot import userbot_manager

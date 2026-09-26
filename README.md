@@ -138,11 +138,27 @@ Built with **WZGram (High-Performance MTProto Fork with WarpCrypto)** for **2GB 
   4. Automatic fallback: Official AniList HD key visual / scraped poster (existing default behavior).
 - **Inspection & Cleanup** — `/viewthumb [slug] [language]` to preview and `/delthumb` to remove.
 
-### 🎨 Channel Post Style (`/poststyle`)
-- **Modern Box Layout (`/poststyle modern`)** — Formats channel album cards with the stylish ASCII box-drawing card layout, including Type, Duration, Rating, Status, Episodes count, Season, Genres, and Channel deep link.
-- **Classic Post Format (`/poststyle classic`)** — The traditional clean caption style (default).
+### ⚙️ Dual Configuration System (`config.py` & `.env`)
+- **Direct Python Editing (`config.py`)** — Configure credentials, channel IDs, styles, and defaults directly in `config.py` (Codeflix FileStore style).
+- **Environment Variable Fallback (`.env`)** — If a `.env` file exists or variables are set in your VPS environment/Docker/Heroku, they are automatically loaded seamlessly without conflict.
 
----
+### 🛡️ Video Integrity Validation & 480p Optimization
+- **Pre-Upload Integrity Check** — Uses `ffprobe` to validate stream properties, codecs, and durations before sending videos.
+- **Corrupt File Discard & Auto-Retry** — If a download produces a broken container, corrupt stub, or 0-byte file, it is automatically discarded and deleted, and the bot cascades to an alternative server mirror.
+- **M3U8 Variant Matching** — When downloading 480p/720p streams, the bot resolves the exact sub-playlist URL, preventing bloated 1080p stream downloads for 480p selections.
+
+### 🖼️ Automatic 1280x720 HD Thumbnail Generator (Auto Thumb)
+- **Zero-Manual Effort** — Automatically detects the anime/movie title, grabs official HD artwork via AniList, and composites a branded 16:9 HD thumbnail (1280x720).
+- **Rich Elements** — Features a dark blurred background, crisp foreground poster with rounded borders, bold anime typography, gold Season/Episode badges, audio/quality tags, and watermark.
+
+### 🎛️ Interactive `/commands` Guide & `/settings` Control Panel
+- **`/commands`** — Categorized interactive menu grouping User, Admin, Owner, Channel, and Automation commands.
+- **`/settings`** — Visual interactive dashboard with real-time inline toggle buttons (FSub Timer, File Auto-Delete, UI Styles, Auto Thumbnails, 12 AM Schedule Post, AI Agent).
+
+### ⏰ Daily 12:00 AM IST Schedule Auto-Publisher
+- **Automated Midnight Posting** — Automatically publishes or updates the daily anime airing schedule in the main channel every midnight at 12:00 AM IST.
+- **Extended Schedule Window** — Supports 1-month upcoming schedules and real-time Hindi dub release schedules from `animedubhindi.link/schedule.php`.
+
 
 ## Bot Commands
 
@@ -153,10 +169,17 @@ Built with **WZGram (High-Performance MTProto Fork with WarpCrypto)** for **2GB 
 | `/start` | Open the main menu |
 | `/search <query>` | Search anime by title |
 | `/schedule` | View Today's, Weekly, and Upcoming anime release schedule |
+| `/commands` | Interactive categorized commands navigator |
 | `/help` | Show user help message |
 | `/tutorial` | View complete bot guide and tutorials |
 
 ### 👑 Owner & Admin Commands
+
+#### Settings & Commands Navigator (Issue #8)
+| Command | Description |
+| :--- | :--- |
+| `/settings` | Open visual interactive control panel with live toggle buttons |
+| `/commands` | Open categorized commands guide (User, Owner, Channel, Styles, AI) |
 
 #### Monitoring, Storage Dump & UI Customization (Issue #4)
 | Command | Description |

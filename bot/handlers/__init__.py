@@ -22,6 +22,7 @@ from .worker_admin import (
     dlt_time_callback, toggle_fsub_mod_callback,
 )
 from .schedule import cmd_schedule, schedule_callback
+from .settings import cmd_commands, commands_callback, cmd_settings, settings_callback
 from bot.auto_delete import handle_close_dlt_notice
 
 __all__ = [
@@ -113,8 +114,14 @@ def register_handlers(app: Client):
     app.add_handler(MessageHandler(cmd_errors, filters.command("errors") & filters.private))
     app.add_handler(MessageHandler(cmd_clearerrors, filters.command("clearerrors") & filters.private))
 
+    # Commands Navigator & Interactive Settings Panel
+    app.add_handler(MessageHandler(cmd_commands, filters.command("commands") & filters.private))
+    app.add_handler(MessageHandler(cmd_settings, filters.command("settings") & filters.private))
+
     # Specific callbacks (before general router)
     app.add_handler(CallbackQueryHandler(start_callback, filters.regex(r"^start:")))
+    app.add_handler(CallbackQueryHandler(commands_callback, filters.regex(r"^(cmd_cat:|open_settings)")))
+    app.add_handler(CallbackQueryHandler(settings_callback, filters.regex(r"^(set_toggle:|settings_action:)")))
     app.add_handler(CallbackQueryHandler(health_callback, filters.regex(r"^health:")))
     app.add_handler(CallbackQueryHandler(delete_callback, filters.regex(r"^del:")))
     app.add_handler(CallbackQueryHandler(dlt_time_callback, filters.regex(r"^dlt:\d+$")))

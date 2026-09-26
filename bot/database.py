@@ -919,9 +919,11 @@ class Database:
     # ── Start Style & Banner Configuration (Default: 'classic') ──────
 
     async def get_start_style(self) -> str:
-        """Get /start UI style ('classic' or 'modern'). Default is 'classic'."""
-        val = await self.get_config("start_style", default="classic")
-        return str(val) if val else "classic"
+        """Get /start UI style ('classic' or 'modern')."""
+        from config import Config
+        def_st = getattr(Config, "START_STYLE", "classic") or "classic"
+        val = await self.get_config("start_style", default=def_st)
+        return str(val) if val else def_st
 
     async def set_start_style(self, style: str):
         """Set /start UI style ('classic' or 'modern')."""
@@ -929,12 +931,71 @@ class Database:
         await self.set_config("start_style", clean_style)
 
     async def get_start_pic(self) -> str | None:
-        """Get custom image banner for /start modern UI."""
-        return await self.get_config("start_pic", default=None)
+        """Get custom image banner for /start UI."""
+        from config import Config
+        def_pic = getattr(Config, "START_PIC", "") or None
+        return await self.get_config("start_pic", default=def_pic)
 
     async def set_start_pic(self, pic: str | None):
-        """Set or remove custom image banner for /start modern UI."""
+        """Set or remove custom image banner for /start UI."""
         await self.set_config("start_pic", pic)
+
+    async def get_start_msg(self) -> str | None:
+        """Get custom welcome message for /start."""
+        from config import Config
+        def_msg = getattr(Config, "START_MSG", "") or None
+        return await self.get_config("start_msg", default=def_msg)
+
+    async def set_start_msg(self, msg: str | None):
+        """Set or remove custom welcome message for /start."""
+        await self.set_config("start_msg", msg)
+
+    async def get_fsub_pic(self) -> str | None:
+        """Get custom banner picture for FSub prompt."""
+        from config import Config
+        def_pic = getattr(Config, "FSUB_PIC", "") or None
+        return await self.get_config("fsub_pic", default=def_pic)
+
+    async def set_fsub_pic(self, pic: str | None):
+        """Set or remove custom banner picture for FSub prompt."""
+        await self.set_config("fsub_pic", pic)
+
+    async def get_fsub_msg(self) -> str | None:
+        """Get custom text message for FSub prompt."""
+        from config import Config
+        def_msg = getattr(Config, "FSUB_MSG", "") or None
+        return await self.get_config("fsub_msg", default=def_msg)
+
+    async def set_fsub_msg(self, msg: str | None):
+        """Set or remove custom text message for FSub prompt."""
+        await self.set_config("fsub_msg", msg)
+
+    async def get_auto_thumb(self) -> bool:
+        """Get auto thumbnail generation toggle (default from Config.AUTO_THUMB)."""
+        from config import Config
+        def_val = getattr(Config, "AUTO_THUMB", True)
+        val = await self.get_config("auto_thumb", default="on" if def_val else "off")
+        if isinstance(val, str):
+            return val.lower() in ("on", "true", "1", "yes")
+        return bool(val)
+
+    async def set_auto_thumb(self, enabled: bool):
+        """Set auto thumbnail generation toggle."""
+        await self.set_config("auto_thumb", "on" if enabled else "off")
+
+    async def get_auto_schedule_post(self) -> bool:
+        """Get auto 12:00 AM schedule channel post toggle."""
+        from config import Config
+        def_val = getattr(Config, "AUTO_SCHEDULE_POST", False)
+        val = await self.get_config("auto_schedule_post", default="on" if def_val else "off")
+        if isinstance(val, str):
+            return val.lower() in ("on", "true", "1", "yes")
+        return bool(val)
+
+    async def set_auto_schedule_post(self, enabled: bool):
+        """Set auto 12:00 AM schedule channel post toggle."""
+        await self.set_config("auto_schedule_post", "on" if enabled else "off")
+
 
     # ── Episode Post Style Configuration (Default: 'classic') ────────
 
