@@ -254,6 +254,18 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
     channel_id = mapping["channel_id"]
     series_title = mapping.get("series_title", series_slug)
 
+    # Determine retry URL
+    bot_username = getattr(getattr(client, "me", None), "username", None)
+    if not bot_username:
+        try:
+            me = await client.get_me()
+            bot_username = me.username or ""
+        except Exception:
+            bot_username = ""
+    retry_url = f"https://t.me/{bot_username}?start=join_{series_slug}" if bot_username else ""
+
+    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
     # Generate 2-minute timer link (Anti-Copyright Protection)
     timer_link = await create_timer_invite_link(
         client,
@@ -263,14 +275,23 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
         name=f"Join {series_slug[:15]}",
     )
     if not timer_link:
-        timer_link = mapping.get("invite_link")
-
-    if not timer_link:
-        await message.reply_text("⚠️ Could not generate channel invite link. Please try again later.")
+        buttons = []
+        if retry_url:
+            buttons.append([InlineKeyboardButton("🔄 Try Again", url=retry_url)])
+        await message.reply_text(
+            "⚠️ <b>Failed to generate temporary invite link.</b>\n\n"
+            "Unable to generate a 2-minute expiring link for this series channel right now.\n"
+            "Please click the <b>Try Again</b> button below to re-generate your link!",
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons) if buttons else None,
+        )
         return
 
-    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    buttons = [[InlineKeyboardButton("🚀 Join Series Channel", url=timer_link)]]
+    buttons = [
+        [InlineKeyboardButton("🚀 Join Series Channel", url=timer_link)],
+    ]
+    if retry_url:
+        buttons.append([InlineKeyboardButton("🔄 Try Again", url=retry_url)])
     sent_msg = await message.reply_text(
         f"📺 <b>Dedicated Series Channel:</b> {htmlmod.escape(series_title)}\n\n"
         f"⏳ <b>Temporary Invite Link:</b>\n"

@@ -257,27 +257,43 @@ class ChildBotManager:
                                 await m.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
                                 return
 
+                            retry_url = f"https://t.me/{username}?start={param}"
                             t_link = await create_timer_invite_link(c, mapping["channel_id"], expire_seconds=120, name=f"Join {slug[:15]}")
                             if not t_link:
-                                t_link = mapping.get("invite_link")
-                            if t_link:
-                                s_title = mapping.get("series_title", slug)
-                                t_msg = await m.reply_text(
-                                    f"📺 <b>Dedicated Series Channel:</b> {htmlmod.escape(s_title)}\n\n"
-                                    f"⏳ <b>Temporary Invite Link:</b>\n"
-                                    f"This link will automatically expire in <b>2 minutes</b>!\n\n"
-                                    f"Click below to join:",
+                                retry_btn = [InlineKeyboardButton("🔄 Try Again", url=retry_url)]
+                                await m.reply_text(
+                                    "⚠️ <b>Failed to generate temporary invite link.</b>\n\n"
+                                    "Unable to generate a 2-minute expiring link for this series channel right now.\n"
+                                    "Please click the <b>Try Again</b> button below to re-generate your link!",
                                     parse_mode=enums.ParseMode.HTML,
-                                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚀 Join Channel", url=t_link)]])
-                                )
-                                from bot.auto_delete import auto_delete_service
-                                await auto_delete_service.schedule_deletion(
-                                    client=c,
-                                    chat_id=m.chat.id,
-                                    message_id=t_msg.id,
-                                    custom_seconds=120,
+                                    reply_markup=InlineKeyboardMarkup([retry_btn]),
                                 )
                                 return
+
+                            s_title = mapping.get("series_title", slug)
+                            buttons = [
+                                [InlineKeyboardButton("🚀 Join Channel", url=t_link)],
+                                [InlineKeyboardButton("🔄 Try Again", url=retry_url)],
+                            ]
+                            t_msg = await m.reply_text(
+                                f"📺 <b>Dedicated Series Channel:</b> {htmlmod.escape(s_title)}\n\n"
+                                f"⏳ <b>Temporary Invite Link:</b>\n"
+                                f"This link will automatically expire in <b>2 minutes</b>!\n\n"
+                                f"Click below to join:",
+                                parse_mode=enums.ParseMode.HTML,
+                                reply_markup=InlineKeyboardMarkup(buttons),
+                            )
+                            from bot.auto_delete import auto_delete_service
+                            await auto_delete_service.schedule_deletion(
+                                client=c,
+                                chat_id=m.chat.id,
+                                message_id=t_msg.id,
+                                custom_seconds=120,
+                            )
+                            return
+                        else:
+                            await m.reply_text("⚠️ No dedicated channel found for this series.")
+                            return
 
             main_user = ""
             if self.main_client and hasattr(self.main_client, "me") and self.main_client.me:

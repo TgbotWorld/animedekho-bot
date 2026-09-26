@@ -28,30 +28,31 @@ async def create_timer_invite_link(
     Because expire_date is set in Telegram servers, the link automatically invalidates
     even if the bot goes offline or restarts.
     """
+    target_cid = int(channel_id) if str(channel_id).lstrip("-").isdigit() else channel_id
+    exp_dt = datetime.now(timezone.utc) + timedelta(seconds=expire_seconds)
+
     try:
-        exp_dt = datetime.now(timezone.utc) + timedelta(seconds=expire_seconds)
         invite = await client.create_chat_invite_link(
-            chat_id=channel_id,
+            chat_id=target_cid,
             expire_date=exp_dt,
             member_limit=member_limit,
             name=name[:32],
         )
-        log.info("Created timer invite link for %s (expires in %ds)", channel_id, expire_seconds)
+        log.info("Created timer invite link for %s (expires in %ds)", target_cid, expire_seconds)
         return invite.invite_link
     except Exception as e:
-        log.warning("Failed to create timer invite link for %s: %s", channel_id, e)
+        log.warning("Failed to create timer invite link for %s: %s", target_cid, e)
         # Try userbot if client lacks permissions
         from bot.userbot import userbot_manager
         if userbot_manager and userbot_manager.is_active and userbot_manager.client:
             try:
-                exp_dt = datetime.now(timezone.utc) + timedelta(seconds=expire_seconds)
                 u_inv = await userbot_manager.client.create_chat_invite_link(
-                    chat_id=channel_id,
+                    chat_id=target_cid,
                     expire_date=exp_dt,
                     member_limit=member_limit,
                     name=name[:32],
                 )
-                log.info("Userbot created timer invite link for %s", channel_id)
+                log.info("Userbot created timer invite link for %s", target_cid)
                 return u_inv.invite_link
             except Exception as ue:
                 log.warning("Userbot also failed creating timer invite link: %s", ue)
@@ -91,7 +92,6 @@ async def check_fsub(
             is_member = True
     except Exception as ce:
         log.debug("FSub member check for %d failed: %s", user_id, ce)
-        # If check fails due to bot not being admin in channel or unknown error, don't lock user out
         is_member = False
 
     if is_member:
@@ -99,33 +99,54 @@ async def check_fsub(
 
     # User is not a member — construct prompt
     fsub_mod = await db.get_fsub_mod()
-    invite_url = None
-
-    if fsub_mod:
-        # Timer link mode is ON — generate a 2-minute expiring link
-        invite_url = await create_timer_invite_link(client, fsub_chan, expire_seconds=120, name="FSub 2m Link")
-
-    if not invite_url:
-        # Normal link mode or fallback
-        if isinstance(fsub_chan, str) and not fsub_chan.startswith("-"):
-            invite_url = f"https://t.me/{fsub_chan.lstrip('@')}"
-        else:
-            invite_url = await db.get_config("channel_invite_link")
-
     bot_username = getattr(client, "me", None)
     b_user = bot_username.username if bot_username and bot_username.username else "bot"
     retry_url = f"https://t.me/{b_user}?start={retry_param}" if retry_param else f"https://t.me/{b_user}?start=start"
+
+    if fsub_mod:
+        # Issue #7: Timer Mode ON -> Timer Link Only.
+        # NEVER fall back to permanent invite link!
+        invite_url = await create_timer_invite_link(client, fsub_chan, expire_seconds=120, name="FSub 2m Link")
+
+        if not invite_url:
+            # Timer link generation failed -> show ONLY "Try Again" button
+            log.warning("Timer link generation failed for FSub channel %s. Showing Try Again button.", fsub_chan)
+            fail_buttons = [[InlineKeyboardButton("🔄 Try Again", url=retry_url)]]
+            fail_text = (
+                "⚠️ <b>Could Not Generate Temporary Invite Link</b>\n\n"
+                "Unable to create a 2-minute expiring link for our channel right now.\n\n"
+                "Please click the <b>Try Again</b> button below to re-generate your link!"
+            )
+            return False, fail_text, InlineKeyboardMarkup(fail_buttons)
+
+        # Timer link generated successfully
+        buttons = [
+            [InlineKeyboardButton("📢 Join Channel", url=invite_url)],
+            [InlineKeyboardButton("🔄 Try Again", url=retry_url)],
+        ]
+        text = (
+            "📢 <b>Please Join Our Channel to Continue!</b>\n\n"
+            "You must be a member of our channel to download files or view content.\n\n"
+            "⏳ <i>Note: This invite link is temporary and will automatically expire in <b>2 minutes</b>!</i>\n\n"
+            "After joining, click the <b>Try Again</b> button below!"
+        )
+        return False, text, InlineKeyboardMarkup(buttons)
+
+    # Standard link mode (Timer Mode OFF)
+    invite_url = None
+    if isinstance(fsub_chan, str) and not str(fsub_chan).startswith("-"):
+        invite_url = f"https://t.me/{fsub_chan.lstrip('@')}"
+    else:
+        invite_url = await db.get_config("channel_invite_link")
 
     buttons = []
     if invite_url:
         buttons.append([InlineKeyboardButton("📢 Join Channel", url=invite_url)])
     buttons.append([InlineKeyboardButton("🔄 Try Again", url=retry_url)])
 
-    timer_note = "\n\n⚠️ <i>Note: This invite link is temporary and will expire in <b>2 minutes</b>!</i>" if fsub_mod else ""
     text = (
         "📢 <b>Please Join Our Channel to Continue!</b>\n\n"
-        "You must be a member of our channel to download files or view content."
-        f"{timer_note}\n\n"
+        "You must be a member of our channel to download files or view content.\n\n"
         "After joining, click the <b>Try Again</b> button below!"
     )
 

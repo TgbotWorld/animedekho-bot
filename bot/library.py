@@ -302,12 +302,9 @@ class LibraryManager:
         slug = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
         channel_line = ""
         join_deep = ""
-        if channel_mapping and channel_mapping.get("channel_id"):
-            if slug:
-                join_deep = f"https://t.me/{self.bot_username}?start=join_{slug}"
-                channel_line = f"➥ 📢 Cʜᴀɴɴᴇʟ:- <a href='{join_deep}'>Join Series Channel</a>\n"
-            elif channel_mapping.get("invite_link"):
-                channel_line = f"➥ 📢 Cʜᴀɴɴᴇʟ:- <a href='{channel_mapping['invite_link']}'>Join Series Channel</a>\n"
+        if channel_mapping and slug:
+            join_deep = f"https://t.me/{self.bot_username}?start=join_{slug}"
+            channel_line = f"➥ 📢 Cʜᴀɴɴᴇʟ:- <a href='{join_deep}'>Join Series Channel</a>\n"
 
         if post_style == "modern":
             ep_type = "Movie" if is_movie else "Series"
@@ -385,16 +382,12 @@ class LibraryManager:
         buttons = []
 
         channel_btn = None
-        if channel_mapping and channel_mapping.get("channel_id"):
-            join_deep = f"https://t.me/{self.bot_username}?start=join_{series_slug}"
+        slug_for_join = series_slug or (channel_mapping.get("series_slug", "") if channel_mapping else "")
+        if channel_mapping and slug_for_join:
+            join_deep = f"https://t.me/{self.bot_username}?start=join_{slug_for_join}"
             channel_btn = InlineKeyboardButton(
                 "📢 Watch / Episodes Channel",
                 url=join_deep,
-            )
-        elif channel_mapping and channel_mapping.get("invite_link"):
-            channel_btn = InlineKeyboardButton(
-                "📢 Watch / Episodes Channel",
-                url=channel_mapping["invite_link"],
             )
 
         # If channel is mapped and album_mode is "channel" (channel-only)
