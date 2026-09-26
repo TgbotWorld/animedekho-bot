@@ -1,6 +1,6 @@
 from bot.telegram import Client, filters, MessageHandler, CallbackQueryHandler
 
-from .commands import cmd_start, cmd_help, cmd_search, start_callback
+from .commands import cmd_start, cmd_help, cmd_search, cmd_autosearch, start_callback
 from .callbacks import callback_router
 from .messages import handle_text
 from .admin import (
@@ -26,7 +26,7 @@ from .settings import cmd_commands, commands_callback, cmd_settings, settings_ca
 from bot.auto_delete import handle_close_dlt_notice
 
 __all__ = [
-    "cmd_start", "cmd_help", "cmd_search", "callback_router", "handle_text",
+    "cmd_start", "cmd_help", "cmd_search", "cmd_autosearch", "callback_router", "handle_text",
     "cmd_adduser", "cmd_removeuser", "cmd_users",
     "cmd_setchannellink",
     "cmd_delete",
@@ -51,6 +51,7 @@ def register_handlers(app: Client):
     app.add_handler(MessageHandler(cmd_start, filters.command("start") & filters.private))
     app.add_handler(MessageHandler(cmd_help, filters.command("help") & filters.private))
     app.add_handler(MessageHandler(cmd_search, filters.command("search") & filters.private))
+    app.add_handler(MessageHandler(cmd_autosearch, filters.command("autosearch") & filters.private))
 
     # Owner AI commands
     app.add_handler(MessageHandler(cmd_setai, filters.command("setai") & filters.private))

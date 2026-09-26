@@ -82,6 +82,7 @@ COMMAND_CATEGORIES = {
     ),
     "cmd_cat:features": (
         "⚡ <b>Automation, AI & Storage:</b>\n\n"
+        "• <code>/autosearch &lt;on|off&gt;</code> — Toggle direct name typing search\n"
         "• <code>/dlt_time &lt;seconds&gt;</code> — Set file auto-delete timer (e.g. 600)\n"
         "• <code>/automonitor &lt;on|off&gt;</code> — Automated episode release monitor\n"
         "• <code>/ai &lt;query&gt;</code> — Ask Autonomous AI Agent to find anime\n"
@@ -172,6 +173,7 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
     post_style = await db.get_post_style() if db else "classic"
     auto_thumb = await db.get_auto_thumb() if db else True
     auto_sched = await db.get_auto_schedule_post() if db else False
+    auto_search = await db.get_auto_search() if db else True
 
     from config.settings import settings
     ai_enabled = settings.ai.enabled if settings and settings.ai else True
@@ -208,6 +210,7 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         f"• 🖼️ <b>Channel Card:</b> <code>{_style_badge(post_style)}</code>\n"
         f"• 🖼️ <b>Auto Thumbnail:</b> <code>{_badge(auto_thumb)}</code> (1280x720 HD)\n"
         f"• ⏰ <b>12 AM Schedule:</b> <code>{_badge(auto_sched)}</code> (Main Channel)\n"
+        f"• 🔍 <b>Auto Chat Search:</b> <code>{_badge(auto_search)}</code> (Name Trigger)\n"
         f"• 🤖 <b>AI Assistant:</b> <code>{_badge(ai_enabled)}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
@@ -230,11 +233,14 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton(f"⏰ 12 AM Post: {_badge(auto_sched)}", callback_data="set_toggle:auto_sched"),
         ],
         [
+            InlineKeyboardButton(f"🔍 AutoSearch: {_badge(auto_search)}", callback_data="set_toggle:auto_search"),
             InlineKeyboardButton(f"🤖 AI Agent: {_badge(ai_enabled)}", callback_data="set_toggle:ai_enabled"),
-            InlineKeyboardButton("🔄 Refresh", callback_data="set_toggle:refresh"),
         ],
         [
             InlineKeyboardButton("📖 Open /commands Guide", callback_data="cmd_cat:home"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="set_toggle:refresh"),
+        ],
+        [
             InlineKeyboardButton("❌ Close Panel", callback_data="settings_action:close"),
         ],
     ])
@@ -333,6 +339,12 @@ async def settings_callback(client: Client, query: CallbackQuery):
         new_val = not cur
         await db.set_auto_schedule_post(new_val)
         alert_msg = f"Daily 12:00 AM IST Schedule Post: {'ENABLED' if new_val else 'DISABLED'}"
+
+    elif data == "set_toggle:auto_search":
+        cur = await db.get_auto_search()
+        new_val = not cur
+        await db.set_auto_search(new_val)
+        alert_msg = f"Auto Chat Search: {'ENABLED (Direct typing ON)' if new_val else 'DISABLED (Use /search)'}"
 
     elif data == "set_toggle:ai_enabled":
         from config.settings import settings

@@ -115,7 +115,7 @@ class LibraryManager:
 
         # Resolve authoritative AniList poster
         from utils.anilist import resolve_best_poster
-        poster_url = await resolve_best_poster(series_title, poster_url)
+        poster_url = await resolve_best_poster(series_title, poster_url, is_movie=is_movie)
 
         # Save file mapping
         await self.db.files.update_one(
@@ -227,6 +227,17 @@ class LibraryManager:
             poster_path = None
             if poster_url:
                 poster_path = await _download_poster(poster_url)
+
+            # Fallback to configured default thumbnail (Issue #9)
+            if not poster_path:
+                from config import Config
+                def_thumb = (
+                    getattr(Config, "DEFAULT_MOVIE_THUMB", None)
+                    if is_movie
+                    else getattr(Config, "DEFAULT_ANIME_THUMB", None)
+                )
+                if def_thumb:
+                    poster_path = await _download_poster(def_thumb)
 
             if poster_path:
                 try:
@@ -497,7 +508,7 @@ class LibraryManager:
 
                 from utils.anilist import resolve_best_poster
                 series_title = a.get("series_title", slug)
-                poster_url = await resolve_best_poster(series_title, a.get("poster_url"))
+                poster_url = await resolve_best_poster(series_title, a.get("poster_url"), is_movie=is_movie)
 
                 markup = self._build_album_buttons(
                     slug, sorted_eps, sorted_qualities, is_movie,

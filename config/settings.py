@@ -71,6 +71,19 @@ class BotConfig:
     seasons_per_row: int = 4
     slug_max_len: int = 55
     log_level: str = field(default_factory=lambda: getattr(Config, "LOG_LEVEL", None) or os.environ.get("LOG_LEVEL", "INFO"))
+    default_anime_thumb: str = field(
+        default_factory=lambda: getattr(Config, "DEFAULT_ANIME_THUMB", None)
+        or os.environ.get("DEFAULT_ANIME_THUMB", "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000")
+    )
+    default_movie_thumb: str = field(
+        default_factory=lambda: getattr(Config, "DEFAULT_MOVIE_THUMB", None)
+        or os.environ.get("DEFAULT_MOVIE_THUMB", "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=1000")
+    )
+    auto_search: bool = field(
+        default_factory=lambda: getattr(Config, "AUTO_SEARCH", None)
+        if getattr(Config, "AUTO_SEARCH", None) is not None
+        else os.environ.get("AUTO_SEARCH", "on").lower() in ("on", "true", "1", "yes")
+    )
 
 
 @dataclass(frozen=True)

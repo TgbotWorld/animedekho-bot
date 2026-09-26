@@ -84,6 +84,17 @@ class Config:
     # Custom text message for Force Subscribe alert (HTML format supported)
     FSUB_MSG = os.environ.get("FSUB_MSG", "")
 
+    # Default Fallback Thumbnails (Issue #9)
+    # Used automatically if AnimeDekho / AniList poster fetching or uploading fails
+    DEFAULT_ANIME_THUMB = os.environ.get(
+        "DEFAULT_ANIME_THUMB",
+        "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000",
+    )
+    DEFAULT_MOVIE_THUMB = os.environ.get(
+        "DEFAULT_MOVIE_THUMB",
+        "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=1000",
+    )
+
     # UI Styles: "classic" or "modern"
     START_STYLE = os.environ.get("START_STYLE", "classic").lower()
     SCHED_STYLE = os.environ.get("SCHED_STYLE", "classic").lower()
@@ -91,6 +102,10 @@ class Config:
     POST_STYLE = os.environ.get("POST_STYLE", "classic").lower()
 
     # ── Features & Security ───────────────────────────────────────────────
+    # Auto Search: Automatically trigger search when typing anime name directly in chat
+    # If "off", users must use /search <name> command (prevents chat clutter)
+    AUTO_SEARCH = os.environ.get("AUTO_SEARCH", "on").lower() in ("on", "true", "1", "yes")
+
     # FSub Timer Link Mode: "on" (2-min expiring links) or "off" (standard links)
     FSUB_MOD = os.environ.get("FSUB_MOD", "on").lower() in ("on", "true", "1", "yes")
 

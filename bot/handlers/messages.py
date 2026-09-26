@@ -33,10 +33,24 @@ async def handle_text(client: Client, message: Message):
         await message.reply_text(reply_text, parse_mode=enums.ParseMode.HTML)
         return
 
+    # Direct Anime Name Feature Toggle (Issue #9)
+    from bot.database import db
+    auto_search_enabled = True
+    if db:
+        auto_search_enabled = await db.get_auto_search()
+    if not auto_search_enabled:
+        return
+
+    await do_search(client, message, query)
+
+
+async def do_search(client: Client, message: Message, query: str):
+    """Execute anime search and display result buttons."""
+    user = message.from_user
     msg = await message.reply_text("🔍 Searching...")
 
     # Log the search
-    if bot.logger.bot_logger:
+    if bot.logger.bot_logger and user:
         await bot.logger.bot_logger.log_search(user.id, user.username or user.first_name, query)
 
     try:

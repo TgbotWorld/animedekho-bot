@@ -127,6 +127,25 @@ async def _on_start(client: Client):
     auto_schedule_service.start(client)
     log.info("Auto-Schedule 12 AM Publisher started (OFF by default)")
 
+    # VPS Temporary File Cleanup (Issue #9 - runs on startup and every 30m)
+    from bot.downloader import cleanup_vps_temp_files
+    try:
+        init_cleaned = cleanup_vps_temp_files(max_age_seconds=1800)
+        if init_cleaned:
+            log.info("Startup VPS Cleanup: Removed %d orphaned temp files", init_cleaned)
+    except Exception as ce:
+        log.warning("Initial VPS cleanup error: %s", ce)
+
+    async def _periodic_vps_cleanup():
+        while True:
+            await asyncio.sleep(1800)
+            try:
+                cleanup_vps_temp_files(max_age_seconds=1800)
+            except Exception:
+                pass
+
+    asyncio.create_task(_periodic_vps_cleanup())
+
     # Set bot commands menu
     from bot.telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
     try:

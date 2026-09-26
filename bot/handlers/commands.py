@@ -7,7 +7,7 @@ from bot.telegram import Client, enums
 from bot.telegram.types import Message
 
 from bot.keyboards import main_menu
-from bot.auth import require_approved
+from bot.auth import require_approved, require_owner
 import bot.logger
 
 log = logging.getLogger(__name__)
@@ -228,9 +228,49 @@ async def cmd_search(client: Client, message: Message):
         )
         return
 
-    from bot.handlers.messages import handle_text
-    message.text = parts[1].strip()
-    await handle_text(client, message)
+    from bot.handlers.messages import do_search
+    query = parts[1].strip()
+    await do_search(client, message, query)
+
+
+@require_owner
+async def cmd_autosearch(client: Client, message: Message):
+    """Toggle direct anime name typing search in chat (Issue #9)."""
+    from bot.database import db
+    if not db:
+        await message.reply_text("⚠️ Database is not connected.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) > 1:
+        arg = parts[1].strip().lower()
+        if arg in ("on", "enable", "true", "yes", "1"):
+            await db.set_auto_search(True)
+            await message.reply_text(
+                "✅ <b>Direct Anime Name Chat Search:</b> <code>ENABLED</code>\n"
+                "Users can search by typing anime names directly in chat.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+        elif arg in ("off", "disable", "false", "no", "0"):
+            await db.set_auto_search(False)
+            await message.reply_text(
+                "❌ <b>Direct Anime Name Chat Search:</b> <code>DISABLED</code>\n"
+                "Chat typing will not trigger search. Users must use <code>/search &lt;name&gt;</code>.",
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+
+    # Toggle if no argument provided
+    curr = await db.get_auto_search()
+    new_val = not curr
+    await db.set_auto_search(new_val)
+    status_str = "ENABLED ✅ (Direct typing triggers search)" if new_val else "DISABLED ❌ (Search only via /search)"
+    await message.reply_text(
+        f"⚙️ <b>Auto Chat Search is now:</b> <code>{status_str}</code>\n"
+        f"Usage: <code>/autosearch on</code> or <code>/autosearch off</code>",
+        parse_mode=enums.ParseMode.HTML,
+    )
 
 
 async def _handle_channel_join_request(client: Client, message: Message, series_slug: str):

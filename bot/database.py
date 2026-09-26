@@ -996,6 +996,19 @@ class Database:
         """Set auto 12:00 AM schedule channel post toggle."""
         await self.set_config("auto_schedule_post", "on" if enabled else "off")
 
+    async def get_auto_search(self) -> bool:
+        """Get direct anime name chat search trigger toggle (Issue #9)."""
+        from config import Config
+        def_val = getattr(Config, "AUTO_SEARCH", True)
+        val = await self.get_config("auto_search", default="on" if def_val else "off")
+        if isinstance(val, str):
+            return val.lower() in ("on", "true", "1", "yes")
+        return bool(val)
+
+    async def set_auto_search(self, enabled: bool):
+        """Set direct anime name chat search trigger toggle."""
+        await self.set_config("auto_search", "on" if enabled else "off")
+
 
     # ── Episode Post Style Configuration (Default: 'classic') ────────
 

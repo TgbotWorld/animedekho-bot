@@ -831,12 +831,14 @@ async def download_and_upload(
     destination_channel_id: int | None = None,
     series_slug: str = "",
     language: str = "",
+    is_movie: bool = False,
 ) -> tuple[bool, Message | None]:
     """Download video + upload via Pyrogram MTProto with progress, custom thumbnail, and dump channel."""
     output_path = str(_TEMP_BASE / filename)
     overall_start = time.time()
     thumb_path = None
     custom_thumb_path = None
+    tracked_temp_files: set[str] = {output_path}
 
     try:
         # 1. Custom Thumbnail System (Point 5 - OFF by default, falls back to AniList poster)
@@ -857,16 +859,17 @@ async def download_and_upload(
                     if dl_res and os.path.exists(str(dl_res)):
                         thumb_path = str(dl_res)
                         custom_thumb_path = thumb_path
+                        tracked_temp_files.add(thumb_path)
                         log.info("Using custom thumbnail for %s (type: %s)", title, language or series_slug or "global")
             except Exception as cte:
                 log.debug("Custom thumbnail check failed: %s", cte)
 
-        # 2. Poster Fallback (existing behavior)
+        # 2. Poster Fallback (AniList as primary, then scraped, then default configured thumbnails)
         if not thumb_path:
             if not poster_url:
                 try:
                     from utils.anilist import resolve_best_poster
-                    poster_url = await resolve_best_poster(title, "")
+                    poster_url = await resolve_best_poster(title, "", is_movie=is_movie)
                 except Exception:
                     pass
 
@@ -874,8 +877,27 @@ async def download_and_upload(
                 try:
                     from bot.library import _download_poster
                     thumb_path = await _download_poster(poster_url)
+                    if thumb_path:
+                        tracked_temp_files.add(thumb_path)
                 except Exception as pe:
                     log.debug("Poster thumbnail download failed: %s", pe)
+
+            # If poster thumbnail download failed or missing, use configured default thumbnail (Issue #9)
+            if not thumb_path:
+                from config import Config
+                fallback_img = (
+                    getattr(Config, "DEFAULT_MOVIE_THUMB", None)
+                    if is_movie
+                    else getattr(Config, "DEFAULT_ANIME_THUMB", None)
+                )
+                if fallback_img:
+                    try:
+                        from bot.library import _download_poster
+                        thumb_path = await _download_poster(fallback_img)
+                        if thumb_path:
+                            tracked_temp_files.add(thumb_path)
+                    except Exception as fe:
+                        log.debug("Fallback thumbnail download failed: %s", fe)
 
         # Resolve M3U8 variant if needed so 480p is not bloated with 1080p stream
         if not variant_url or variant_url == stream_url:
@@ -974,6 +996,7 @@ async def download_and_upload(
                     )
                     if gen_thumb and os.path.exists(gen_thumb):
                         thumb_path = gen_thumb
+                        tracked_temp_files.add(gen_thumb)
                         log.info("Applied generated Auto Thumbnail for %s", filename)
                 except Exception as ate:
                     log.warning("Auto thumbnail generation failed: %s", ate)
@@ -1155,14 +1178,14 @@ async def download_and_upload(
             pass
         return False, None
     finally:
+        # Guarantee deletion of all tracked temporary files (video, thumbs, generated files)
+        for tf in tracked_temp_files:
+            try:
+                if tf and os.path.exists(tf):
+                    os.remove(tf)
+            except Exception:
+                pass
         try:
-            if thumb_path and os.path.exists(thumb_path):
-                os.remove(thumb_path)
-        except Exception:
-            pass
-        try:
-            if os.path.exists(output_path):
-                os.remove(output_path)
             stem = Path(output_path).stem
             for f in _TEMP_BASE.glob(f"*{stem}*"):
                 if f.is_file():
@@ -1171,3 +1194,32 @@ async def download_and_upload(
                     shutil.rmtree(f, ignore_errors=True)
         except Exception:
             pass
+
+
+def cleanup_vps_temp_files(max_age_seconds: int = 1800) -> int:
+    """
+    Clean up orphaned temporary files and directories from VPS storage (Issue #9).
+    Removes downloaded media, partial chunks, and generated thumbnails older than max_age_seconds.
+    Returns the count of cleaned items.
+    """
+    now = time.time()
+    cleaned_count = 0
+    try:
+        if _TEMP_BASE.exists():
+            for item in _TEMP_BASE.iterdir():
+                try:
+                    mtime = item.stat().st_mtime
+                    if now - mtime > max_age_seconds:
+                        if item.is_file() or item.is_symlink():
+                            item.unlink(missing_ok=True)
+                            cleaned_count += 1
+                        elif item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                            cleaned_count += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning("VPS temp file cleanup error: %s", e)
+    if cleaned_count > 0:
+        log.info("VPS Cleanup: Purged %d stale temporary items from %s", cleaned_count, _TEMP_BASE)
+    return cleaned_count

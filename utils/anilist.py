@@ -22,7 +22,8 @@ BAD_POSTER_SUBSTRINGS = (
     "banner-", "banner.", "-banner", "_banner", "/banner",
     "site-logo", "logo-", "-logo", "logo.", "default-",
     "placeholder", "no-image", "no_image", "avatar", "gravatar",
-    "favicon", "blank.", "1x1.", "pixel.", "transparent."
+    "favicon", "blank.", "1x1.", "pixel.", "transparent.",
+    "default_poster", "dummy", "loading.", "animedekho-logo",
 )
 
 BAD_POSTER_EXTENSIONS = (".svg", ".gif", ".ico")
@@ -277,15 +278,18 @@ async def resolve_best_poster(
     title: str,
     scraped_poster: str | None = None,
     allow_network: bool = True,
+    is_movie: bool = False,
+    fallback_default: bool = True,
 ) -> str | None:
     """
     Resolve the highest quality, authoritative poster for an anime:
-    1. Query AniList for official high-resolution coverImage.
+    1. Query AniList for official high-resolution coverImage (Primary Source).
     2. Fall back to scraped_poster if AniList has no match or errors,
        filtering out generic banners/logos/placeholders.
-    3. Return None if neither is valid.
+    3. Fall back to DEFAULT_MOVIE_THUMB or DEFAULT_ANIME_THUMB (from config.py)
+       if fallback_default is True and neither AniList nor scraped poster is valid.
     """
-    # Step 1: Check AniList if network allowed and title present
+    # Step 1: Check AniList if network allowed and title present (Primary Source)
     if allow_network and title:
         try:
             anilist_poster = await get_anilist_poster(title)
@@ -297,5 +301,19 @@ async def resolve_best_poster(
     # Step 2: Fall back to scraped poster if it passes validation
     if scraped_poster and is_valid_poster_url(scraped_poster):
         return scraped_poster
+
+    # Step 3: Fall back to configured default thumbnails (Issue #9)
+    if fallback_default:
+        try:
+            from config import Config
+            def_thumb = (
+                getattr(Config, "DEFAULT_MOVIE_THUMB", None)
+                if is_movie
+                else getattr(Config, "DEFAULT_ANIME_THUMB", None)
+            )
+            if def_thumb and is_valid_poster_url(def_thumb):
+                return def_thumb
+        except Exception as e:
+            log.debug("Default thumbnail config lookup failed: %s", e)
 
     return None

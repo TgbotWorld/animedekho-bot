@@ -153,7 +153,7 @@ class AnimeDekhoAPI:
         series = parse_series_detail(html, slug)
         try:
             from utils.anilist import resolve_best_poster
-            best = await resolve_best_poster(series.title, series.poster)
+            best = await resolve_best_poster(series.title, series.poster, is_movie=False)
             if best:
                 series.poster = best
         except Exception as e:
@@ -204,7 +204,7 @@ class AnimeDekhoAPI:
         movie = parse_movie_page(html, slug)
         try:
             from utils.anilist import resolve_best_poster
-            best = await resolve_best_poster(movie.title, movie.poster)
+            best = await resolve_best_poster(movie.title, movie.poster, is_movie=True)
             if best:
                 movie.poster = best
         except Exception as e:

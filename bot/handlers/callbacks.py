@@ -99,6 +99,75 @@ async def callback_router(client: Client, query: CallbackQuery):
 
 # ── Handler implementations ───────────────────────────────────────
 
+async def _send_photo_with_fallback(
+    client: Client,
+    chat_id: int,
+    photo_url: str | None,
+    caption: str,
+    reply_markup=None,
+    is_movie: bool = False,
+    query: CallbackQuery | None = None,
+):
+    """
+    Robust photo sender with multi-tier fallback (Issue #9):
+    1. Try sending the primary photo_url (AniList / scraped poster).
+    2. If primary fails or is missing, try DEFAULT_MOVIE_THUMB or DEFAULT_ANIME_THUMB from config.
+    3. If default thumb also fails or is missing, fall back cleanly to text message.
+    Never crashes or displays an unhandled error to the user!
+    """
+    from config import Config
+    fallback_url = getattr(Config, "DEFAULT_MOVIE_THUMB" if is_movie else "DEFAULT_ANIME_THUMB", "")
+
+    async def _try_delete():
+        if query and query.message:
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+
+    # 1. Try primary photo
+    if photo_url:
+        try:
+            await _try_delete()
+            await client.send_photo(
+                chat_id=chat_id,
+                photo=photo_url,
+                caption=caption[:1024],
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception as e:
+            log.warning("Primary photo send failed (%s), trying fallback thumb: %s", str(photo_url)[:60], e)
+
+    # 2. Try default fallback photo
+    if fallback_url and fallback_url != photo_url:
+        try:
+            await _try_delete()
+            await client.send_photo(
+                chat_id=chat_id,
+                photo=fallback_url,
+                caption=caption[:1024],
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception as e:
+            log.warning("Fallback photo send failed (%s): %s", str(fallback_url)[:60], e)
+
+    # 3. Clean text fallback (zero error)
+    if query:
+        await _send_text(query, caption, reply_markup)
+    else:
+        await client.send_message(
+            chat_id=chat_id,
+            text=caption[:4096],
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=reply_markup,
+            disable_web_page_preview=True,
+        )
+
+
 async def _handle_series_listing(q: CallbackQuery, page: int):
     result = await api.get_recent_series(page)
     if not result.items:
@@ -137,20 +206,15 @@ async def _handle_series_detail(client: Client, q: CallbackQuery, slug: str):
     if series.poster:
         _poster_cache[series.slug] = series.poster
 
-    if series.poster:
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
-        await client.send_photo(
-            chat_id=q.message.chat.id,
-            photo=series.poster,
-            caption=text[:1024],
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=markup,
-        )
-    else:
-        await _send_text(q, text, markup)
+    await _send_photo_with_fallback(
+        client=client,
+        chat_id=q.message.chat.id,
+        photo_url=series.poster,
+        caption=text,
+        reply_markup=markup,
+        is_movie=False,
+        query=q,
+    )
 
 
 async def _handle_movie_detail(client: Client, q: CallbackQuery, slug: str):
@@ -174,20 +238,15 @@ async def _handle_movie_detail(client: Client, q: CallbackQuery, slug: str):
 
     markup = kb.quality_picker(default_qualities, slug, "mp:1", is_movie=True)
 
-    if movie.poster:
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
-        await client.send_photo(
-            chat_id=q.message.chat.id,
-            photo=movie.poster,
-            caption=text[:1024],
-            parse_mode=enums.ParseMode.HTML,
-            reply_markup=markup,
-        )
-    else:
-        await _send_text(q, text, markup)
+    await _send_photo_with_fallback(
+        client=client,
+        chat_id=q.message.chat.id,
+        photo_url=movie.poster,
+        caption=text,
+        reply_markup=markup,
+        is_movie=True,
+        query=q,
+    )
 
 
 async def _handle_season(q: CallbackQuery, slug: str, season: int):
