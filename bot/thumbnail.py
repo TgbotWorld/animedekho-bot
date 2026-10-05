@@ -2,7 +2,8 @@
 Auto Thumbnail Generator for AnimeDekho Bot — Modular Multi-Template Architecture.
 
 Supports 5 distinct visual designs + random mode:
-1. 'modern': Ultra-modern frosted glassmorphism card with high-contrast pills.
+1. 'modern': Stylized modern glass — gradient accent cap & title, ambient
+   glow field, feature chips, giant quality watermark and brand lockup.
 2. 'cinematic': Moody widescreen theatrical master with silver frame & cinematic bars.
 3. 'movie_gold': Luxury obsidian & champagne gold VIP aesthetic (tailored for movies).
 4. 'neon_cyber': Futuristic cyberpunk with electric cyan & hot magenta neon glow.
@@ -449,14 +450,119 @@ class BaseThumbnailTemplate:
         raise NotImplementedError
 
 
-# ── Template 1: Modern Glassmorphism Card ──────────────────────────────────
+# ── Template 1: Modern Glass (v2 — stylized gradient design) ────────────────
+
+def _grad_color(stops: list, t: float) -> tuple:
+    """Interpolate RGBA across gradient stops [(pos, rgba), ...]."""
+    if t <= stops[0][0]:
+        return stops[0][1]
+    for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
+        if t <= p1:
+            f = (t - p0) / max(1e-6, p1 - p0)
+            return tuple(int(round(c0[i] + (c1[i] - c0[i]) * f)) for i in range(len(c0)))
+    return stops[-1][1]
+
+
+def _multi_gradient(size, stops, horizontal: bool = True) -> Image.Image:
+    """Linear RGBA gradient image of the given (w, h) size."""
+    w, h = max(1, size[0]), max(1, size[1])
+    grad = Image.new("RGBA", (w, h), stops[0][1])
+    gd = ImageDraw.Draw(grad)
+    n = w if horizontal else h
+    for i in range(n):
+        col = _grad_color(stops, i / (n - 1) if n > 1 else 0)
+        if horizontal:
+            gd.line([(i, 0), (i, h - 1)], fill=col)
+        else:
+            gd.line([(0, i), (w - 1, i)], fill=col)
+    return grad
+
+
+def _rounded_gradient_layer(canvas_size, box, radius: int, stops, horizontal: bool = True) -> Image.Image:
+    """Full-canvas RGBA layer whose rounded rectangle is filled by a gradient."""
+    x1, y1, x2, y2 = (int(v) for v in box)
+    grad = _multi_gradient((max(1, x2 - x1), max(1, y2 - y1)), stops, horizontal)
+    mask = Image.new("L", canvas_size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((x1, y1, x2, y2), radius=radius, fill=255)
+    padded = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    padded.paste(grad, (x1, y1))
+    layer = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    layer.paste(padded, (0, 0), mask)
+    return layer
+
+
+def _gradient_text(
+    canvas: Image.Image,
+    xy,
+    text: str,
+    font,
+    stops: list,
+    shadow_alpha: int = 170,
+    shadow_offset=(3, 5),
+    pad: int = 8,
+) -> tuple[int, int]:
+    """Draw gradient-filled text (soft drop shadow) directly on the canvas.
+
+    Returns the (width, height) of the rendered text block.
+    """
+    probe = ImageDraw.Draw(Image.new("L", (4, 4)))
+    bbox = probe.textbbox((0, 0), text, font=font)
+    tw, th = max(1, bbox[2] - bbox[0]), max(1, bbox[3] - bbox[1])
+    size = (tw + pad * 2, th + pad * 2)
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).text((pad - bbox[0], pad - bbox[1]), text, font=font, fill=255)
+    x, y = xy
+    if shadow_alpha:
+        sh = Image.new("RGBA", size, (0, 0, 0, 255))
+        sh.putalpha(mask.point(lambda p: p * shadow_alpha // 255))
+        canvas.alpha_composite(sh, (x - pad + shadow_offset[0], y - pad + shadow_offset[1]))
+    txt = Image.new("RGBA", size, (0, 0, 0, 0))
+    txt.paste(_multi_gradient(size, stops), (0, 0), mask)
+    canvas.alpha_composite(txt, (x - pad, y - pad))
+    return tw, th
+
+
+def _radial_glow(canvas_size, center, radius: int, color, max_alpha: int = 60) -> Image.Image:
+    """Soft radial glow layer (concentric falloff + blur) for ambient fields."""
+    layer = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    cx, cy = center
+    steps = 40
+    for i in range(steps, 0, -1):
+        t = i / steps
+        r = radius * t
+        a = int(max_alpha * ((1 - t) ** 1.6))
+        d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=tuple(color) + (a,))
+    return layer.filter(ImageFilter.GaussianBlur(radius=28))
+
+
+def _shade_rgba(color, factor: float) -> tuple:
+    """Lighten (>1.0) or darken (<1.0) an RGBA color toward white/black."""
+    if len(color) == 3:
+        r, g, b, a = (*color, 255)
+    else:
+        r, g, b, a = color
+    if factor >= 1.0:
+        k = min(1.0, factor - 1.0)
+        ch = lambda c: int(round(c + (255 - c) * k))  # noqa: E731
+    else:
+        ch = lambda c: int(round(c * factor))  # noqa: E731
+    return (ch(r), ch(g), ch(b), a)
+
 
 @register_template("modern")
 class ModernGradientTemplate(BaseThumbnailTemplate):
-    """Ultra-modern frosted glassmorphism card with high-contrast pills and crisp typography."""
+    """Stylized modern glass — gradient title, ambient glow field, feature chips."""
     name = "modern"
     display_name = "Modern Glass"
-    description = "Sleek frosted glass card with vibrant resolution pills and crystal-clear hierarchy."
+    description = "Stylized glass card with gradient typography, ambient glow and feature chips."
+
+    # Brand accent gradient shared across cap, borders and monogram tile.
+    ACCENT = [
+        (0.0, (34, 211, 238, 255)),
+        (0.5, (59, 130, 246, 255)),
+        (1.0, (139, 92, 246, 255)),
+    ]
 
     def generate(
         self,
@@ -470,123 +576,244 @@ class ModernGradientTemplate(BaseThumbnailTemplate):
         is_movie: bool = False,
     ) -> str | None:
         try:
-            canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (10, 12, 20, 255))
-            bg = _prepare_blurred_bg(poster_path, blur_radius=32)
+            W, H = CANVAS_WIDTH, CANVAS_HEIGHT
+            canvas = Image.new("RGBA", (W, H), (8, 10, 18, 255))
+
+            # ── 1. Ambient background: blurred poster + graded darks + glows
+            bg = _prepare_blurred_bg(poster_path, blur_radius=38)
             if bg:
                 canvas.paste(bg, (0, 0))
-
-            # Dark Atmospheric Gradient Overlay
-            overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            draw_ov = ImageDraw.Draw(overlay)
-            for y in range(CANVAS_HEIGHT):
-                alpha = int(140 + (y / CANVAS_HEIGHT) * 90)
-                draw_ov.line([(0, y), (CANVAS_WIDTH, y)], fill=(8, 10, 18, alpha))
-            for x in range(CANVAS_WIDTH):
-                if x > 380:
-                    alpha = int(((x - 380) / (CANVAS_WIDTH - 380)) * 110)
-                    draw_ov.line([(x, 0), (x, CANVAS_HEIGHT)], fill=(6, 8, 16, alpha))
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            dov = ImageDraw.Draw(overlay)
+            for y in range(H):
+                dov.line([(0, y), (W, y)], fill=(8, 10, 18, int(120 + (y / H) * 80)))
+            for x in range(360, W):
+                dov.line([(x, 0), (x, H)], fill=(6, 8, 16, int(((x - 360) / (W - 360)) * 90)))
             canvas = Image.alpha_composite(canvas, overlay)
+            for center, radius, color, alpha in (
+                ((1010, 60), 420, (34, 211, 238), 55),
+                ((240, 680), 430, (139, 92, 246), 50),
+                ((640, 380), 560, (59, 130, 246), 26),
+            ):
+                canvas.alpha_composite(_radial_glow((W, H), center, radius, color, alpha))
 
-            # Frosted Glass Card on Right
-            card_x1, card_y1 = 450, 65
-            card_x2, card_y2 = CANVAS_WIDTH - 50, CANVAS_HEIGHT - 65
-            glass_card = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            draw_card = ImageDraw.Draw(glass_card)
-            draw_card.rounded_rectangle(
-                (card_x1, card_y1, card_x2, card_y2),
-                radius=22, fill=(15, 23, 42, 215), outline=(56, 189, 248, 65), width=1,
-            )
-            canvas = Image.alpha_composite(canvas, glass_card)
             draw = ImageDraw.Draw(canvas)
 
-            # Foreground Poster on Left
-            poster_w, poster_h = 350, 510
-            poster_x, poster_y = 65, 105
+            # ── 2. Poster: ambient glow + drop shadow + gradient hairline ──
+            px, py, pw, ph = 56, 84, 360, 540
             p_img = _resolve_poster_image(poster_path)
+            glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            ImageDraw.Draw(glow).rounded_rectangle(
+                (px - 14, py - 14, px + pw + 14, py + ph + 14), radius=26, fill=(56, 189, 248, 110)
+            )
+            canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(radius=30)))
             if p_img:
                 try:
-                    p_resized = p_img.resize((poster_w, poster_h), Image.Resampling.LANCZOS)
+                    p_resized = p_img.resize((pw, ph), Image.Resampling.LANCZOS)
                     p_rounded = _round_corners(p_resized, radius=18)
-
-                    # Ambient Drop Shadow behind poster
-                    shadow = Image.new("RGBA", (poster_w + 30, poster_h + 30), (0, 0, 0, 0))
-                    draw_sh = ImageDraw.Draw(shadow)
-                    draw_sh.rounded_rectangle((15, 15, poster_w + 15, poster_h + 15), radius=22, fill=(0, 0, 0, 220))
-                    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=12))
-                    canvas.paste(shadow, (poster_x - 15, poster_y - 15), shadow)
-
-                    # Outer glass stroke
-                    draw.rounded_rectangle(
-                        (poster_x - 3, poster_y - 3, poster_x + poster_w + 3, poster_y + poster_h + 3),
-                        radius=21, outline=(255, 255, 255, 120), width=2,
+                    shadow = Image.new("RGBA", (pw + 40, ph + 40), (0, 0, 0, 0))
+                    ImageDraw.Draw(shadow).rounded_rectangle(
+                        (20, 20, pw + 20, ph + 20), radius=24, fill=(0, 0, 0, 225)
                     )
-                    canvas.paste(p_rounded, (poster_x, poster_y), p_rounded)
+                    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=14))
+                    canvas.alpha_composite(shadow, (px - 20, py - 20))
+                    canvas.paste(p_rounded, (px, py), p_rounded)
+                    # gradient hairline border
+                    bmask = Image.new("L", (W, H), 0)
+                    ImageDraw.Draw(bmask).rounded_rectangle(
+                        (px - 2, py - 2, px + pw + 2, py + ph + 2), radius=20, outline=255, width=3
+                    )
+                    border = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                    border.paste(_multi_gradient((W, H), self.ACCENT), (0, 0), bmask)
+                    canvas.alpha_composite(border)
+                    # bottom readability shade inside poster
+                    shade_y1 = py + ph - 150
+                    smask = Image.new("L", (W, H), 0)
+                    ImageDraw.Draw(smask).rounded_rectangle(
+                        (px, shade_y1, px + pw, py + ph), radius=18, fill=255
+                    )
+                    sg = _multi_gradient((pw, 150), [(0.0, (0, 0, 0, 0)), (1.0, (0, 0, 0, 155))], horizontal=False)
+                    slayer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                    slayer.paste(sg, (px, shade_y1))
+                    sout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                    sout.paste(slayer, (0, 0), smask)
+                    canvas.alpha_composite(sout)
                 except Exception as pe:
                     log.debug("Modern poster error: %s", pe)
+            else:
+                # No poster available — elegant placeholder panel.
+                draw.rounded_rectangle(
+                    (px, py, px + pw, py + ph), radius=18, fill=(13, 20, 38, 255),
+                    outline=(71, 85, 105, 200), width=2,
+                )
+                wcx, wcy = px + pw // 2, py + ph // 2
+                draw.ellipse((wcx - 70, wcy - 70, wcx + 70, wcy + 70),
+                             fill=(34, 211, 238, 30), outline=(34, 211, 238, 180), width=3)
+                draw.polygon([(wcx - 22, wcy - 34), (wcx - 22, wcy + 34), (wcx + 40, wcy)],
+                             fill=(34, 211, 238, 220))
 
-            # Typography & Content inside Glass Card
-            curr_x = card_x1 + 42
-            curr_y = card_y1 + 42
-            available_w = (card_x2 - curr_x) - 40
+            # ── 3. Glass card with gradient accent cap ─────────────────────
+            cx1, cy1, cx2, cy2 = 448, 52, 1232, 664
+            card_mask = Image.new("L", (W, H), 0)
+            ImageDraw.Draw(card_mask).rounded_rectangle((cx1, cy1, cx2, cy2), radius=26, fill=255)
+            card_fill = Image.new("RGBA", (W, H), (11, 17, 32, 232))
+            cf = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            cf.paste(card_fill, (0, 0))
+            cout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            cout.paste(cf, (0, 0), card_mask)
+            canvas.alpha_composite(cout)
+            draw.rounded_rectangle((cx1, cy1, cx2, cy2), radius=26, outline=(255, 255, 255, 60), width=1)
+
+            # Gradient accent cap (top 32px band, top corners rounded).
+            band = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            band.paste(_multi_gradient((cx2 - cx1, 32), self.ACCENT), (cx1, cy1))
+            bm = Image.new("L", (W, H), 0)
+            bmd = ImageDraw.Draw(bm)
+            bmd.rounded_rectangle((cx1, cy1, cx2, cy1 + 58), radius=26, fill=255)
+            bmd.rectangle((cx1, cy1 + 32, cx2, cy2), fill=0)
+            bout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            bout.paste(band, (0, 0), bm)
+            canvas.alpha_composite(bout)
+
+            # Frosted sheen across the upper card.
+            sheen_mask = Image.new("L", (W, H), 0)
+            ImageDraw.Draw(sheen_mask).rectangle((cx1, 110, cx2, 344), fill=255)
+            sheen = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sheen.paste(_multi_gradient((W, 234), [(0.0, (255, 255, 255, 24)), (1.0, (255, 255, 255, 0))], horizontal=False), (0, 110))
+            sout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sout.paste(sheen, (0, 0), sheen_mask)
+            canvas.alpha_composite(sout)
+
+            # Big translucent play watermark (behind the content) — composed
+            # on a layer so its low alpha survives the RGB flatten.
+            wm = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            wdraw = ImageDraw.Draw(wm)
+            wcx, wcy, wr = 1108, 302, 92
+            wdraw.ellipse((wcx - wr, wcy - wr, wcx + wr, wcy + wr),
+                          fill=(255, 255, 255, 14), outline=(255, 255, 255, 34), width=3)
+            wdraw.polygon([(wcx - 26, wcy - 40), (wcx - 26, wcy + 40), (wcx + 46, wcy)],
+                          fill=(255, 255, 255, 40))
+            canvas.alpha_composite(wm)
+
+            # ── 4. Content ─────────────────────────────────────────────────
+            tx, right = cx1 + 40, cx2 - 40
+            avail = right - tx
+            y = 118
 
             font_pill = _get_font(20, bold=True, weight="bold")
 
-            # 1. Quality Pill
+            # Quality pill (shaded gradient of its tier color).
             q_label, q_color = _get_quality_pill(quality)
-            q_bbox = draw.textbbox((0, 0), q_label, font=font_pill)
-            qw = (q_bbox[2] - q_bbox[0]) + 32
-            qh = 38
-            draw.rounded_rectangle((curr_x, curr_y, curr_x + qw, curr_y + qh), radius=8, fill=q_color)
-            draw.text((curr_x + 16, curr_y + 8), q_label, font=font_pill, fill=(255, 255, 255, 255))
+            qb = draw.textbbox((0, 0), q_label, font=font_pill)
+            qw = (qb[2] - qb[0]) + 34
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (tx, y, tx + qw, y + 40), 10,
+                [(0.0, _shade_rgba(q_color, 0.82)), (1.0, _shade_rgba(q_color, 1.18))],
+            ))
+            draw.text((tx + 17, y + 9), q_label, font=font_pill, fill=(255, 255, 255, 255))
 
-            # 2. Audio Pill
+            # Audio pill (glass).
             audio_text = _format_audio_tag(audio)
-            a_bbox = draw.textbbox((0, 0), audio_text, font=font_pill)
-            aw = (a_bbox[2] - a_bbox[0]) + 32
-            ax = curr_x + qw + 14
-            draw.rounded_rectangle(
-                (ax, curr_y, ax + aw, curr_y + qh),
-                radius=8, fill=(30, 41, 59, 230), outline=(100, 116, 139, 160), width=1,
-            )
-            draw.text((ax + 16, curr_y + 8), audio_text, font=font_pill, fill=(241, 245, 249, 255))
-            curr_y += qh + 24
+            ab = draw.textbbox((0, 0), audio_text, font=font_pill)
+            aw = (ab[2] - ab[0]) + 34
+            ax = tx + qw + 14
+            draw.rounded_rectangle((ax, y, ax + aw, y + 40), radius=10,
+                                   fill=(30, 41, 59, 235), outline=(100, 116, 139, 170), width=1)
+            draw.text((ax + 17, y + 9), audio_text, font=font_pill, fill=(241, 245, 249, 255))
+            y += 40 + 24
 
-            # 3. Main Title (Auto-scaling and wrapping)
-            title_lines, font_title, line_height = _wrap_and_fit_title(
-                draw, title, max_w=available_w, base_size=46, min_size=32, max_lines=2,
+            # Main title — gradient fill + soft shadow (auto-wrapped).
+            title_lines, font_title, line_h = _wrap_and_fit_title(
+                draw, title, max_w=avail, base_size=48, min_size=34, max_lines=2,
             )
             for line in title_lines:
-                draw.text((curr_x + 2, curr_y + 2), line, font=font_title, fill=(0, 0, 0, 240))
-                draw.text((curr_x, curr_y), line, font=font_title, fill=(255, 255, 255, 255))
-                curr_y += line_height
-            curr_y += 14
+                _gradient_text(canvas, (tx, y), line, font_title,
+                               [(0.0, (255, 255, 255, 255)), (1.0, (165, 215, 255, 255))])
+                y += line_h
+            y += 14
 
-            # 4. Episode / Movie Ribbon
+            # Episode / movie ribbon (amber gradient).
             ep_tag = _format_episode_tag(episode_info, is_movie)
             font_ep = _get_font(23, bold=True, weight="extrabold")
-            ep_bbox = draw.textbbox((0, 0), ep_tag, font=font_ep)
-            ep_w = (ep_bbox[2] - ep_bbox[0]) + 40
-            ep_h = 48
-            draw.rounded_rectangle(
-                (curr_x, curr_y, curr_x + ep_w, curr_y + ep_h),
-                radius=10, fill=(245, 158, 11, 245),
+            eb = draw.textbbox((0, 0), ep_tag, font=font_ep)
+            ew = (eb[2] - eb[0]) + 44
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (tx, y, tx + ew, y + 48), 12,
+                [(0.0, (251, 191, 36, 255)), (1.0, (245, 158, 11, 255))],
+            ))
+            draw.text((tx + 22, y + 11), ep_tag, font=font_ep, fill=(15, 23, 42, 255))
+            y += 48 + 24
+
+            # Gradient divider.
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (tx, y, right, y + 3), 2,
+                [(0.0, (34, 211, 238, 220)), (0.55, (59, 130, 246, 150)), (1.0, (139, 92, 246, 60))],
+            ))
+
+            # ── 5. Feature chips (flow directly after the divider) ──────────
+            chips_y = int(y + 30)
+            font_chip = _get_font(17, bold=True, weight="semibold")
+            chip_x = tx
+            for label, icon in (
+                ("FAST DIRECT PLAY", "bolt"),
+                ("HD MASTER", "play"),
+                ("MULTI-AUDIO", "wave"),
+            ):
+                cb = draw.textbbox((0, 0), label, font=font_chip)
+                cw = (cb[2] - cb[0]) + 62
+                draw.rounded_rectangle((chip_x, chips_y, chip_x + cw, chips_y + 44), radius=22,
+                                       fill=(20, 30, 52, 210), outline=(71, 85, 105, 150), width=1)
+                icx, icy = chip_x + 20, chips_y + 22
+                if icon == "bolt":
+                    draw.polygon([(icx + 7, icy - 11), (icx - 4, icy + 2), (icx + 2, icy + 2),
+                                  (icx - 3, icy + 12), (icx + 9, icy - 2), (icx + 3, icy - 2)],
+                                 fill=(34, 211, 238, 255))
+                elif icon == "play":
+                    draw.ellipse((icx - 10, icy - 10, icx + 10, icy + 10),
+                                 fill=(34, 211, 238, 60), outline=(34, 211, 238, 200), width=2)
+                    draw.polygon([(icx - 3, icy - 6), (icx - 3, icy + 6), (icx + 7, icy)],
+                                 fill=(255, 255, 255, 255))
+                else:
+                    for i, bh in enumerate((9, 16, 12)):
+                        bx = icx - 7 + i * 7
+                        draw.rounded_rectangle((bx, icy - bh // 2, bx + 4, icy + bh // 2),
+                                               radius=2, fill=(139, 92, 246, 255))
+                draw.text((chip_x + 38, chips_y + 12), label, font=font_chip, fill=(226, 232, 240, 255))
+                chip_x += cw + 14
+
+            # Giant translucent quality watermark (bottom-right, brand-tinted)
+            # — fills the lower card zone with a stylized, modern signature.
+            q_short = (quality or "HD").upper().strip().replace(" ", "")
+            if "2160" in q_short or "UHD" in q_short:
+                q_short = "4K"
+            font_giant = _get_font(86, bold=True, weight="extrabold")
+            gb = draw.textbbox((0, 0), q_short, font=font_giant)
+            _gradient_text(
+                canvas, (right - (gb[2] - gb[0]), chips_y + 74), q_short, font_giant,
+                [(0.0, (34, 211, 238, 95)), (1.0, (139, 92, 246, 95))],
+                shadow_alpha=0,
             )
-            draw.text((curr_x + 20, curr_y + 11), ep_tag, font=font_ep, fill=(15, 23, 42, 255))
-            curr_y += ep_h + 26
 
-            # 5. Divider
-            draw.line([(curr_x, curr_y), (card_x2 - 40, curr_y)], fill=(255, 255, 255, 35), width=1)
-            curr_y += 22
-
-            # 6. Tech Features & Branding
-            font_sub = _get_font(20, bold=False, weight="medium")
-            tagline = "MULTI-AUDIO  •  FAST DIRECT PLAY  •  HD MASTER"
-            draw.text((curr_x, curr_y), tagline, font=font_sub, fill=(148, 163, 184, 255))
-            curr_y += 34
-
-            font_brand = _get_font(20, bold=True, weight="semibold")
-            brand_text = f"ANIMEDEKHO  •  @{bot_username.lstrip('@')}"
-            draw.text((curr_x, curr_y), brand_text, font=font_brand, fill=(56, 189, 248, 255))
+            # ── 6. Brand lockup ────────────────────────────────────────────
+            by = 576
+            canvas.alpha_composite(_rounded_gradient_layer((W, H), (tx, by, tx + 54, by + 54), 14, self.ACCENT))
+            draw.rounded_rectangle((tx, by, tx + 54, by + 54), radius=14,
+                                   outline=(255, 255, 255, 90), width=2)
+            font_mono = _get_font(25, bold=True, weight="extrabold")
+            mb = draw.textbbox((0, 0), "AD", font=font_mono)
+            draw.text(
+                (tx + 27 - (mb[2] - mb[0]) // 2 - mb[0], by + (54 - (mb[3] - mb[1])) // 2 - mb[1]),
+                "AD", font=font_mono, fill=(255, 255, 255, 255),
+            )
+            font_brand = _get_font(26, bold=True, weight="extrabold")
+            nb = draw.textbbox((0, 0), "ANIMEDEKHO", font=font_brand)
+            draw.text((tx + 70, by), "ANIMEDEKHO", font=font_brand, fill=(255, 255, 255, 255))
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (tx + 70, by + 38, tx + 70 + max(1, nb[2] - nb[0]), by + 41), 2, self.ACCENT,
+            ))
+            font_handle = _get_font(18, bold=False, weight="medium")
+            draw.text((tx + 70, by + 47), f"@{bot_username.lstrip('@')}",
+                      font=font_handle, fill=(125, 211, 252, 255))
 
             return _save_optimized_jpeg(canvas, output_path)
         except Exception as e:

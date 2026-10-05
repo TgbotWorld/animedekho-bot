@@ -25,7 +25,8 @@
   <a href="#commands"><b>⚡ Commands</b></a> &nbsp;•&nbsp;
   <a href="#architecture"><b>🧬 Architecture</b></a> &nbsp;•&nbsp;
   <a href="#configuration"><b>⚙️ Config</b></a> &nbsp;•&nbsp;
-  <a href="#deployment"><b>🚀 Deploy</b></a>
+  <a href="#deployment"><b>🚀 Deploy</b></a> &nbsp;•&nbsp;
+  <a href="#verification"><b>🧪 Verify</b></a>
 </p>
 
 </div>
@@ -42,6 +43,8 @@
 + 🔎  Watches AnimeDekho for new episode & movie drops
 + 🖼️  Auto-generates cinematic 1280×720 branded thumbnails (5 styles)
 + 🎞️  Downloads multi-quality streams — 480p → 720p → 1080p → 4K
++ 🎚️  Multi-source resolver — AnimeDekho-first default, switchable live via /source
++ 🩺  Per-stage diagnostics & health probes on every download
 + 📚  Maintains one beautiful master post per anime (updates in-place)
 + 🔔  Fans get notified in a tidy thread — channels stay clean
 ```
@@ -83,18 +86,36 @@
       <p>First-class Telegram Premium custom emoji rendering with elegant Unicode fallbacks.</p>
     </td>
   </tr>
+  <tr>
+    <td width="50%">
+      <h3>🎚️ Multi-Source Engine</h3>
+      <p>AnimeDekho-first by default, then a chain of direct-file scrapers. Promote any source live with <code>/source</code> — no restart.</p>
+    </td>
+    <td width="50%">
+      <h3>🩺 Self-Healing Downloads</h3>
+      <p>Health probes pick the fastest healthy link; ZIP-wrapped MKVs auto-extract; failure cards report the exact stage &amp; reason.</p>
+    </td>
+  </tr>
 </table>
 
 ### 🎨 Thumbnail Templates
 
 | Template      | Aesthetic                      | Made For                |
 |---------------|--------------------------------|-------------------------|
-| `modern`      | High-contrast dark neon        | Weekly TV episodes      |
+| `modern`      | Stylized glass · gradient accents & giant quality watermark | Weekly TV episodes |
 | `cinematic`   | Indigo widescreen letterbox    | Movies & story arcs     |
 | `movie_gold`  | Luxury metallic gold frame     | OVAs & feature films    |
 | `neon_cyber`  | Electric cyan × hot pink       | Shonen · Sci-Fi · Action|
 | `minimal`     | Clean frosted-glass look       | Aesthetic channels      |
 | `random`      | Fresh style on every upload    | Maximum surprise factor |
+
+<div align="center">
+
+<img src="assets/thumb_showcase.jpg" alt="Modern Glass thumbnail preview" width="75%">
+
+<p><sub><code>modern</code> template · auto-generated at 1280×720 for every upload</sub></p>
+
+</div>
 
 <img src="assets/divider.png" width="100%" alt="divider">
 
@@ -137,6 +158,8 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 | `/logs`           | Environment logs & export                |
 | `/errors`         | Recent download errors                   |
 | `/users`          | User analytics & registered count        |
+| `/source`         | Show / change the default download source *(owner)* |
+| `/bypass`         | Manually resolve a source URL *(owner)*  |
 | `/adduser`        | Approve a user                           |
 | `/removeuser`     | Remove a user                            |
 
@@ -203,7 +226,7 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 
 ```mermaid
 flowchart LR
-    A("📡 Episode & Movie Monitor") --> B{"🔎 Multi-Server Resolver"}
+    A("📡 Episode & Movie Monitor") --> B{"🔎 Multi-Source Resolver<br/>(AnimeDekho-first · /source)"}
     B --> C("⬇️ N_m3u8DL-RE Download Engine")
     C --> D("🎨 Thumbnail Studio")
     D --> E("⚡ WZGram MTProto Uploader · 2 GB")
@@ -266,6 +289,9 @@ cp .env.example .env
 | `LOG_LEVEL`             | `DEBUG` · `INFO` · `WARNING` · `ERROR`                 | `INFO`       |
 
 </details>
+
+> **🛰️ Runtime settings** — some switches live in the database, not `.env`, so they apply instantly to every worker without a restart:
+> <kbd>/source</kbd> *(default download source — AnimeDekho-first)* · <kbd>/albummode</kbd> · <kbd>/poststyle</kbd> · <kbd>/dlt_time</kbd> · <kbd>/setbotquality</kbd>
 
 <img src="assets/divider.png" width="100%" alt="divider">
 
@@ -374,6 +400,19 @@ python main.py
 `railway.json` is already configured (Dockerfile builder, auto-restart). Import the repo, set the env vars from `.env.example`, hit deploy. A classic `Procfile` is also included for worker-style platforms.
 
 </details>
+
+<img src="assets/divider.png" width="100%" alt="divider">
+
+<a id="verification"></a>
+
+## 🧪 ᴠ ᴇ ʀ ɪ ꜰ ʏ
+
+Contributing — or just want to check a change? The offline suite runs without Telegram, MongoDB or network:
+
+```bash
+python tests/test_v3_offline.py   # resolver, ZIP, diagnostics, /source & thumbnail checks
+python -m pytest tests/ -q        # unit tests
+```
 
 <img src="assets/divider.png" width="100%" alt="divider">
 

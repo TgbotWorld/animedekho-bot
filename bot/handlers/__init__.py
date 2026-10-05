@@ -7,7 +7,7 @@ from .admin import (
     cmd_adduser, cmd_removeuser, cmd_users,
     cmd_setchannellink,
     cmd_delete, delete_callback,
-    cmd_addbot, cmd_delbot, cmd_bots, cmd_setbotquality, cmd_refreshalbums,
+    cmd_addbot, cmd_delbot, cmd_bots, cmd_setbotquality, cmd_refreshalbums, cmd_source,
     cmd_login, cmd_logout, cmd_userbot, cmd_cancel, cmd_autochannel,
     cmd_albummode, cmd_createchannel, cmd_mapchannel, cmd_unmapchannel, cmd_channels,
     cmd_health, cmd_logs, cmd_errors, cmd_clearerrors, health_callback,
@@ -74,6 +74,7 @@ def register_handlers(app: Client):
     app.add_handler(MessageHandler(cmd_bots, filters.command("bots") & filters.private))
     app.add_handler(MessageHandler(cmd_setbotquality, filters.command("setbotquality") & filters.private))
     app.add_handler(MessageHandler(cmd_refreshalbums, filters.command("refreshalbums") & filters.private))
+    app.add_handler(MessageHandler(cmd_source, filters.command(["source", "setsource"]) & filters.private))
 
     # Schedule command (public)
     app.add_handler(MessageHandler(cmd_schedule, filters.command("schedule") & filters.private))

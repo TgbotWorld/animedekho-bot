@@ -514,66 +514,74 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     if download_job_manager.is_job_cancelled(job_id):
         return
 
-    # V2 #15 CRITICAL: direct-file sources FIRST, AnimeDekho LAST.
-    # Required order: AnimeDubHindi/ToonWorld4All/RareAnimes/DeadToons/TOONo/
-    # ToonAnime (via MultiSource) → AnimeDrive → ToonFlix → AnimeDekho.
-    # Old code resolved AnimeDekho first; now MultiSource is Step 1.
+    # ── Source tier ordering — owner-configurable via /source ─────────────
+    # The default source (default: AnimeDekho, persisted in DB config)
+    # resolves FIRST; the other tier is the automatic fallback. Inside the
+    # MultiSource tier, /source also promotes the chosen extractor
+    # (resolve_episode_stream applies it when no button preference exists).
     candidates: list[tuple[VideoServer, Quality]] = []
     has_exact = False
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
     found_match = False
     # V2 #14: rich diagnostics for the failure card.
     diag_steps: list[str] = []
+    from bot.source_config import get_default_source, is_source
+    default_src = await get_default_source()
+    ad_is_default = is_source(default_src, "AnimeDekho")
+    diag_steps.append(f"Default source: {default_src}")
 
     def _is_4k_satisfying(q_str: str) -> bool:
         q = q_str.lower()
         return any(k in q for k in ("4k", "2160", "uhd"))
 
-    # Step 1 FIRST: direct-file sources via Multi-Source manager.
-    try:
-        from extractors.multisource import multi_source_manager
-        # V2 #13: keep the user's selected-button source first.
-        preferred_src = multi_source_manager.get_source_for_slug(series_slug) if series_slug else None
-        log.info("V2#15: trying direct sources first for '%s' S%dE%d [%s] (preferred=%s)", series_title, season, ep_num, quality_pref, preferred_src)
-        ms_res = await multi_source_manager.resolve_episode_stream(
-            series_title=series_title,
-            season=season,
-            episode=ep_num,
-            quality_pref=quality_pref,
-            series_slug=series_slug,
-            preferred_source=preferred_src,
-        )
-        if ms_res and ms_res.get("url"):
-            ms_q = ms_res.get("quality", quality_pref).lower()
-            ms_srv = VideoServer(
-                name=ms_res.get("source", "MultiSource"),
-                server_id=0,
-                player_url=ms_res["url"],
-                qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
+    async def _step_multisource() -> None:
+        """Tier: direct-file extractors via the Multi-Source manager."""
+        nonlocal candidates, has_exact, found_match
+        try:
+            from extractors.multisource import multi_source_manager
+            # V2 #13: keep the user's selected-button source first; the
+            # global /source default is applied inside resolve_episode_stream.
+            preferred_src = multi_source_manager.get_source_for_slug(series_slug) if series_slug else None
+            log.info("Trying direct sources for '%s' S%dE%d [%s] (preferred=%s, default=%s)", series_title, season, ep_num, quality_pref, preferred_src, default_src)
+            ms_res = await multi_source_manager.resolve_episode_stream(
+                series_title=series_title,
+                season=season,
+                episode=ep_num,
+                quality_pref=quality_pref,
+                series_slug=series_slug,
+                preferred_source=preferred_src,
             )
-            if series_slug and not _poster_cache.get(series_slug) and ms_res.get("poster"):
-                from utils.anilist import resolve_best_poster
-                res_p = await resolve_best_poster(series_title, ms_res.get("poster"))
-                if res_p:
-                    _poster_cache[series_slug] = res_p
-            if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
-                candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
-                has_exact = True
-                found_match = True
-                log.info("%s provided exact/4K stream [%s] for '%s' S%dE%d", ms_res.get("source"), ms_res.get("quality"), series_title, season, ep_num)
-                diag_steps.append(f"{ms_res.get('source')}: exact {ms_res.get('quality')} ✓")
+            if ms_res and ms_res.get("url"):
+                ms_q = ms_res.get("quality", quality_pref).lower()
+                ms_srv = VideoServer(
+                    name=ms_res.get("source", "MultiSource"),
+                    server_id=0,
+                    player_url=ms_res["url"],
+                    qualities=[Quality(resolution=ms_res.get("quality", quality_pref), url=ms_res["url"])],
+                )
+                if series_slug and not _poster_cache.get(series_slug) and ms_res.get("poster"):
+                    from utils.anilist import resolve_best_poster
+                    res_p = await resolve_best_poster(series_title, ms_res.get("poster"))
+                    if res_p:
+                        _poster_cache[series_slug] = res_p
+                if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
+                    candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
+                    has_exact = True
+                    found_match = True
+                    log.info("%s provided exact/4K stream [%s] for '%s' S%dE%d", ms_res.get("source"), ms_res.get("quality"), series_title, season, ep_num)
+                    diag_steps.append(f"{ms_res.get('source')}: exact {ms_res.get('quality')} ✓")
+                else:
+                    candidates.append((ms_srv, ms_srv.qualities[0]))
+                    diag_steps.append(f"{ms_res.get('source')}: {ms_res.get('quality')} (non-exact)")
             else:
-                candidates.append((ms_srv, ms_srv.qualities[0]))
-                diag_steps.append(f"{ms_res.get('source')}: {ms_res.get('quality')} (non-exact)")
-        else:
-            diag_steps.append("MultiSource: no result")
-    except Exception as e:
-        log.warning("Multi-source manager resolution error: %s", e)
-        diag_steps.append(f"MultiSource: error {str(e)[:80]}")
+                diag_steps.append("MultiSource: no result")
+        except Exception as e:
+            log.warning("Multi-source manager resolution error: %s", e)
+            diag_steps.append(f"MultiSource: error {str(e)[:80]}")
 
-    # Step 2: AnimeDekho as FALLBACK (not primary). Only resolve when direct
-    # sources missed, lack exact quality, or 4K still needs a true-UHD hit.
-    if not candidates or not has_exact or (is_4k and not found_match):
+    async def _step_animedekho() -> None:
+        """Tier: AnimeDekho API server links (default source)."""
+        nonlocal candidates, has_exact
         try:
             resolved = await _lazy_resolve_servers(raw_servers, quality_pref) if raw_servers else []
             if resolved:
@@ -582,12 +590,12 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             if ad_cands:
                 ad_has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in ad_cands)
                 if ad_has_exact and not has_exact:
-                    # No direct exact yet — AnimeDekho exact becomes primary.
+                    # No other exact yet — AnimeDekho exact becomes primary.
                     candidates = ad_cands + candidates
                     has_exact = True
                     diag_steps.append(f"AnimeDekho: exact {quality_pref} ✓")
                 else:
-                    # Direct exact already leads — AnimeDekho stays behind it.
+                    # Other exact already leads — AnimeDekho stays behind it.
                     candidates.extend(ad_cands)
                     if not has_exact:
                         has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
@@ -597,6 +605,21 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
         except Exception as e:
             log.warning("AnimeDekho fallback resolution error: %s", e)
             diag_steps.append(f"AnimeDekho: error {str(e)[:80]}")
+
+    def _needs_next_tier() -> bool:
+        return (not candidates) or (not has_exact) or (is_4k and not found_match)
+
+    if ad_is_default:
+        # /source animedekho (default): the API tier resolves first; the
+        # direct scrapers only run when it misses quality or is unreachable.
+        await _step_animedekho()
+        if _needs_next_tier():
+            await _step_multisource()
+    else:
+        # V2 #15 baseline: direct-file sources first, AnimeDekho last.
+        await _step_multisource()
+        if _needs_next_tier():
+            await _step_animedekho()
 
     # Step 3: AnimeDrive — skip when MultiSource already delivered that provider.
     if (not candidates or not has_exact or (is_4k and not found_match)) and not any(
@@ -832,6 +855,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     # AnimeDekho candidates above are the fallback tier, not primary.
     has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
+    from bot.source_config import get_default_source, is_source
+    ad_default = is_source(await get_default_source(), "AnimeDekho")
 
     def _is_4k_satisfying(q_str: str) -> bool:
         q = q_str.lower()
@@ -863,8 +888,13 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                     poster_url = res_p
                     _poster_cache[movie_slug] = poster_url
             if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
-                # Direct exact outranks AnimeDekho fallback exact (direct-first).
-                candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
+                if ad_default and has_exact:
+                    # /source default (AnimeDekho) already leads candidates —
+                    # the direct stream joins as fallback tier.
+                    candidates.append((ms_srv, ms_srv.qualities[0]))
+                else:
+                    # Direct exact outranks the fallback exact (direct-first).
+                    candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
                 has_exact = True
             else:
                 candidates.append((ms_srv, ms_srv.qualities[0]))
@@ -1284,36 +1314,43 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                             if success:
                                 break
             else:
-                # V2 #15 standard batch: direct MultiSource FIRST → AnimeDekho
-                # fallback → AnimeDrive → ToonFlix (was AnimeDekho-first).
-                # Fallback 0: direct-file MultiSource Manager first.
-                try:
-                    from extractors.multisource import multi_source_manager
-                    ms0 = await multi_source_manager.resolve_episode_stream(
-                        series_title=series.title,
-                        season=season,
-                        episode=ep.number,
-                        quality_pref=quality_pref,
-                        series_slug=series.slug,
-                    )
-                    if ms0 and ms0.get("url"):
-                        chosen_q = Quality(resolution=ms0.get("quality", quality_pref), url=ms0["url"])
-                        filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
-                        success, sent_msg = await download_and_upload(
-                            chat_id, ms0["url"], chosen_q.resolution,
-                            filename,
-                            f"{series.title} S{season}E{ep.number}",
-                            ep_msg, client,
-                                                        refresh_url=_ms_refresh(series.title, season, ep.number, chosen_q.resolution, series.slug),
-                            poster_url=series.poster or ms0.get("poster", ""),
-                            destination_channel_id=dest_channel_id,
+                # Source-tier order for batch downloads — owner-configurable
+                # via /source (default: AnimeDekho resolves first, direct
+                # scrapers remain the automatic fallback).
+                from bot.source_config import get_default_source, is_source
+                _def_src = await get_default_source()
+
+                async def _batch_multisource() -> None:
+                    """Fallback tier: direct-file MultiSource Manager."""
+                    nonlocal success, sent_msg, chosen_q, filename
+                    try:
+                        from extractors.multisource import multi_source_manager
+                        ms0 = await multi_source_manager.resolve_episode_stream(
+                            series_title=series.title,
+                            season=season,
+                            episode=ep.number,
+                            quality_pref=quality_pref,
                             series_slug=series.slug,
                         )
-                except Exception as e:
-                    log.warning("Batch Multi-Source first-try failed for ep %s: %s", ep.slug, e)
+                        if ms0 and ms0.get("url"):
+                            chosen_q = Quality(resolution=ms0.get("quality", quality_pref), url=ms0["url"])
+                            filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
+                            success, sent_msg = await download_and_upload(
+                                chat_id, ms0["url"], chosen_q.resolution,
+                                filename,
+                                f"{series.title} S{season}E{ep.number}",
+                                ep_msg, client,
+                                refresh_url=_ms_refresh(series.title, season, ep.number, chosen_q.resolution, series.slug),
+                                poster_url=series.poster or ms0.get("poster", ""),
+                                destination_channel_id=dest_channel_id,
+                                series_slug=series.slug,
+                            )
+                    except Exception as e:
+                        log.warning("Batch Multi-Source first-try failed for ep %s: %s", ep.slug, e)
 
-                # Fallback 1: AnimeDekho (now fallback, not primary)
-                if not success:
+                async def _batch_animedekho() -> None:
+                    """Default tier: AnimeDekho API server links."""
+                    nonlocal success, sent_msg, chosen_q, filename, candidates
                     try:
                         episode_data = await api.get_episode(ep.slug)
                         resolved = await _lazy_resolve_servers(episode_data.servers, quality_pref)
@@ -1335,6 +1372,15 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                     break
                     except Exception as e:
                         log.warning("Batch AnimeDekho fallback failed for ep %s: %s", ep.slug, e)
+
+                if is_source(_def_src, "AnimeDekho"):
+                    await _batch_animedekho()
+                    if not success:
+                        await _batch_multisource()
+                else:
+                    await _batch_multisource()
+                    if not success:
+                        await _batch_animedekho()
 
                 # Fallback 2: Secondary - AnimeDrive
                 if not success:

@@ -244,6 +244,77 @@ def main() -> int:
         print(f"[FAIL] i30 zip extraction: {_ze}")
         ok = False
 
+    # ── /source default-source feature (owner runtime switch) ────────────
+    try:
+        import asyncio as _ai
+        from bot.source_config import (
+            normalize_source, get_default_source, set_default_source,
+            DEFAULT_SOURCE, SOURCE_CATALOG,
+        )
+        ok &= check("src default is AnimeDekho", DEFAULT_SOURCE == "AnimeDekho")
+        ok &= check("src tolerant name matching",
+                    normalize_source("ANIME DRIVE") == "AnimeDrive"
+                    and normalize_source("adk") == "AnimeDekho"
+                    and normalize_source("toonflix") == "ToonFlix"
+                    and normalize_source("bogus") is None
+                    and normalize_source("") is None)
+        ok &= check("src catalog covers all extractors",
+                    set(n for n, _ in SOURCE_CATALOG) == {
+                        "AnimeDekho", "AnimeDubHindi", "ToonWorld4All", "RareAnimes",
+                        "DeadToons", "TOONo", "ToonAnime", "AnimeDrive", "ToonFlix"})
+        ok &= check("src default w/o db", _ai.run(get_default_source()) == "AnimeDekho")
+        try:
+            _ai.run(set_default_source("definitely-not-a-source"))
+            ok &= check("src rejects unknown source", False)
+        except ValueError:
+            ok &= check("src rejects unknown source", True)
+        init_txt = pathlib.Path("bot/handlers/__init__.py").read_text()
+        admin_txt = pathlib.Path("bot/handlers/admin.py").read_text()
+        cb_txt = pathlib.Path("bot/handlers/callbacks.py").read_text()
+        ms_txt = pathlib.Path("extractors/multisource.py").read_text()
+        ok &= check("src command registered",
+                    'filters.command(["source", "setsource"])' in init_txt and "cmd_source" in init_txt)
+        ok &= check("src command handler",
+                    "async def cmd_source" in admin_txt and "set_default_source" in admin_txt)
+        ok &= check("src episode tier ordering",
+                    "ad_is_default" in cb_txt and "_step_animedekho()" in cb_txt
+                    and "_needs_next_tier" in cb_txt)
+        ok &= check("src batch tier ordering",
+                    "_batch_animedekho" in cb_txt and "is_source(_def_src" in cb_txt)
+        ok &= check("src multisource default ordering", "get_default_source" in ms_txt)
+    except Exception as _se:
+        print(f"[FAIL] source feature: {_se}")
+        ok = False
+
+    # ── Thumbnail: upgraded Modern template renders 16:9 artwork ──────────
+    try:
+        import tempfile as _tf
+        from PIL import Image as _PILImage
+        from bot.thumbnail import generate_auto_thumbnail, list_available_templates
+        _thumb_out = os.path.join(_tf.gettempdir(), "adk_thumb_test.jpg")
+        _thumb = generate_auto_thumbnail(
+            title="Solo Leveling",
+            episode_info="S01 E05",
+            quality="1080p",
+            audio="Hindi Dub",
+            poster_path="",
+            output_path=_thumb_out,
+            bot_username="AnimeDekhoBot",
+            template_name="modern",
+        )
+        ok &= check("thumb modern renders", bool(_thumb) and os.path.exists(_thumb))
+        if _thumb and os.path.exists(_thumb):
+            with _PILImage.open(_thumb) as _im:
+                ok &= check("thumb is 1280x720", _im.size == (1280, 720), f"got {_im.size}")
+            ok &= check("thumb has real content", os.path.getsize(_thumb) > 20000,
+                        f"{os.path.getsize(_thumb)}B")
+            os.remove(_thumb)
+        ok &= check("thumb template list", list_available_templates() == [
+            "modern", "cinematic", "movie_gold", "neon_cyber", "minimal"])
+    except Exception as _te:
+        print(f"[FAIL] thumbnail render: {_te}")
+        ok = False
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 

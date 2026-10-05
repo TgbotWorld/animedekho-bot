@@ -311,6 +311,18 @@ class MultiSourceManager:
         if preferred_source:
             pref = preferred_source.strip().lower()
             ordered.sort(key=lambda kv: 0 if kv[0].lower() == pref else 1)
+        else:
+            # /source default: the owner-selected default source leads the
+            # extractor order whenever the caller has no explicit
+            # slug-registry preference (unknown names — e.g. AnimeDekho —
+            # leave the natural order untouched).
+            try:
+                from bot.source_config import get_default_source, _key as _skey
+                _def = _skey(await get_default_source())
+                if _def and _def != _skey("AnimeDekho"):
+                    ordered.sort(key=lambda kv: 0 if _skey(kv[0]) == _def else 1)
+            except Exception as _de:
+                log.debug("default source ordering skipped: %s", _de)
 
         exact_candidates: list[dict] = []
         unknown_candidates: list[dict] = []

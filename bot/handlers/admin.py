@@ -239,6 +239,68 @@ async def cmd_refreshalbums(client: Client, message: Message):
 
 
 @require_owner
+async def cmd_source(client: Client, message: Message):
+    """Show or change the default download source (runtime, no restart)."""
+    from bot.source_config import (
+        SOURCE_CATALOG,
+        get_default_source,
+        set_default_source,
+        normalize_source,
+    )
+    args = _parse_args(message)
+    current = await get_default_source()
+
+    if not args:
+        lines = [
+            "🎬 <b>Default Download Source</b>",
+            f"Current: <b>{htmlmod.escape(current)}</b>",
+            "",
+            "<b>Available sources:</b>",
+        ]
+        for name, desc in SOURCE_CATALOG:
+            mark = "  ⬅ <b>DEFAULT</b>" if name == current else ""
+            lines.append(f"• <code>{htmlmod.escape(name)}</code> — {desc}{mark}")
+        lines += [
+            "",
+            "Usage: <code>/source &lt;name&gt;</code>",
+            "The default source resolves <b>first</b> for every new download;",
+            "all other sources stay as automatic fallback. Changes apply instantly.",
+        ]
+        await message.reply_text("\n".join(lines), parse_mode=enums.ParseMode.HTML)
+        return
+
+    requested = args[0]
+    if not normalize_source(requested):
+        await message.reply_text(
+            f"❌ Unknown source <code>{htmlmod.escape(requested)}</code>.\n"
+            "Use <code>/source</code> to list the available sources.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    try:
+        new = await set_default_source(requested)
+    except Exception as e:
+        await message.reply_text(f"⚠️ Could not change default source: {e}")
+        return
+
+    if new == current:
+        await message.reply_text(
+            f"ℹ️ <code>{htmlmod.escape(new)}</code> is already the default source.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    await message.reply_text(
+        f"✅ <b>Default source changed</b>\n"
+        f"<code>{htmlmod.escape(current)}</code> → <b>{htmlmod.escape(new)}</b>\n\n"
+        f"New downloads now resolve from <b>{htmlmod.escape(new)}</b> first; "
+        "every other source remains as fallback. No restart needed.",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@require_owner
 async def cmd_delete(client: Client, message: Message):
     """Interactive delete — shows all downloaded series as buttons."""
     from bot.database import db

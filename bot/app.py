@@ -202,6 +202,7 @@ async def _on_start(client: Client):
                 BotCommand("ai", "Autonomous AI Agent"),
                 BotCommand("setai", "Configure AI model, key & persona"),
                 BotCommand("bypass", "Manually resolve a source URL (owner)"),
+                BotCommand("source", "Show / change default download source (owner)"),
                 BotCommand("help", "Show help message"),
                 BotCommand("adduser", "Approve a user"),
                 BotCommand("removeuser", "Remove a user"),

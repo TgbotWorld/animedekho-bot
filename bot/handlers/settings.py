@@ -89,6 +89,7 @@ COMMAND_CATEGORIES = {
         "• <code>/setai</code> — Configure AI Agent provider & model\n"
         "• <code>/delete &lt;slug&gt;</code> — Delete series from library\n"
         "• <code>/refreshalbums</code> — Re-sync channel posts with active style\n"
+        "• <code>/source</code> — Show / change the default download source\n"
         "• <code>/logs</code> — Download latest bot log file\n"
         "• <code>/errors</code> — View recent failed download errors"
     ),
