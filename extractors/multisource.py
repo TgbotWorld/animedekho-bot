@@ -268,6 +268,9 @@ class MultiSourceManager:
                 "resolved_url": curr_url,
                 "resolver_stage": f"{name} → {infer_provider(curr_url)} → Direct Media",
                 "poster": res.get("poster"),
+                # Referer matters for probes/downloads on gated hosts
+                # (HubCloud googleapis, ToonFlix worker proxy).
+                "referer": res.get("referer", ""),
             }
             if got_norm == "Unknown":
                 return entry, f"{name}: Unknown quality (verify post-download)", "unknown"
@@ -351,6 +354,11 @@ class MultiSourceManager:
             log.info("MultiSource: no candidates (%s)", "; ".join(diag_trail))
             return None
         best, health_diags = await select_fastest_healthy(pool)
+        # V3 #16 diagnostics: every candidate's health status in the log.
+        for d in health_diags:
+            log.info("Health check [%s] %s via %s: %s%s",
+                     d.get("quality"), d.get("source"), d.get("provider"),
+                     d.get("status"), f" ({d.get('error')})" if d.get("error") else "")
         if not best:
             log.info("MultiSource: all %d candidates unhealthy — failing (V3 #16)", len(pool))
             return None

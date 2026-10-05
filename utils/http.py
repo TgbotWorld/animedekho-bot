@@ -368,6 +368,11 @@ class HTTPClient:
             loop = asyncio.get_event_loop()
 
             def _do_get():
+                # Lazy init: this path previously used a possibly-None
+                # _cloudscraper and crashed with AttributeError.
+                if self._cloudscraper is None:
+                    import cloudscraper as _cs
+                    self._cloudscraper = _cs.create_scraper()
                 merged_headers = dict(DEFAULT_HEADERS)
                 if headers:
                     merged_headers.update(headers)
@@ -406,6 +411,10 @@ class HTTPClient:
             loop = asyncio.get_event_loop()
 
             def _do_post():
+                # Lazy init (same None-crash as get_with_redirects).
+                if self._cloudscraper is None:
+                    import cloudscraper as _cs
+                    self._cloudscraper = _cs.create_scraper()
                 merged_headers = dict(DEFAULT_HEADERS)
                 if headers:
                     merged_headers.update(headers)

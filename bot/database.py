@@ -1059,6 +1059,28 @@ class Database:
         """Set file auto-delete time in seconds (0 = disabled)."""
         await self.set_config("dlt_time", max(0, int(seconds)))
 
+    # ── Main Channel (posts must never silently disappear) ───────────
+
+    async def get_main_channel(self) -> int | None:
+        """Main channel id: explicit DB config, else settings fallback.
+
+        Previously schedule.py/admin.py called this method which never
+        existed → AttributeError swallowed → schedule posts never sent.
+        """
+        try:
+            mc = await self.get_config("main_channel", default=0)
+            if mc and str(mc).lstrip("-").isdigit() and int(mc):
+                return int(mc)
+        except Exception:
+            pass
+        try:
+            from config.settings import settings
+            if settings and settings.bot and settings.bot.main_channel:
+                return int(settings.bot.main_channel)
+        except Exception:
+            pass
+        return None
+
     # ── Dump / Storage Channel (OFF by default unless configured) ────
 
     async def get_dump_channel(self) -> int | None:

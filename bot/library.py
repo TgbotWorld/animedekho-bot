@@ -137,7 +137,15 @@ class LibraryManager:
         Sends a reply notification on new episodes (Issue #12).
         """
         if not self.channel:
-            return
+            # V3 #14: a mapped channel can still receive album posts even
+            # when the main channel is unset — check the mapping first.
+            try:
+                _map = await self.db.get_channel_mapping(series_slug, is_movie=is_movie)
+            except Exception:
+                _map = None
+            if not (_map or {}).get("channel_id"):
+                log.warning("save_to_library skipped for '%s': no main channel and no mapping", series_slug)
+                return
 
         async with _get_lock(series_slug):
             await self._save_locked(
@@ -512,7 +520,13 @@ class LibraryManager:
         Addresses Issue #12.
         """
         if not self.channel:
-            return
+            try:
+                _map = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
+            except Exception:
+                _map = None
+            if not (_map or {}).get("channel_id"):
+                log.warning("update_album skipped for '%s': no main channel and no mapping", series_slug)
+                return
 
         async with _get_lock(series_slug):
             cursor = self.db.files.find({"series_slug": series_slug})
@@ -535,8 +549,10 @@ class LibraryManager:
 
             mapping = await self.db.get_channel_mapping(series_slug, is_movie=is_movie, title=series_title)
             target_channel_id = self._target_channel(mapping)  # V3 #14
-            if not mapping or not mapping.get("channel_id"):
-                log.warning("Skipping album update for '%s': private channel is not mapped", series_slug)
+            if not target_channel_id:
+                # Unmapped series falls back to the main channel album —
+                # skipping here meant main-channel albums never updated.
+                log.warning("Skipping album update for '%s': no target channel resolved", series_slug)
                 return
 
             album_mode = await self.db.get_config("album_mode", default="channel")
@@ -813,9 +829,8 @@ class LibraryManager:
         Re-generate buttons for all existing series albums in the channel.
         Updates all channel posts to use newly assigned child worker bots!
         """
-        if not self.channel:
-            return 0
-
+        # V3 #14: per-album targets resolve via mapping even when the main
+        # channel is unset — don't bail out before the loop.
         cursor = self.db.library.find({"type": "album"})
         albums = await cursor.to_list(length=None)
         refreshed = 0
@@ -845,6 +860,8 @@ class LibraryManager:
                 is_movie = bool(a.get("is_movie", False) or "movie" in slug.lower())
                 mapping = await self.db.get_channel_mapping(slug, is_movie=is_movie, title=a.get("series_title", ""))
                 target_channel_id = self._target_channel(mapping)  # V3 #14
+                if not target_channel_id:
+                    continue  # nothing to target (no main channel, no mapping)
                 album_mode = await self.db.get_config("album_mode", default="channel")
                 post_style = await self.db.get_post_style()
 

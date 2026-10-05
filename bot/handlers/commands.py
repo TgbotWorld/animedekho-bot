@@ -413,6 +413,16 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     import html as htmlmod
     from utils.helpers import slug_to_title
     title = slug_to_title(series_slug)
+    # Prefer the real stored title: slug_to_title mangles names like
+    # "Ranma ½" (slug ranma-1-2) into "Ranma 1 2" (issue #30 caption).
+    try:
+        if db:
+            _doc = await db.files.find_one({"series_slug": series_slug})
+            _stored = (_doc or {}).get("series_title") or ""
+            if _stored and len(_stored.strip()) >= 3:
+                title = _stored.strip()
+    except Exception:
+        pass
     bot_me = getattr(client, "me", None)
     b_name = bot_me.username if bot_me and bot_me.username else "bot"
 

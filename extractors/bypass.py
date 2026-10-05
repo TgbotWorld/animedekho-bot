@@ -17,9 +17,10 @@ ever read or echoed.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,21 @@ def _parse_title_season_episode(url: str, html: str = "") -> tuple[str, int | No
     anime = ""
     season: int | None = None
     episode: int | None = None
+    # ToonWorld4All React pages embed authoritative metadata in __PROPS__
+    # (show/season/episode) — prefer it over URL slug guessing.
+    try:
+        props = _parse_tw4_props(html)
+        meta = (((props or {}).get("data") or {}).get("data") or {}).get("metadata") or {}
+        if meta.get("show"):
+            anime = str(meta["show"]).strip()[:120]
+            if meta.get("season") is not None:
+                season = int(meta["season"])
+            if meta.get("episode") is not None:
+                episode = int(meta["episode"])
+            if anime:
+                return anime, season, episode
+    except Exception:
+        pass
     try:
         path = urlparse(url).path.strip("/")
         slug = path.split("/")[-1] if path else ""
@@ -103,6 +119,10 @@ def _parse_title_season_episode(url: str, html: str = "") -> tuple[str, int | No
                 m3 = re.search(r"(?:episode|ep)[-_]?(\d+)", slug, re.I)
                 if m3:
                     episode = int(m3.group(1))
+        # Opaque redirect tokens (/redirect/<hex>) carry no title — never
+        # present the token itself as the anime name (issue #30 card).
+        if "/redirect/" in (url or "").lower() or re.fullmatch(r"[0-9a-f]{32,}", slug or ""):
+            slug = ""
         base = re.sub(
             r"(?i)[-_ ]?(season[-_ ]?\d+|s\d+e\d+|\d+x\d+|episode[-_ ]?\d+|ep[-_ ]?\d+|hindi|multi[-_ ]?audio|dubbed).*$",
             "",
@@ -111,7 +131,9 @@ def _parse_title_season_episode(url: str, html: str = "") -> tuple[str, int | No
         anime = re.sub(r"[-_]+", " ", base).strip().title()
     except Exception:
         pass
-    if html and not anime:
+    if html and not anime and "/redirect/" not in (url or "").lower():
+        # Redirect/interstitial pages carry only generic titles
+        # ("Redirecting…") — never present them as the anime name.
         try:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, "html.parser")
@@ -123,14 +145,58 @@ def _parse_title_season_episode(url: str, html: str = "") -> tuple[str, int | No
 
 
 async def _fetch_public(url: str) -> tuple[str, str]:
-    """GET a public page; returns (final_url, html). No auth/cookies sent."""
+    """GET a public page; returns (final_url, html). No auth/cookies sent.
+
+    Falls back to cloudscraper when the plain fetch is challenged/empty —
+    archive.toonworld4all.me and several providers sit behind Cloudflare
+    "Just a moment" interstitials that plain HTTP clients cannot read.
+    """
     from utils.http import http_client
+    last: tuple[str, str] = (url, "")
     try:
         final_url, html = await http_client.get_with_redirects(url)
-        return final_url, html or ""
+        last = (final_url, html or "")
+        if last[1] and len(last[1]) > 400 and not _is_challenge_html(last[1]):
+            return last
     except Exception as e:
         log.warning("bypass fetch failed for %s: %s", url[:100], e)
-        return url, ""
+
+    # Cloudflare fallback: sync cloudscraper in an executor (bounded).
+    def _cs() -> tuple[str, str]:
+        import cloudscraper
+        sess = cloudscraper.create_scraper()
+        r = sess.get(url, timeout=20, allow_redirects=True)
+        return str(r.url), r.text or ""
+
+    try:
+        loop = asyncio.get_running_loop()
+        fu, h = await loop.run_in_executor(None, _cs)
+        if h and len(h) > 200 and not _is_challenge_html(h):
+            return fu, h
+        if h and len(h) > len(last[1]):
+            last = (fu, h)
+    except Exception as e:
+        log.debug("cloudscraper fallback failed for %s: %s", url[:80], e)
+    return last
+
+
+def _parse_tw4_props(html: str) -> dict | None:
+    """Parse ``window.__PROPS__ = {...};`` from ToonWorld4All React pages.
+
+    Episode pages carry ``data.data.encodes[]`` (resolution × host × /redirect
+    link); redirect pages carry ``link.domain``+``link.hidden`` (the real
+    provider file URL) and ``destination`` (ad shortener — never used first).
+    """
+    if not html:
+        return None
+    m = re.search(r"window\.__PROPS__\s*=\s*(\{.*?\})\s*;", html, re.S)
+    if not m:
+        return None
+    try:
+        props = json.loads(m.group(1))
+        return props if isinstance(props, dict) else None
+    except Exception:
+        return None
 
 
 def _split_archive_vs_media(urls: list[str]) -> tuple[list[str], list[str]]:
@@ -379,8 +445,10 @@ async def _resolve_toonworld_url(
     seen: set[str] = set()
     # Live-discovered budget: a season page can list 30+ episode/zip links;
     # resolving every one sequentially takes minutes. Bound bypass attempts
-    # and prefer links matching the parsed episode.
-    budget = {"n": 6}
+    # and prefer links matching the parsed episode. Episode __PROPS__ pages
+    # need one fetch per provider file (qualities × hosts) — keep enough
+    # headroom for all qualities while staying bounded.
+    budget = {"n": 10}
 
     async def _bounded_bypass(href: str) -> str | None:
         if budget["n"] <= 0:
@@ -398,6 +466,134 @@ async def _resolve_toonworld_url(
         if "/zip/" in href.lower():
             return 2  # batch archives last; skipped below unless nothing else
         return 1
+
+    async def _resolve_hubcloud_target(tgt: str) -> str | None:
+        """HubCloud video/drive page → direct URL (None when dead/404)."""
+        try:
+            from extractors.animedrive import animedrive
+            loop = asyncio.get_running_loop()
+            tried = [tgt]
+            if "/video/" in tgt:
+                tried.append(tgt.replace("/video/", "/drive/"))
+            for u in tried:
+                direct = await loop.run_in_executor(
+                    None, animedrive._resolve_hubcloud, animedrive._get_scraper(), u
+                )
+                if direct:
+                    return direct
+        except Exception as he:
+            log.debug("hubcloud resolve failed for %s: %s", tgt[:80], he)
+        return None
+
+    async def _provider_target(redirect_url: str) -> str | None:
+        """archive /redirect/<token> → real provider file URL via __PROPS__."""
+        _, rhtml = await _fetch_public(redirect_url)
+        rp = _parse_tw4_props(rhtml)
+        if not rp:
+            return None
+        link = rp.get("link") or {}
+        dom, hid = str(link.get("domain") or ""), str(link.get("hidden") or "")
+        if dom and hid:
+            return dom.rstrip("/") + "/" + hid.lstrip("/")
+        return None
+
+    # Precise source-side failure reasons (set inside _props_resolution).
+    props_fail: list[str] = []
+
+    async def _props_resolution() -> None:
+        """V3 #11: structured extraction from React __PROPS__.
+
+        Episode pages: encodes[] × files[] → each /redirect → provider file
+        URL (quality + host preserved). Redirect pages: link.domain+hidden
+        directly. The ad-shortener ``destination`` (exe.io Turnstile) is never
+        used when the real provider link is present.
+
+        ``props_fail`` records precise source-side failures (e.g. an expired
+        provider file) so the caller reports the REAL reason instead of
+        walking into the exe.io ad wall.
+        """
+        props = _parse_tw4_props(html)
+        if not props:
+            return
+
+        # ── Redirect page: single provider target ─────────────────────
+        link = props.get("link")
+        if isinstance(link, dict) and link.get("domain") and not encodes_of(props):
+            tgt = str(link["domain"]).rstrip("/") + "/" + str(link.get("hidden") or "").lstrip("/")
+            provider = _infer_provider(tgt)
+            if "hubcloud" in tgt.lower():
+                direct = await _resolve_hubcloud_target(tgt)
+                if not direct:
+                    props_fail.append(
+                        f"Provider {provider} file expired — HTTP 404 at source "
+                        "(no mirror on this redirect token); try the episode link instead."
+                    )
+                    log.info("ToonWorld4All: redirect provider file dead at source: %s", tgt[:90])
+                    return
+                tgt = direct
+            if tgt and tgt.startswith("http") and is_valid_media_destination(tgt):
+                q = quality_pref if quality_pref and quality_pref.lower() != "auto" else "Unknown"
+                media_links.append({
+                    "quality": q, "url": tgt, "provider": provider,
+                    "requested_quality": quality_pref, "detected_quality": q,
+                    "verified_quality": q, "label": provider,
+                })
+                seen.add(tgt)
+            return
+
+        # ── Episode page: every quality × host, requested quality first ──
+        encs = encodes_of(props)
+        if not encs:
+            return
+        before_links = len(media_links)
+
+        def _qprio(e: dict) -> int:
+            return 0 if str(e.get("resolution") or "").lower() == str(quality_pref).lower() else 1
+
+        for enc in sorted(encs, key=_qprio):
+            if budget["n"] <= 0:
+                break
+            eq = str(enc.get("resolution") or "Unknown")
+            for f in (enc.get("files") or []):
+                if budget["n"] <= 0:
+                    break
+                budget["n"] -= 1
+                red = urljoin(page_url, str(f.get("link") or ""))
+                if not red.startswith("http"):
+                    continue
+                tgt = await _provider_target(red)
+                if not tgt:
+                    continue
+                provider = _infer_provider(tgt, str(f.get("host") or ""))
+                if "hubcloud" in tgt.lower():
+                    direct = await _resolve_hubcloud_target(tgt)
+                    if not direct:
+                        continue  # dead/404 HubCloud file → try next host
+                    tgt = direct
+                if not tgt.startswith("http") or not is_valid_media_destination(tgt):
+                    continue
+                if tgt in seen:
+                    continue
+                seen.add(tgt)
+                media_links.append({
+                    "quality": eq, "url": tgt, "provider": provider,
+                    "requested_quality": quality_pref, "detected_quality": eq,
+                    "verified_quality": eq, "label": str(f.get("host") or provider),
+                })
+        if len(media_links) == before_links:
+            props_fail.append(
+                "All provider files on this episode failed resolution "
+                "(expired/404/challenge at source)."
+            )
+
+    def encodes_of(props: dict) -> list:
+        try:
+            encs = ((props.get("data") or {}).get("data") or {}).get("encodes")
+            return encs if isinstance(encs, list) else []
+        except Exception:
+            return []
+
+    await _props_resolution()
 
     async def _refetch_and_extract(target: str, depth: int = 0) -> None:
         if depth > 2:
@@ -465,13 +661,18 @@ async def _resolve_toonworld_url(
                 "verified_quality": q, "label": "iframe",
             })
 
-    # If the input itself is an archive/redirect link, resolve first.
-    start = page_url
-    if "archive.toonworld4all" in page_url.lower() or "redirect" in page_url.lower() or is_shortener(page_url):
-        dest = await detect_and_bypass(page_url)
-        if dest and dest != page_url:
-            start = dest
-    await _refetch_and_extract(start, 0)
+    # Structured props extraction ran above; generic HTML scan only when it
+    # produced nothing (React pages expose no <a> download links anyway).
+    # When props already identified a dead provider, do NOT fall back to the
+    # generic shortener walk (exe.io Turnstile → misleading "bot challenge").
+    if not media_links and not props_fail:
+        # If the input itself is an archive/redirect link, resolve first.
+        start = page_url
+        if "archive.toonworld4all" in page_url.lower() or "redirect" in page_url.lower() or is_shortener(page_url):
+            dest = await detect_and_bypass(page_url)
+            if dest and dest != page_url:
+                start = dest
+        await _refetch_and_extract(start, 0)
     # Also scan the original page HTML for direct episode links.
     if not media_links and not archive_urls and html:
         soup0 = BeautifulSoup(html, "html.parser")
@@ -502,6 +703,8 @@ async def _resolve_toonworld_url(
                             "verified_quality": q, "label": label,
                         })
     note = "redirect→refetch→validate" if ("redirect" in page_url.lower() or "archive" in page_url.lower()) else "page-scan"
+    if props_fail and not media_links:
+        note = props_fail[0]
     return media_links, sorted(set(archive_urls)), note
 
 
@@ -610,7 +813,11 @@ async def resolve_bypass_url(url: str, quality_pref: str = "1080p") -> dict:
     # ── Stage: redirect chain ──────────────────────────────────────────
     curr = original_url
     try:
-        if is_shortener(curr) or "redirect" in curr.lower():
+        # archive.toonworld4all /redirect/<token> pages are NOT shorteners:
+        # generic-bypassing them walks into the exe.io ad wall. Fetch the
+        # page directly — its __PROPS__ carries the real provider link.
+        _is_archive = "archive.toonworld4all" in curr.lower()
+        if (is_shortener(curr) or "redirect" in curr.lower()) and not _is_archive:
             bypassed = await detect_and_bypass(curr)
             if bypassed and bypassed != curr:
                 curr = bypassed
@@ -645,9 +852,13 @@ async def resolve_bypass_url(url: str, quality_pref: str = "1080p") -> dict:
     result["stage"] = "validate"
     result["resolver_stage"] = f"{source} → validate"
     if not anime or len(anime) < 3:
-        result["error"] = "Could not validate anime title from URL/page — refusing to guess."
-        result["failure_reason"] = result["error"]
-        return result
+        # Archive /redirect/ targets embed no title/metadata — the props
+        # link itself is authoritative, so allow resolution to proceed
+        # (anime stays "—"; never guessed).
+        if not ((_parse_tw4_props(html) or {}).get("link")):
+            result["error"] = "Could not validate anime title from URL/page — refusing to guess."
+            result["failure_reason"] = result["error"]
+            return result
 
     # ── Stage: website-specific resolution (V3 #3 dispatch) ──────────
     result["stage"] = "resolve"
@@ -696,7 +907,12 @@ async def resolve_bypass_url(url: str, quality_pref: str = "1080p") -> dict:
         if not media_links and not archive_urls:
             # V3 #11: failure stage is the real stage, never "done".
             result["stage"] = "extract"
-            result["error"] = "No public download/media/archive links found on this page."
+            _fb = result.get("fallback_stage") or ""
+            if _fb.startswith("Provider") or _fb.startswith("All provider"):
+                # Precise source-side reason beats the generic message.
+                result["error"] = _fb
+            else:
+                result["error"] = "No public download/media/archive links found on this page."
             result["failure_reason"] = result["error"]
             return result
         result["stage"] = "done"

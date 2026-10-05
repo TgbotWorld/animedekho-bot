@@ -111,16 +111,18 @@ async def select_fastest_healthy(
     """
     if not candidates:
         return None, []
-    if not probe or len(candidates) == 1:
+    if not probe:
         diag = [{
             "source": c.get("source", "?"),
             "provider": c.get("provider", "?"),
             "quality": c.get("quality", "?"),
-            "status": "Unprobed (single)",
+            "status": "Unprobed (disabled)",
             "latency_ms": None,
             "error": "",
         } for c in candidates]
         return candidates[0], diag
+    # NOTE: single candidates are probed too — a lone dead/403 link must be
+    # visible in diagnostics instead of being selected blind.
     subset = candidates[:max_probe]
     results = await asyncio.gather(*[probe_url_health(c.get("url", ""), c.get("referer", "")) for c in subset])
     scored = []
@@ -158,7 +160,12 @@ async def select_fastest_healthy(
             "error": "",
         })
     if not scored:
-        return None, diags
+        # Everything probed dead. Attempting the first candidate still beats
+        # refusing outright: probes can false-negative (referer/UA gated
+        # hosts), and the downloader preflights + refreshes with exact
+        # diagnostics. Diagnostics keep the Dead statuses for the admin card.
+        log.info("MultiSource: all %d probed candidates unhealthy — attempting first anyway", len(candidates))
+        return candidates[0], diags
     scored.sort(key=lambda x: x[0])
     return scored[0][1], diags
 

@@ -168,9 +168,15 @@ class ChildBotManager:
         Get the child bot username assigned to this quality tier.
         Supports round-robin load balancing when multiple bots are assigned to the same quality.
         Returns username without '@' or None (falls back to main bot).
+
+        V3 #15: compound album labels ("1080p HQ x265", "480p 10-Bit",
+        "4K [1440p]") normalize to their base tier so routing still hits
+        the matching worker instead of silently falling back to main.
         """
         q_norm = quality.strip().lower()
-        is_4k = q_norm in ("4k", "2160p", "2160")
+        m = re.match(r"(2160p|1440p|1080p|720p|480p|360p|240p|4k)\b", q_norm)
+        q_base = m.group(1) if m else q_norm
+        is_4k = q_base in ("4k", "2160p", "2160")
 
         # Find matching candidates
         matching_bots: list[dict] = []
@@ -183,7 +189,7 @@ class ChildBotManager:
 
             if is_4k and bot_q in ("4k", "2160p", "2160", "uhd"):
                 matching_bots.append(doc)
-            elif bot_q == q_norm or (q_norm.replace("p", "") == bot_q.replace("p", "")):
+            elif bot_q == q_base or (q_base.replace("p", "") == bot_q.replace("p", "")):
                 matching_bots.append(doc)
             elif bot_q in ("all", "any"):
                 fallback_all_bots.append(doc)
@@ -193,8 +199,8 @@ class ChildBotManager:
             return None
 
         # Round-robin
-        idx = self._round_robin_indices.get(q_norm, 0) % len(pool)
-        self._round_robin_indices[q_norm] = idx + 1
+        idx = self._round_robin_indices.get(q_base, 0) % len(pool)
+        self._round_robin_indices[q_base] = idx + 1
         return pool[idx].get("username")
 
     async def _start_single_bot(self, doc: dict) -> bool:
@@ -418,6 +424,15 @@ class ChildBotManager:
 
         from utils.helpers import slug_to_title
         title = slug_to_title(series_slug)
+        # Prefer the real stored title (slug mangling: "½" → "1 2", issue #30).
+        try:
+            if db:
+                _doc = await db.files.find_one({"series_slug": series_slug})
+                _stored = (_doc or {}).get("series_title") or ""
+                if _stored and len(_stored.strip()) >= 3:
+                    title = _stored.strip()
+        except Exception:
+            pass
         from bot.auto_delete import auto_delete_service
 
         # Batch download / Get All request

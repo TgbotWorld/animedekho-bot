@@ -730,10 +730,27 @@ async def ffmpeg_download(
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
     download_job_manager.attach_process(job_id, proc)
     download_job_manager.attach_temp_file(job_id, output_path)
+
+    # Drain stderr continuously (avoids pipe deadlock) and keep a tail so
+    # failures log the REAL ffmpeg reason (HTTP 403, format errors, …).
+    from collections import deque
+    stderr_tail: deque = deque(maxlen=25)
+
+    async def _drain_stderr():
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                stderr_tail.append(line.decode("utf-8", "replace").strip()[-300:])
+        except Exception:
+            pass
+
+    drain_task = asyncio.create_task(_drain_stderr())
 
     last_edit = [0.0]
     start_time = time.time()
@@ -787,6 +804,10 @@ async def ffmpeg_download(
             await monitor_task
         except asyncio.CancelledError:
             pass
+        try:
+            await asyncio.wait_for(drain_task, timeout=2)
+        except Exception:
+            drain_task.cancel()
 
     success = os.path.exists(output_path) and os.path.getsize(output_path) > 0
     if success:
@@ -795,6 +816,10 @@ async def ffmpeg_download(
         # V3 #10: never fail silently — the final DM block shows diagnostics,
         # but the file log must carry the exact failing URL/quality too.
         log.warning("FFmpeg download failed (no output file): url=%s quality=%s", stream_url[:120], quality)
+        if stderr_tail:
+            log.warning("FFmpeg stderr tail: %s", " | ".join(
+                ln for ln in list(stderr_tail)[-6:] if ln and "frame=" not in ln
+            )[:600])
     return success
 
 
@@ -1110,6 +1135,88 @@ async def fix_or_verify_video_resolution(
 # ── Unified Media Downloader ──────────────────────────────────────────
 
 
+async def _maybe_unzip_download(path: str, progress_msg=None, title="", job_id: str | None = None) -> str:
+    """HubCloud/AnimeDrive sometimes serve ZIP-wrapped videos (HTTP header
+    ``application/x-zip``, ``PK\\x03\\x04`` magic). ffprobe on a ZIP fails with
+    "moov atom not found" and the bot wrongly rejected a perfectly good
+    download (issue #30). Extract the contained video and return its path;
+    returns the original path for non-ZIP files or on extraction failure.
+    """
+    try:
+        if not os.path.exists(path):
+            return path
+        import zipfile
+        if not zipfile.is_zipfile(path):
+            return path
+        log.info("Downloaded file is a ZIP archive — extracting: %s", os.path.basename(path))
+        if progress_msg:
+            try:
+                await progress_msg.edit_text(
+                    f"📦 <b>Extracting archive…</b>\n"
+                    f"┌ 📺 {title}\n"
+                    f"└ ⏳ Unpacking video file from ZIP",
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=cancel_markup_for(job_id),
+                )
+            except Exception:
+                pass
+        zf = zipfile.ZipFile(path)
+        member = None
+        for zi in zf.infolist():
+            if zi.is_dir():
+                continue
+            if zi.filename.lower().endswith((".mkv", ".mp4", ".webm", ".avi", ".mov", ".ts")):
+                member = zi
+                break
+        if member is None:
+            for zi in zf.infolist():
+                if not zi.is_dir():
+                    member = zi
+                    break
+        if member is None:
+            zf.close()
+            log.warning("ZIP archive contains no files: %s", os.path.basename(path))
+            return path
+
+        ext = os.path.splitext(member.filename)[1] or ".mkv"
+        out_path = os.path.splitext(path)[0] + ext
+        tmp_path = os.path.splitext(path)[0] + ".extracting" + ext
+
+        def _extract():
+            with zf.open(member) as src, open(tmp_path, "wb") as dst:
+                while True:
+                    if download_job_manager.is_job_cancelled(job_id):
+                        raise InterruptedError("cancelled during ZIP extraction")
+                    buf = src.read(8 * 1024 * 1024)
+                    if not buf:
+                        break
+                    dst.write(buf)
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, _extract)
+        finally:
+            zf.close()
+
+        if os.path.exists(path):
+            os.remove(path)
+        os.replace(tmp_path, out_path)
+        log.info("ZIP extraction complete: %s (%s)",
+                 os.path.basename(out_path), _format_size(os.path.getsize(out_path)))
+        return out_path
+    except InterruptedError:
+        try:
+            for leftover in (path + ".extracting" + os.path.splitext(path)[1],):
+                if os.path.exists(leftover):
+                    os.remove(leftover)
+        except Exception:
+            pass
+        return path
+    except Exception as e:
+        log.warning("ZIP extraction failed for %s: %s", os.path.basename(path), e)
+        return path
+
+
 async def download_media(
     stream_url: str,
     quality: str,
@@ -1176,6 +1283,8 @@ async def download_media(
         ".mp4" in stream_url.lower()
         or ".mkv" in stream_url.lower()
         or "googleusercontent" in stream_url
+        or ".googleapis.com" in stream_url          # storage.googleapis.com/... (extensionless)
+        or "pixeldrain" in stream_url               # /api/file/<id> (extensionless)
         or "instant_dl" in stream_url
         or "drive.google" in stream_url
     )
@@ -1216,6 +1325,25 @@ async def download_media(
         # V3 #10: exact failure diagnostics in file log (DM block covers user side).
         log.warning("download_media failed: [%s] %s (target=%s)", quality, stream_url[:120], target_url[:120])
     return ok
+
+
+def _worker_username_for_quality(q_label: str, fallback: str) -> str:
+    """V3 #15: worker username for a quality label.
+
+    Every fallback to the main bot is logged (no silent routing misses).
+    Compound labels ("1080p HQ x265") are normalized inside
+    ChildBotManager.get_bot_for_quality.
+    """
+    try:
+        from bot.child_bots import child_bot_manager
+        if child_bot_manager:
+            w = child_bot_manager.get_bot_for_quality(q_label)
+            if w:
+                return w.lstrip("@")
+            log.warning("V3 #15: no active worker for [%s] — falling back to main bot", q_label)
+    except Exception as e:
+        log.warning("V3 #15: worker lookup failed for [%s]: %s", q_label, e)
+    return fallback
 
 
 _GENRE_EMOJIS = {
@@ -1319,16 +1447,8 @@ async def _build_episode_caption_and_markup(
     bname = bot_me.username if bot_me and bot_me.username else "animedekho"
 
     def _worker_for(q_label: str) -> str:
-        """V3 #15: per-quality worker username, explicit fallback only."""
-        try:
-            from bot.child_bots import child_bot_manager
-            if child_bot_manager:
-                w = child_bot_manager.get_bot_for_quality(q_label)
-                if w:
-                    return w.lstrip("@")
-        except Exception:
-            pass
-        return bname
+        """V3 #15: per-quality worker username; every fallback is logged."""
+        return _worker_username_for_quality(q_label, bname)
 
     caption_lines = [
         f"✦ <b>{htmlmod.escape(s_title)}</b> ✦",
@@ -1550,6 +1670,12 @@ async def download_and_upload(
                 parse_mode=enums.ParseMode.HTML)
             return False, None
 
+        # ZIP-wrapped video (HubCloud application/x-zip) → extract before
+        # validation, else ffprobe rejects the archive ("moov atom not found").
+        extracted = await _maybe_unzip_download(output_path, progress_msg, title, job_id)
+        if extracted != output_path:
+            output_path = extracted
+
         # Video Integrity Validation (Issue #8 - Point 7)
         is_valid, val_err, meta = await validate_video_file(output_path)
         if not is_valid:
@@ -1724,7 +1850,21 @@ async def download_and_upload(
                 job_id=job_id,
             )
 
-        target_upload_chat = destination_channel_id or chat_id
+        # V3 #14 + issue #30: mapped channel → mapped channel; otherwise the
+        # MAIN channel still gets the post (never silently skip channel
+        # posting for private-chat downloads). chat_id itself only when no
+        # main channel is configured (or chat_id IS a group/channel).
+        target_upload_chat = destination_channel_id
+        if not target_upload_chat:
+            if chat_id > 0:
+                try:
+                    from bot.database import db as _db_main
+                    _main = await _db_main.get_main_channel() if _db_main else None
+                except Exception:
+                    _main = None
+                target_upload_chat = int(_main) if _main else chat_id
+            else:
+                target_upload_chat = chat_id
         await progress_msg.edit_text(
             f"📤 <b>Uploading to Telegram</b>\n"
             f"┌ 📺 {title}\n"
@@ -1878,8 +2018,9 @@ async def download_and_upload(
                     )
 
         user_file_msg = None
-        # If uploaded to dedicated channel and chat_id is user PM, send file to user via file_id
-        if destination_channel_id and chat_id != destination_channel_id:
+        # If uploaded somewhere other than the user's own chat (mapped/main
+        # channel), send the file to the user's PM too.
+        if target_upload_chat and chat_id != target_upload_chat and chat_id > 0:
             try:
                 fid = sent_msg.video.file_id if sent_msg.video else (sent_msg.document.file_id if sent_msg.document else None)
                 if fid:
@@ -1909,7 +2050,7 @@ async def download_and_upload(
                             )
             except Exception as ue:
                 log.warning("Forward/send to user chat %d failed: %s", chat_id, ue)
-        elif not destination_channel_id and chat_id > 0:
+        elif target_upload_chat == chat_id and chat_id > 0:
             user_file_msg = sent_msg
 
         # Auto-delete scheduling if delivered in user PM
@@ -1923,7 +2064,10 @@ async def download_and_upload(
                 ep_k = f"S{int(m_ep.group(1)):01d}E{int(m_ep.group(2)):02d}" if m_ep else ("movie" if is_movie else "all")
                 q_slug = quality.lower().replace(" ", "")
                 sec_param = encode_file_param(f"get_{series_slug}_{q_slug}_{ep_k}")
-                get_link = f"https://t.me/{bname}?start={sec_param}" if bname else ""
+                # V3 #15: recovery link must hit the quality's worker, not
+                # always the main bot (users were bounced to main here).
+                link_bot = _worker_username_for_quality(quality, bname) if bname else ""
+                get_link = f"https://t.me/{link_bot}?start={sec_param}" if link_bot else ""
                 await auto_delete_service.schedule_deletion(
                     client=client,
                     chat_id=chat_id,

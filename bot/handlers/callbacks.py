@@ -374,6 +374,77 @@ async def _handle_episode(q: CallbackQuery, ep_slug: str):
             await q.message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
 
 
+def _cache_record_is_dead(err: str) -> bool:
+    """True only when a cached file_id is provably gone from Telegram.
+
+    Type mismatches (video file_id sent as document) and flood/network
+    errors must NEVER purge a valid library record (issue #30: the old
+    document-only path deleted every valid video cache record).
+    """
+    e = (err or "").lower()
+    return any(k in e for k in (
+        "media_empty", "file_reference", "file_migrate",
+        "media_invalid", "message_invalid", "file_is_gone",
+    ))
+
+
+class _CachedSendError(Exception):
+    """Both media-type send attempts failed; carries BOTH error strings so
+    dead-file detection can see MEDIA_EMPTY/FILE_REFERENCE from either."""
+
+    def __init__(self, video_err, doc_err):
+        self.video_err = str(video_err)
+        self.doc_err = str(doc_err)
+        super().__init__(f"video: {self.video_err} | doc: {self.doc_err}")
+
+
+async def _send_cached_any(send_video, send_doc):
+    """Deliver a cached file_id trying BOTH media types.
+
+    Video file_ids cannot be sent via reply_document (client-side
+    "Expected DOCUMENT, got VIDEO file id" error) and vice versa — try
+    video first (uploads are usually video), fall back to document. The
+    caller decides record purging via _cache_record_is_dead(str(err)).
+    """
+    video_err = None
+    try:
+        return await send_video()
+    except Exception as e:
+        video_err = e
+    try:
+        return await send_doc()
+    except Exception as e_doc:
+        raise _CachedSendError(video_err, e_doc) from e_doc
+
+
+async def _real_series_title(series_slug: str, fallback: str = "") -> str:
+    """Resolve the REAL series title for captions/filenames/persistence.
+
+    slug_to_title() rebuilds the title from the URL slug and mangles names
+    like "Ranma ½" (slug ranma-1-2) into "Ranma 1 2" — issue #30 caption.
+    Authority order: AniList/animedekho API → stored DB record → slug guess.
+    """
+    if not series_slug:
+        return fallback
+    try:
+        _sd = await api.get_series(series_slug)
+        _t = getattr(_sd, "title", None) if _sd else None
+        if _t and len(str(_t).strip()) >= 3:
+            return str(_t).strip()
+    except Exception:
+        pass
+    try:
+        from bot.database import db as _db
+        if _db:
+            _doc = await _db.files.find_one({"series_slug": series_slug})
+            _t = (_doc or {}).get("series_title")
+            if _t and len(str(_t).strip()) >= 3:
+                return str(_t).strip()
+    except Exception:
+        pass
+    return fallback or slug_to_title(series_slug)
+
+
 async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str):
     """Handle single episode download — resolves servers and falls back across multi-source chain if needed."""
     chat_id = q.message.chat.id
@@ -405,7 +476,7 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     season = int(m.group(1)) if m else 1
     ep_num = int(m.group(2)) if m else 1
     series_slug = extract_series_slug(ep_slug) or ""
-    series_title = slug_to_title(series_slug) if series_slug else title
+    series_title = await _real_series_title(series_slug, title)
     episode_key = f"S{season:02d}E{ep_num:02d}" if season and ep_num else ""
 
     # ── Immediate Cache Check: Skip all resolution if already downloaded ──
@@ -417,16 +488,16 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             disp_title = f"{series_title or cached_doc.get('series_title', 'Anime')} {episode_key}"
             filename = make_episode_filename(series_title or cached_doc.get("series_title", "Anime"), season, ep_num, cached_q)
             try:
-                await q.message.reply_document(
-                    document=cached_doc["file_id"],
-                    file_name=filename,
-                    caption=f"📦 <b>{esc(disp_title)}</b> [{cached_q}]\n<i>⚡ From library — instant delivery!</i>",
-                    parse_mode=enums.ParseMode.HTML,
+                _cap = f"📦 <b>{esc(disp_title)}</b> [{cached_q}]\n<i>⚡ From library — instant delivery!</i>"
+                await _send_cached_any(
+                    lambda: q.message.reply_video(video=cached_doc["file_id"], caption=_cap, parse_mode=enums.ParseMode.HTML),
+                    lambda: q.message.reply_document(document=cached_doc["file_id"], file_name=filename, caption=_cap, parse_mode=enums.ParseMode.HTML),
                 )
                 return
             except Exception as e:
-                log.warning("Cached file delivery failed: %s", e)
-                await db.files.delete_one({"_id": cached_doc["_id"]})
+                log.warning("Cached file delivery failed (both media types): %s", e)
+                if _cache_record_is_dead(str(e)):
+                    await db.files.delete_one({"_id": cached_doc["_id"]})
 
     # Send immediate progress status message with cancel button (Issues #22 & #23)
     job_id = download_job_manager.create_job(user_id, title)
@@ -631,11 +702,10 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
         cached_fid = await db.get_cached_file(series_slug, primary_quality.resolution, episode_key)
         if cached_fid:
             try:
-                await q.message.reply_document(
-                    document=cached_fid,
-                    file_name=filename,
-                    caption=f"📦 <b>{esc(title)}</b> [{primary_quality.resolution}]\n<i>⚡ From library — instant delivery!</i>",
-                    parse_mode=enums.ParseMode.HTML,
+                _cap = f"📦 <b>{esc(title)}</b> [{primary_quality.resolution}]\n<i>⚡ From library — instant delivery!</i>"
+                await _send_cached_any(
+                    lambda: q.message.reply_video(video=cached_fid, caption=_cap, parse_mode=enums.ParseMode.HTML),
+                    lambda: q.message.reply_document(document=cached_fid, file_name=filename, caption=_cap, parse_mode=enums.ParseMode.HTML),
                 )
                 try:
                     await progress_msg.delete()
@@ -644,12 +714,13 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 download_job_manager.remove_job(job_id)
                 return
             except Exception as e:
-                log.warning("Cached file expired/deleted, removing from DB and re-downloading: %s", e)
-                await db.files.delete_one({
-                    "series_slug": series_slug,
-                    "quality": primary_quality.resolution,
-                    "episode_key": episode_key,
-                })
+                log.warning("Cached file delivery failed (both media types), re-downloading: %s", e)
+                if _cache_record_is_dead(str(e)):
+                    await db.files.delete_one({
+                        "series_slug": series_slug,
+                        "quality": primary_quality.resolution,
+                        "episode_key": episode_key,
+                    })
 
     # Get poster from cache — if not cached, fetch from API
     poster_url = _poster_cache.get(series_slug, "") if series_slug else ""
@@ -721,16 +792,16 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             cached_q = cached_doc.get("quality", quality_pref)
             filename = make_movie_filename(title, cached_q)
             try:
-                await q.message.reply_document(
-                    document=cached_doc["file_id"],
-                    file_name=filename,
-                    caption=f"📦 <b>{esc(title)}</b> [{cached_q}]\n<i>⚡ From library — instant delivery!</i>",
-                    parse_mode=enums.ParseMode.HTML,
+                _cap = f"📦 <b>{esc(title)}</b> [{cached_q}]\n<i>⚡ From library — instant delivery!</i>"
+                await _send_cached_any(
+                    lambda: q.message.reply_video(video=cached_doc["file_id"], caption=_cap, parse_mode=enums.ParseMode.HTML),
+                    lambda: q.message.reply_document(document=cached_doc["file_id"], file_name=filename, caption=_cap, parse_mode=enums.ParseMode.HTML),
                 )
                 return
             except Exception as e:
-                log.warning("Cached movie delivery failed: %s", e)
-                await db.files.delete_one({"_id": cached_doc["_id"]})
+                log.warning("Cached movie delivery failed (both media types): %s", e)
+                if _cache_record_is_dead(str(e)):
+                    await db.files.delete_one({"_id": cached_doc["_id"]})
 
     user_id = user.id if user else 0
     job_id = download_job_manager.create_job(user_id, title)
@@ -887,11 +958,10 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         cached_fid = await db.get_cached_file(movie_slug, primary_quality.resolution, "movie")
         if cached_fid:
             try:
-                await q.message.reply_document(
-                    document=cached_fid,
-                    file_name=filename,
-                    caption=f"📦 <b>{esc(title)}</b> [{primary_quality.resolution}]\n<i>⚡ From library — instant delivery!</i>",
-                    parse_mode=enums.ParseMode.HTML,
+                _cap = f"📦 <b>{esc(title)}</b> [{primary_quality.resolution}]\n<i>⚡ From library — instant delivery!</i>"
+                await _send_cached_any(
+                    lambda: q.message.reply_video(video=cached_fid, caption=_cap, parse_mode=enums.ParseMode.HTML),
+                    lambda: q.message.reply_document(document=cached_fid, file_name=filename, caption=_cap, parse_mode=enums.ParseMode.HTML),
                 )
                 try:
                     await progress_msg.delete()
@@ -900,12 +970,13 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                 download_job_manager.remove_job(job_id)
                 return
             except Exception as e:
-                log.warning("Cached movie file expired/deleted, removing from DB: %s", e)
-                await db.files.delete_one({
-                    "series_slug": movie_slug,
-                    "quality": primary_quality.resolution,
-                    "episode_key": "movie",
-                })
+                log.warning("Cached movie file delivery failed (both media types): %s", e)
+                if _cache_record_is_dead(str(e)):
+                    await db.files.delete_one({
+                        "series_slug": movie_slug,
+                        "quality": primary_quality.resolution,
+                        "episode_key": "movie",
+                    })
 
     if bot.logger.bot_logger:
         await bot.logger.bot_logger.log_download_start(
@@ -1109,22 +1180,28 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                 cached_fid = await db.get_cached_file(series.slug, quality_pref, ep_key)
                 if cached_fid:
                     try:
-                        await client.send_document(
-                            chat_id,
-                            document=cached_fid,
-                            file_name=make_episode_filename(series.title, season, ep.number, quality_pref),
-                            caption=f"📦 <b>{esc(series.title)} {ep_key}</b> [{quality_pref}]\n<i>⚡ From library — instant!</i>",
-                            parse_mode=enums.ParseMode.HTML,
+                        _cap = f"📦 <b>{esc(series.title)} {ep_key}</b> [{quality_pref}]\n<i>⚡ From library — instant!</i>"
+                        await _send_cached_any(
+                            lambda: client.send_video(chat_id, video=cached_fid, caption=_cap, parse_mode=enums.ParseMode.HTML),
+                            lambda: client.send_document(
+                                chat_id,
+                                document=cached_fid,
+                                file_name=make_episode_filename(series.title, season, ep.number, quality_pref),
+                                caption=_cap,
+                                parse_mode=enums.ParseMode.HTML,
+                            ),
                         )
                         completed += 1
                         skipped += 1
                         continue
-                    except Exception:
-                        await db.files.delete_one({
-                            "series_slug": series.slug,
-                            "quality": quality_pref,
-                            "episode_key": ep_key,
-                        })
+                    except Exception as e:
+                        log.warning("Batch cached delivery failed (both media types): %s", e)
+                        if _cache_record_is_dead(str(e)):
+                            await db.files.delete_one({
+                                "series_slug": series.slug,
+                                "quality": quality_pref,
+                                "episode_key": ep_key,
+                            })
 
             is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
             success = False
@@ -1478,8 +1555,16 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
         sent_msg = None
         chosen_quality = candidates[0][1]
 
-        lookup_title = slug_to_title(series_slug) if series_slug else title
+        lookup_title = await _real_series_title(series_slug, title)
         dest_channel_id = await _resolve_destination_channel(series_slug, lookup_title, poster_url or "")
+
+        # Parse S/E once — needed for stale-URL refresh closures below.
+        import re as _re
+        _s_num, _e_num = 1, 1
+        if episode_key:
+            _m = _re.match(r"S(\d+)E(\d+)", episode_key, _re.I)
+            if _m:
+                _s_num, _e_num = int(_m.group(1)), int(_m.group(2))
 
         attempted_sources: list[str] = []
         for attempt, (srv, quality) in enumerate(candidates, 1):
@@ -1500,6 +1585,14 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
 
             log.info("Downloading %s via %s [%s]", title, srv.name, quality.resolution)
             ref = "https://hubcloud.ist/" if "AnimeDrive" in srv.name else ("https://drive.toonflix.in/" if "ToonFlix" in srv.name else "")
+            # Stale-URL preflight/refresh: re-resolve from this candidate's
+            # own source so a dead signed link gets exactly one fresh retry.
+            if "AnimeDrive" in (srv.name or ""):
+                _refresh = _extractor_refresh("animedrive", lookup_title, _s_num, _e_num, quality.resolution)
+            elif "ToonFlix" in (srv.name or ""):
+                _refresh = _extractor_refresh("toonflix", lookup_title, _s_num, _e_num, quality.resolution)
+            else:
+                _refresh = _ms_refresh(lookup_title, _s_num, _e_num, quality.resolution, series_slug)
             success, sent_msg = await download_and_upload(
                 chat_id, quality.master_url or quality.url, quality.resolution, filename, title, progress_msg, client,
                 variant_url=quality.url,
@@ -1509,6 +1602,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 series_slug=series_slug,
                 is_movie=is_movie,
                 job_id=job_id,
+                refresh_url=_refresh,
             )
             if success:
                 break
@@ -1662,7 +1756,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                     try:
                         await library_manager.save_to_library(
                             series_slug=series_slug,
-                            series_title=slug_to_title(series_slug) if series_slug else title,
+                            series_title=await _real_series_title(series_slug, title),
                             quality=chosen_quality.resolution,
                             episode_key=episode_key or "movie",
                             file_id=file_id,
@@ -1679,7 +1773,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                     try:
                         await db.save_file(
                             series_slug=series_slug,
-                            series_title=slug_to_title(series_slug) if series_slug else title,
+                            series_title=await _real_series_title(series_slug, title),
                             quality=chosen_quality.resolution,
                             episode_key=episode_key or "movie",
                             file_id=file_id,

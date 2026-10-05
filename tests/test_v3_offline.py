@@ -188,6 +188,62 @@ def main() -> int:
     cb_src = pathlib.Path("bot/handlers/callbacks.py").read_text()
     ok &= check("dlfix refresh closures wired", cb_src.count("refresh_url=_") >= 9)
 
+    # ── Issue #30: archive __PROPS__ bypass, worker labels, main channel ──
+    from extractors.bypass import _parse_tw4_props, _is_challenge_html
+    ep_html = 'window.__PROPS__ = {"data":{"error":false,"data":{"metadata":{"show":"JoJo\'s Bizarre Adventure","season":3,"episode":4},"encodes":[{"resolution":"1080p","files":[{"host":"MEGA","link":"/redirect/abc","short":"mega.nz"}]}]}}};'
+    p = _parse_tw4_props(ep_html)
+    ok &= check("i30 props episode parse", p and p["data"]["data"]["encodes"][0]["resolution"] == "1080p")
+    ok &= check("i30 props redirect parse",
+                (_parse_tw4_props('window.__PROPS__ = {"destination":"https://exe.io/x","link":{"domain":"https://h/file/","hidden":"abc"}};') or {}).get("link", {}).get("hidden") == "abc")
+    ok &= check("i30 props None-safe", _parse_tw4_props("no props here") is None)
+    ok &= check("i30 cf challenge detected", _is_challenge_html("<title>Just a moment...</title>"))
+    from bot.child_bots import ChildBotManager
+    _cbm = ChildBotManager.__new__(ChildBotManager)
+    _cbm.bot_info_cache = {1: {"bot_id": 1, "quality": "1080p", "username": "w1080"}}
+    _cbm.active_clients = {1: object()}
+    _cbm._round_robin_indices = {}
+    ok &= check("i30 compound label routes to worker",
+                _cbm.get_bot_for_quality("1080p HQ x265") == "w1080")
+    ok &= check("i30 plain label still routes",
+                _cbm.get_bot_for_quality("1080p") == "w1080")
+    ok &= check("i30 unknown quality returns None",
+                _cbm.get_bot_for_quality("480p") is None)
+    from bot.database import Database
+    ok &= check("i30 db.get_main_channel exists", hasattr(Database, "get_main_channel"))
+    cb = pathlib.Path("bot/handlers/callbacks.py").read_text()
+    ok &= check("i30 real title helper wired", cb.count("await _real_series_title(") >= 4)
+    dl = pathlib.Path("bot/downloader.py").read_text()
+    ok &= check("i30 googleapis direct-file routing", '".googleapis.com" in dl')
+    ok &= check("i30 ffmpeg stderr captured", "stderr_tail" in dl and "FFmpeg stderr tail" in dl)
+    ok &= check("i30 main-channel upload fallback", "get_main_channel() if _db_main else None" in dl)
+    ok &= check("i30 worker recovery link", "_worker_username_for_quality(quality, bname)" in dl)
+    bp = pathlib.Path("extractors/bypass.py").read_text()
+    ok &= check("i30 archive props resolver", "_props_resolution" in bp and "_provider_target" in bp)
+    ok &= check("i30 cloudscraper fetch fallback", "create_scraper" in bp)
+    hp = pathlib.Path("extractors/health_probe.py").read_text()
+    ok &= check("i30 single candidates probed", 'if not probe:' in hp and "Unprobed (disabled)" in hp)
+
+    # ZIP-wrapped video (HubCloud application/x-zip) must extract before validation.
+    try:
+        import os, tempfile, zipfile, asyncio as _aio
+        from bot.downloader import _maybe_unzip_download
+        _td = tempfile.mkdtemp()
+        _zp = os.path.join(_td, "episode.mp4")
+        with zipfile.ZipFile(_zp, "w", zipfile.ZIP_DEFLATED) as _zf:
+            _zf.writestr("Solo [DeadToons] S1E01.mkv", b"FAKEVIDEO" * 4096)
+        _out = _aio.run(_maybe_unzip_download(_zp))
+        ok &= check("i30 zip extraction returns mkv",
+                    _out.endswith(".mkv") and os.path.exists(_out) and not os.path.exists(_zp)
+                    and os.path.getsize(_out) == 9 * 4096)
+        # non-zip passes through untouched
+        _np = os.path.join(_td, "plain.mp4")
+        open(_np, "wb").write(b"\x00\x01\x02not a zip")
+        _out2 = _aio.run(_maybe_unzip_download(_np))
+        ok &= check("i30 non-zip passthrough", _out2 == _np and os.path.exists(_np))
+    except Exception as _ze:
+        print(f"[FAIL] i30 zip extraction: {_ze}")
+        ok = False
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 
