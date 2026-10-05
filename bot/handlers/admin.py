@@ -269,7 +269,7 @@ async def cmd_source(client: Client, message: Message):
         await message.reply_text("\n".join(lines), parse_mode=enums.ParseMode.HTML)
         return
 
-    requested = args[0]
+    requested = " ".join(args)
     if not normalize_source(requested):
         await message.reply_text(
             f"❌ Unknown source <code>{htmlmod.escape(requested)}</code>.\n"
