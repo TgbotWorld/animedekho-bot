@@ -12,10 +12,10 @@
 
 <p>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.10%20%E2%80%A2%203.11%20%E2%80%A2%203.12%20%E2%80%A2%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
-  <a href="https://github.com/jrodr254/animedekho-bot"><img src="https://img.shields.io/badge/WZGram-MTProto%202GB%20Engine-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="WZGram"></a>
+  <a href="https://github.com/TgbotWorld/animedekho-bot"><img src="https://img.shields.io/badge/WZGram-MTProto%202GB%20Engine-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="WZGram"></a>
   <a href="https://mongodb.com"><img src="https://img.shields.io/badge/MongoDB-Async%20Motor-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB"></a>
   <a href="https://anilist.co"><img src="https://img.shields.io/badge/AniList-GraphQL%20Metadata-02A9FF?style=for-the-badge&logo=anilist&logoColor=white" alt="AniList"></a>
-  <a href="https://github.com/jrodr254/animedekho-bot/stargazers"><img src="https://img.shields.io/github/stars/jrodr254/animedekho-bot?style=for-the-badge&color=FF2EA6&labelColor=1a0533" alt="Stars"></a>
+  <a href="https://github.com/TgbotWorld/animedekho-bot/stargazers"><img src="https://img.shields.io/github/stars/TgbotWorld/animedekho-bot?style=for-the-badge&color=FF2EA6&labelColor=1a0533" alt="Stars"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-00E0FF?style=for-the-badge&labelColor=1a0533" alt="License"></a>
 </p>
 
@@ -304,7 +304,7 @@ cp .env.example .env
 <br>
 
 ```bash
-git clone https://github.com/jrodr254/animedekho-bot.git
+git clone https://github.com/TgbotWorld/animedekho-bot.git
 cd animedekho-bot
 cp .env.example .env        # fill in your values
 docker compose up -d --build
@@ -319,7 +319,7 @@ Ships with the **VidStream API sidecar** wired in automatically. `ffmpeg` + `N_m
 <br>
 
 ```bash
-git clone https://github.com/jrodr254/animedekho-bot.git
+git clone https://github.com/TgbotWorld/animedekho-bot.git
 cd animedekho-bot
 bash setup.sh
 ```
@@ -343,7 +343,7 @@ Installs Docker, asks for your credentials interactively, builds the image and l
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/jrodr254/animedekho-bot.git
+git clone https://github.com/TgbotWorld/animedekho-bot.git
 cd animedekho-bot
 
 # 2. Create and activate a virtual environment
