@@ -1033,6 +1033,7 @@ class Database:
                 return int(fsub) if str(fsub).lstrip("-").isdigit() else str(fsub)
         except Exception:
             pass
+        from config.settings import settings  # was referenced without import -> NameError
         return settings.bot.main_channel or None
 
     async def set_fsub_channel(self, channel: int | str | None):

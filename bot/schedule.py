@@ -6,11 +6,14 @@ import logging
 import re
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import aiohttp
 
 from bot.telegram import enums
 from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+if TYPE_CHECKING:  # `Client` is only used in annotations (safe under future-import)
+    from bot.telegram import Client
 
 log = logging.getLogger(__name__)
 

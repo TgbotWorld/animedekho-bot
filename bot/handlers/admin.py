@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import html as htmlmod
+from datetime import datetime, timezone
+from pathlib import Path
 from bot.telegram import Client, enums
 from bot.telegram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -1465,6 +1467,27 @@ async def cmd_endsticker(client: Client, message: Message):
         )
         return
 
+    # Install from a replied sticker FIRST — same order as /setthumb and
+    # /thumblogo. (Checking `not args` first made the documented
+    # "reply to a sticker" flow unreachable.)
+    rep = message.reply_to_message
+    st = getattr(rep, "sticker", None) if rep else None
+    file_id = getattr(st, "file_id", None) if st else None
+
+    if file_id:
+        if db:
+            await db.set_config(_EOS_KEY, file_id)
+        try:
+            await message.reply_sticker(sticker=file_id)
+        except Exception:
+            pass
+        await message.reply_text(
+            "✅ <b>END OF SEASON sticker installed.</b>\n\n"
+            "It will be posted to the series channel after a season's batch finishes.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
     if not args:
         current = await _get_end_of_season_sticker()
         if current:
@@ -1488,24 +1511,8 @@ async def cmd_endsticker(client: Client, message: Message):
             )
         return
 
-    rep = message.reply_to_message
-    file_id = rep.sticker.file_id if rep and rep.sticker else None
-    if not file_id:
-        await message.reply_text(
-            "⚠️ <b>Please reply to a sticker with:</b> <code>/endsticker</code>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    if db:
-        await db.set_config(_EOS_KEY, file_id)
-    try:
-        await message.reply_sticker(sticker=file_id)
-    except Exception:
-        pass
     await message.reply_text(
-        "✅ <b>END OF SEASON sticker installed.</b>\n\n"
-        "It will be posted to the series channel after a season's batch finishes.",
+        "⚠️ <b>Please reply to a sticker with:</b> <code>/endsticker</code>",
         parse_mode=enums.ParseMode.HTML,
     )
 
@@ -1577,7 +1584,25 @@ async def cmd_thumblogo(client: Client, message: Message):
         await message.reply_text("✅ Logo removed — the monogram tile is back.", parse_mode=enums.ParseMode.HTML)
         return
 
-    if not args:
+    # Install from the replied message FIRST — same order as /setthumb.
+    # (Checking `not args` before this made the documented "reply to an image"
+    # flow unreachable: a bare reply always fell through to the status view.)
+    rep = message.reply_to_message
+    media = None
+    if rep:
+        if rep.photo:
+            media = rep.photo.file_id
+        elif rep.document and rep.document.mime_type and rep.document.mime_type.startswith("image/"):
+            media = rep.document.file_id
+    if not media and args:
+        await message.reply_text(
+            "⚠️ <b>Please reply to a PNG/JPG with:</b> <code>/thumblogo</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if not media:
+        # Status / preview view (no image was replied to and no args given).
         if current and os.path.exists(current):
             try:
                 await message.reply_photo(
@@ -1592,21 +1617,6 @@ async def cmd_thumblogo(client: Client, message: Message):
             "ℹ️ <b>No logo installed.</b>\n\n"
             "<b>Set:</b> reply to a PNG/JPG with <code>/thumblogo</code>\n"
             "<b>Clear:</b> <code>/thumblogo clear</code>",
-            parse_mode=enums.ParseMode.HTML,
-        )
-        return
-
-    # Install from the replied message.
-    rep = message.reply_to_message
-    media = None
-    if rep:
-        if rep.photo:
-            media = rep.photo.file_id
-        elif rep.document and rep.document.mime_type and rep.document.mime_type.startswith("image/"):
-            media = rep.document.file_id
-    if not media:
-        await message.reply_text(
-            "⚠️ <b>Please reply to a PNG/JPG with:</b> <code>/thumblogo</code>",
             parse_mode=enums.ParseMode.HTML,
         )
         return

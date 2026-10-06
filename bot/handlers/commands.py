@@ -189,6 +189,9 @@ async def start_callback(client: Client, query):
 
 @require_approved
 async def cmd_help(client: Client, message: Message):
+    # Local import: `settings` was referenced without ever being imported,
+    # which made /help raise NameError for every user (issue #33 finding).
+    from config.settings import settings
     is_owner_user = message.from_user and message.from_user.id == settings.bot.owner_id
     owner_help = (
         "\n\n<b>Owner & Admin Commands:</b>\n"

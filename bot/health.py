@@ -384,6 +384,7 @@ async def format_health_dashboard(main_client: Client) -> tuple[str, InlineKeybo
 
 async def format_download_errors_view(limit: int = 10) -> tuple[str, InlineKeyboardMarkup]:
     """Build detailed view of logged download failures."""
+    db = _get_db()  # V3 #13: was referenced with no binding -> NameError on /errors
     if not db:
         return "⚠️ Database not initialized.", InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="health:back")]])
 

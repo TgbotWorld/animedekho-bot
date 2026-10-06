@@ -586,6 +586,33 @@ def main() -> int:
         _apsrc = _pl2.Path("bot/app.py").read_text()
         ok &= check("i33 branding restored on boot",
                     "thumb_brand_username" in _apsrc and "thumb_brand_logo_path" in _apsrc)
+
+        # Runtime (not just text) checks — a static grep passed while the
+        # helper itself raised NameError on every call.
+        from bot.handlers.admin import _brand_logo_path
+        _bp = _brand_logo_path()
+        ok &= check("i33 _brand_logo_path resolves without NameError",
+                    isinstance(_bp, str) and _bp.endswith("data/thumb_brand_logo.png"), str(_bp))
+        _asrc2 = _pl2.Path("bot/handlers/admin.py").read_text()
+        _head15 = "\n".join(_asrc2.splitlines()[:15])
+        ok &= check("i33 admin.py imports Path + datetime",
+                    "from pathlib import Path" in _head15
+                    and "from datetime import datetime, timezone" in _head15)
+
+        # Repo-wide: no handler module may reference an undefined name — that
+        # was how /help stayed broken (NameError: settings) unnoticed.
+        try:
+            import pyflakes  # noqa: F401
+            import subprocess as _sp
+            _out = _sp.run([sys.executable, "-m", "pyflakes", "bot/", "utils/", "api/", "extractors/"],
+                           capture_output=True, text=True, cwd=str(pathlib.Path.cwd()))
+            import re as _re
+            _undef = [ln for ln in _out.stdout.splitlines()
+                      if _re.search(r"undefined name '", ln)]
+            ok &= check("no undefined names (pyflakes)", not _undef,
+                        "; ".join(_undef[:5]))
+        except ImportError:
+            print("[SKIP] pyflakes not installed — undefined-name audit skipped")
         # No template class may be left registered besides 'streaming'.
         _tsrc = _pl2.Path("bot/thumbnail.py").read_text()
         _regs = [ln for ln in _tsrc.splitlines() if ln.startswith("@register_template")]
@@ -702,6 +729,104 @@ def main() -> int:
         finally:
             _eos.get_end_of_season_sticker = _orig_get
 
+        # ── gate_prompt: the viewer-facing prompt from the demo video ──────
+        from bot import linkgate as _lg
+        from config.settings import settings as _settings
+
+        class _GMe:
+            username = "AnimeDekhoBot"
+
+        class _GCli:
+            me = _GMe()
+
+        _g_on, _g_mem, _g_inv = _lg.get_gate_channel, _lg._is_member, _lg._invite_link
+
+        async def _gate_on():
+            return -1001112223334
+
+        async def _not_member(c, ch, uid):
+            return False
+
+        async def _is_member_yes(c, ch, uid):
+            return True
+
+        async def _req_link(c, ch, uid):
+            return "https://t.me/+GATEREQ", "✋ REQUEST TO JOIN"
+
+        async def _plain_lbl(c, ch, uid):
+            return "https://t.me/+GATETIMER", "📢 JOIN CHANNEL"
+
+        async def _no_link(c, ch, uid):
+            return "", ""
+
+        _stranger = 987654321
+        try:
+            from bot.auth import is_owner as _isown
+            ok &= check("i33 test stranger is not an owner",
+                        not _isown(_stranger) and _isown(_settings.bot.owner_id))
+
+            # Gate off ⇒ never blocks.
+            ok &= check("i33 gate_prompt off => through",
+                        asyncio.run(_lg.gate_prompt(_GCli(), _stranger, "solo", 1)) is None)
+            ok &= check("i33 gate_prompt without a user id => through",
+                        asyncio.run(_lg.gate_prompt(_GCli(), 0, "solo", 1)) is None)
+
+            _lg.get_gate_channel = _gate_on
+            _lg._is_member = _not_member
+            _lg._invite_link = _req_link
+            _out = asyncio.run(_lg.gate_prompt(_GCli(), _stranger, "solo-leveling", 2))
+            ok &= check("i33 gate_prompt blocks a non-member", _out is not None)
+            if _out:
+                _txt, _kb = _out
+                _rows = _kb.inline_keyboard
+                ok &= check("i33 prompt headline matches the demo",
+                            "HERE IS YOUR LINK" in _txt
+                            and "CLICK BELOW TO PROCEED" in _txt, _txt[:90])
+                ok &= check("i33 prompt is REQUEST TO JOIN + TRY AGAIN",
+                            len(_rows) == 2
+                            and _rows[0][0].text == "✋ REQUEST TO JOIN"
+                            and _rows[1][0].text == "🔄 TRY AGAIN",
+                            str([b.text for r in _rows for b in r]))
+                _retry = _rows[1][0].url
+                ok &= check("i33 TRY AGAIN deep-links back to the content",
+                            "?start=" in _retry and decode_gate_param(
+                                decode_file_param(_retry.split("start=")[1]))
+                            == ("solo-leveling", 2), _retry)
+
+            # Already a member ⇒ straight through.
+            _lg._is_member = _is_member_yes
+            ok &= check("i33 a member is straight through",
+                        asyncio.run(_lg.gate_prompt(_GCli(), _stranger, "solo", 1)) is None)
+
+            # Owner bypass.
+            _lg._is_member = _not_member
+            ok &= check("i33 owner bypasses the gate",
+                        asyncio.run(_lg.gate_prompt(_GCli(), _settings.bot.owner_id,
+                                                    "solo", 1)) is None)
+
+            # Whatever label the configured mode picked is what the user sees.
+            _lg._invite_link = _plain_lbl
+            _out2 = asyncio.run(_lg.gate_prompt(_GCli(), _stranger, "solo", 1))
+            ok &= check("i33 mode's button label is surfaced",
+                        _out2 is not None
+                        and _out2[1].inline_keyboard[0][0].text == "📢 JOIN CHANNEL",
+                        str(_out2 and [b.text for r in _out2[1].inline_keyboard
+                                       for b in r]))
+
+            # No invite available ⇒ still offers TRY AGAIN, never a dead end.
+            _lg._invite_link = _no_link
+            _out3 = asyncio.run(_lg.gate_prompt(_GCli(), _stranger, "solo", 1))
+            ok &= check("i33 gate never dead-ends without an invite",
+                        _out3 is not None
+                        and "Could Not Generate An Invite Link" in _out3[0]
+                        and _out3[1].inline_keyboard[0][0].text == "🔄 TRY AGAIN",
+                        str(_out3 and [b.text for r in _out3[1].inline_keyboard
+                                       for b in r]))
+        finally:
+            _lg.get_gate_channel = _g_on
+            _lg._is_member = _g_mem
+            _lg._invite_link = _g_inv
+
         # Commands registered + handlers exist.
         _hsrc = _pl3.Path("bot/handlers/__init__.py").read_text()
         ok &= check("i33 linkgate registered",
@@ -711,10 +836,133 @@ def main() -> int:
         _asrc = _pl3.Path("bot/handlers/admin.py").read_text()
         ok &= check("i33 linkgate handler exists", "async def cmd_linkgate" in _asrc)
         ok &= check("i33 endsticker handler exists", "async def cmd_endsticker" in _asrc)
-        ok &= check("i33 endsticker validates sticker reply",
-                    "rep.sticker.file_id" in _asrc)
         ok &= check("i33 mapchannel advertises the sticker prompt",
                     "endsticker" in _asrc.split("Channel Mapped Successfully")[1][:1400])
+
+        # ── Reply-first install flows, exercised for real ──────────────────
+        # A status branch placed before the reply check made the documented
+        # "reply to an image/sticker" flow unreachable (it always answered
+        # with the status view instead of installing).
+        import tempfile as _tf
+        import types as _otypes
+        import bot.handlers.admin as _adm
+        from config import Config as _Cfg
+
+        class _Rep:
+            def __init__(self, kind=""):
+                self.photo = None
+                self.document = None
+                self.sticker = None
+                if kind == "photo":
+                    self.photo = _otypes.SimpleNamespace(file_id="FAKE_PHOTO_ID")
+                elif kind == "sticker":
+                    self.sticker = _otypes.SimpleNamespace(file_id="FAKE_STICKER_ID")
+
+        class _Msg:
+            def __init__(self, text, rep=None):
+                self.text = text
+                self.reply_to_message = rep
+                self.from_user = None
+                self.replies, self.photos, self.stickers = [], [], []
+
+            async def reply_text(self, text, **kw):
+                self.replies.append(text)
+
+            async def reply_photo(self, photo=None, caption=None, **kw):
+                self.photos.append(photo)
+                self.replies.append(caption or "")
+
+            async def reply_sticker(self, sticker=None, **kw):
+                self.stickers.append(sticker)
+
+        class _DLClient:
+            async def download_media(self, media, file_name=None, **kw):
+                from PIL import Image as _PImg
+                _PImg.new("RGBA", (64, 64), (17, 24, 39, 255)).save(file_name)
+                return file_name
+
+        # `@require_owner` uses functools.wraps, which sets __wrapped__.
+        # (functools.unwrap is absent from this Python build.)
+        def _raw(fn):
+            seen = 0
+            while hasattr(fn, "__wrapped__") and seen < 5:
+                fn = fn.__wrapped__
+                seen += 1
+            return fn
+        _raw_logo = _raw(_adm.cmd_thumblogo)
+        _raw_eos = _raw(_adm.cmd_endsticker)
+
+        _tmpdir = _tf.mkdtemp(prefix="i33_logo_")
+        _tmp_logo = str(_pl3.Path(_tmpdir) / "logo.png")
+        _orig_path_fn = _adm._brand_logo_path
+        _orig_logo_cfg = getattr(_Cfg, "THUMB_BRAND_LOGO", "")
+        _adm._brand_logo_path = lambda: _tmp_logo
+        _Cfg.THUMB_BRAND_LOGO = ""
+        # These commands write config when a DB is attached — keep the run
+        # offline so the live database is never touched by the fixture.
+        import bot.database as _dbmod
+        _saved_db = _dbmod.db
+        _dbmod.db = None
+        try:
+            # 1. THE BUG: bare /thumblogo replying to an image must install.
+            _m1 = _Msg("/thumblogo", _Rep("photo"))
+            asyncio.run(_raw_logo(_DLClient(), _m1))
+            ok &= check("i33 /thumblogo installs from a replied image",
+                        any("Logo installed" in r for r in _m1.replies),
+                        str(_m1.replies))
+            ok &= check("i33 /thumblogo persists the installed path",
+                        _Cfg.THUMB_BRAND_LOGO == _tmp_logo
+                        and _pl3.Path(_tmp_logo).exists(),
+                        _Cfg.THUMB_BRAND_LOGO)
+
+            # 2. Bare /thumblogo with nothing replied → previews the logo.
+            _m2 = _Msg("/thumblogo")
+            asyncio.run(_raw_logo(_DLClient(), _m2))
+            ok &= check("i33 /thumblogo bare previews an installed logo",
+                        any("Current thumbnail logo" in r for r in _m2.replies),
+                        str(_m2.replies) + str(_m2.photos))
+
+            # 2b. …and says so when there is nothing to preview.
+            _Cfg.THUMB_BRAND_LOGO = ""
+            _m2b = _Msg("/thumblogo")
+            asyncio.run(_raw_logo(_DLClient(), _m2b))
+            ok &= check("i33 /thumblogo bare (no logo) shows status",
+                        any("No logo installed" in r for r in _m2b.replies),
+                        str(_m2b.replies))
+
+            # 3. Args but no media reply → explicit usage error.
+            _m3 = _Msg("/thumblogo something")
+            asyncio.run(_raw_logo(_DLClient(), _m3))
+            ok &= check("i33 /thumblogo with args but no reply asks for one",
+                        any("Please reply to a PNG/JPG" in r for r in _m3.replies),
+                        str(_m3.replies))
+
+            # 4. Bare /endsticker replying to a sticker must install.
+            _e1 = _Msg("/endsticker", _Rep("sticker"))
+            asyncio.run(_raw_eos(None, _e1))
+            ok &= check("i33 /endsticker installs from a replied sticker",
+                        any("END OF SEASON sticker installed" in r for r in _e1.replies),
+                        str(_e1.replies))
+
+            # 5. Bare /endsticker with nothing replied → status view.
+            _e2 = _Msg("/endsticker")
+            asyncio.run(_raw_eos(None, _e2))
+            ok &= check("i33 /endsticker bare (no reply) shows status",
+                        any("No END OF SEASON sticker" in r for r in _e2.replies),
+                        str(_e2.replies))
+
+            # 6. Args but no sticker reply → explicit usage error.
+            _e3 = _Msg("/endsticker nope")
+            asyncio.run(_raw_eos(None, _e3))
+            ok &= check("i33 /endsticker with args but no reply asks for one",
+                        any("Please reply to a sticker" in r for r in _e3.replies),
+                        str(_e3.replies))
+        finally:
+            _adm._brand_logo_path = _orig_path_fn
+            _Cfg.THUMB_BRAND_LOGO = _orig_logo_cfg
+            _dbmod.db = _saved_db
+            import shutil as _sh
+            _sh.rmtree(_tmpdir, ignore_errors=True)
 
         # /start routes the dl_ family.
         _csrc = _pl3.Path("bot/handlers/commands.py").read_text()

@@ -344,6 +344,7 @@ class ChildBotManager:
 
         @client.on_message(filters.command("status") & filters.private)
         async def _child_status(c: Client, m: Message):
+            from bot.auth import is_owner  # was referenced without import -> NameError
             user = m.from_user
             if user and not is_owner(user.id):
                 await m.reply_text("⛔ Owner only command.")
