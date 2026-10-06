@@ -44,16 +44,21 @@ def encode_file_param(param: str) -> str:
     return base64.urlsafe_b64encode(param.encode("utf-8")).decode("utf-8").rstrip("=")
 
 
+#: Deep-link parameter families this bot accepts (file requests, series-channel
+#: joins, and issue #33's gated-download links).
+_PARAM_PREFIXES = ("get_", "join_", "dl_")
+
+
 def decode_file_param(param: str) -> str:
-    """Decode a base64 URL-safe parameter. Returns original if already raw 'get_' or if decoding fails."""
+    """Decode a base64 URL-safe parameter. Returns original if already raw or if decoding fails."""
     if not param:
         return ""
-    if param.startswith("get_") or param.startswith("join_"):
+    if param.startswith(_PARAM_PREFIXES):
         return param
     try:
         padded = param + "=" * ((4 - len(param) % 4) % 4)
         decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
-        if decoded.startswith("get_") or decoded.startswith("join_"):
+        if decoded.startswith(_PARAM_PREFIXES):
             return decoded
     except Exception:
         pass

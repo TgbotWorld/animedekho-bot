@@ -91,32 +91,9 @@ class LibraryManager:
         return self.channel
 
     def _bot_username_for_quality(self, quality: str) -> str:
-        """V3 #15: per-quality worker bot username via
-        ChildBotManager.get_bot_for_quality(). Falls back to the main bot
-        ONLY when explicitly allowed (Config.QUALITY_BUTTON_FALLBACK_TO_MAIN,
-        default True) — and never silently (warning is logged)."""
-        q = (quality or "").strip() or "auto"
-        try:
-            from bot.child_bots import child_bot_manager
-            mgr = child_bot_manager
-            if mgr:
-                worker = mgr.get_bot_for_quality(q)
-                if worker:
-                    return worker.lstrip("@")
-        except Exception as e:
-            log.debug("Worker lookup failed for quality %s: %s", q, e)
-        try:
-            from config import Config
-            allow_fallback = bool(getattr(Config, "QUALITY_BUTTON_FALLBACK_TO_MAIN", True))
-        except Exception:
-            allow_fallback = True
-        if allow_fallback:
-            log.warning("V3 #15: no active worker for quality %s — explicit fallback to main bot @%s",
-                        q, self.bot_username)
-            return self.bot_username
-        log.warning("V3 #15: no active worker for quality %s and fallback disabled — using main bot (button kept, delivery may fail)",
-                    q)
-        return self.bot_username
+        """V3 #15: per-quality worker bot username (delegates to the shared
+        module-level helper the issue #33 link gate also uses)."""
+        return bot_username_for_quality(quality, self.bot_username)
 
     async def save_to_library(
         self,
@@ -330,6 +307,7 @@ class LibraryManager:
         )
         markup = self._build_album_buttons(
             series_slug, sorted_eps, sorted_qualities, is_movie, channel_mapping=mapping, album_mode=album_mode,
+            **await self._album_gate_kwargs(sorted_eps, is_movie),
         )
 
         # Check if album message already exists for this series
@@ -564,6 +542,7 @@ class LibraryManager:
             )
             markup = self._build_album_buttons(
                 series_slug, sorted_eps, sorted_qualities, is_movie, channel_mapping=mapping, album_mode=album_mode,
+                **await self._album_gate_kwargs(sorted_eps, is_movie),
             )
 
             now = datetime.now(timezone.utc).isoformat()
@@ -769,6 +748,27 @@ class LibraryManager:
             )
         return caption
 
+    async def _album_gate_kwargs(self, episodes, is_movie: bool = False) -> dict:
+        """Issue #33: resolve link-gate state + season for the album post.
+
+        Returns kwargs for :meth:`_build_album_buttons`. Any failure means
+        ``gated=False`` — a broken gate check must never stop a post going out.
+        """
+        try:
+            from bot.linkgate import is_enabled
+            gated = bool(await is_enabled())
+        except Exception as e:
+            log.debug("Link gate check failed (posting ungated): %s", e)
+            gated = False
+        season = 1
+        if not is_movie:
+            for ep in episodes or []:
+                m = re.match(r"S(\d+)E(\d+)", str(ep), re.IGNORECASE)
+                if m:
+                    season = max(1, int(m.group(1)))
+                    break
+        return {"gated": gated, "season": season}
+
     def _build_album_buttons(
         self,
         series_slug: str,
@@ -777,6 +777,8 @@ class LibraryManager:
         is_movie: bool,
         channel_mapping: dict | None = None,
         album_mode: str = "channel",
+        gated: bool = False,
+        season: int = 1,
     ) -> InlineKeyboardMarkup:
         """
         Build inline buttons for library album post per Issue #20 (Points 31 & 33).
@@ -784,22 +786,28 @@ class LibraryManager:
         [ 480p ] [ 720p ] [ 1080p ]
         V3 #15: each quality deep-link targets its active worker bot
         (ChildBotManager.get_bot_for_quality), not the main bot.
-        """
-        from utils.helpers import encode_file_param
-        buttons = []
-        row = []
-        for q in qualities:
-            ep_key = "movie" if is_movie else "all"
-            sec_param = encode_file_param(f"get_{series_slug}_{q}_{ep_key}")
-            deep_link = f"https://t.me/{self._bot_username_for_quality(q)}?start={sec_param}"
-            row.append(InlineKeyboardButton(q, url=deep_link))
-            if len(row) == 3:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
 
-        return InlineKeyboardMarkup(buttons) if buttons else InlineKeyboardMarkup([
+        Issue #33 (issue): when the owner has switched the link gate on
+        (`/linkgate <channel>`), the post carries a single ⬇ DOWNLOAD button
+        instead — the quality rows are only revealed once the bot has checked
+        the user against the gate channel. Gate off ⇒ byte-identical buttons
+        to before, so nothing changes for existing deployments.
+        """
+        if gated:
+            from bot.linkgate import encode_gate_param
+            from config import Config
+            uname = str(getattr(Config, "BOT_USERNAME", "") or "").lstrip("@") or self.bot_username
+            return InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬇️ DOWNLOAD",
+                    url=f"https://t.me/{uname}?start={encode_gate_param(series_slug, season)}",
+                )
+            ]])
+
+        markup = build_quality_buttons(
+            qualities, series_slug, is_movie=is_movie, bot_username=self.bot_username,
+        )
+        return markup if markup.inline_keyboard else InlineKeyboardMarkup([
             [InlineKeyboardButton("⚡ Open Bot", url=f"https://t.me/{self.bot_username}?start=start")]
         ])
 
@@ -872,6 +880,7 @@ class LibraryManager:
                 markup = self._build_album_buttons(
                     slug, sorted_eps, sorted_qualities, is_movie,
                     channel_mapping=mapping, album_mode=album_mode,
+                    **await self._album_gate_kwargs(sorted_eps, is_movie),
                 )
                 caption = self._format_album_caption(
                     series_title, sorted_eps, sorted_qualities, is_movie, poster_url,
@@ -915,6 +924,75 @@ def _ep_sort_key(key: str):
 def _sort_qualities(qualities: set[str]) -> list[str]:
     order = {"360p": 1, "480p": 2, "720p": 3, "1080p": 4, "auto": 5}
     return sorted(qualities, key=lambda q: order.get(q, 99))
+
+
+def bot_username_for_quality(quality: str, fallback_username: str = "") -> str:
+    """V3 #15: worker bot for a quality, else the main bot (never silent).
+
+    Module-level so the issue #33 link gate can build the same buttons as the
+    channel post without needing a LibraryManager instance.
+    """
+    q = (quality or "").strip() or "auto"
+    try:
+        from bot.child_bots import child_bot_manager
+        if child_bot_manager:
+            worker = child_bot_manager.get_bot_for_quality(q)
+            if worker:
+                return worker.lstrip("@")
+    except Exception as e:
+        log.debug("Worker lookup failed for quality %s: %s", q, e)
+    try:
+        from config import Config
+        allow_fallback = bool(getattr(Config, "QUALITY_BUTTON_FALLBACK_TO_MAIN", True))
+    except Exception:
+        allow_fallback = True
+    if not allow_fallback:
+        log.warning("V3 #15: no active worker for quality %s and fallback disabled — using main bot",
+                    q)
+    else:
+        log.warning("V3 #15: no active worker for quality %s — explicit fallback to main bot @%s",
+                    q, fallback_username)
+    return fallback_username
+
+
+def build_quality_buttons(
+    qualities: list[str],
+    series_slug: str,
+    is_movie: bool = False,
+    bot_username: str = "",
+    per_row: int = 3,
+) -> InlineKeyboardMarkup:
+    """Quality deep-links for a series — shared by the channel post and the
+    issue #33 link gate so both render byte-identical buttons."""
+    from utils.helpers import encode_file_param
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for q in qualities:
+        ep_key = "movie" if is_movie else "all"
+        sec_param = encode_file_param(f"get_{series_slug}_{q}_{ep_key}")
+        deep_link = f"https://t.me/{bot_username_for_quality(q, bot_username)}?start={sec_param}"
+        row.append(InlineKeyboardButton(q, url=deep_link))
+        if len(row) >= per_row:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(buttons)
+
+
+async def qualities_for_series(series_slug: str) -> list[str]:
+    """Distinct qualities stored for a series, in display order (issue #33)."""
+    from bot.database import db
+    if not db:
+        return []
+    try:
+        docs = await db.files.find({"series_slug": series_slug}).to_list(length=None)
+    except Exception as e:
+        log.warning("Quality lookup failed for %s: %s", series_slug, e)
+        return []
+    found = {str(d.get("quality", "")).strip() for d in docs if d.get("quality")}
+    found.discard("")
+    return _sort_qualities(found)
 
 
 # Singleton

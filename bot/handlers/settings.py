@@ -78,7 +78,11 @@ COMMAND_CATEGORIES = {
         "• <code>/poststyle</code> — Channel card status (modern-only, V3 #7)\n"
         "• <code>/setthumb &lt;reply&gt;</code> — Set custom manual thumbnail\n"
         "• <code>/delthumb</code> — Delete custom thumbnail\n"
-        "• <code>/viewthumb</code> — View currently configured thumbnail"
+        "• <code>/viewthumb</code> — View currently configured thumbnail\n"
+        "• <code>/thumbuser &lt;@handle|clear&gt;</code> — Handle stamped on thumbnails\n"
+        "• <code>/thumblogo &lt;reply|clear&gt;</code> — PNG logo in the thumbnail lockup\n"
+        "• <code>/linkgate [channel] [mode]</code> — Gate the post DOWNLOAD button\n"
+        "• <code>/endsticker &lt;reply|clear&gt;</code> — END OF SEASON sticker"
     ),
     "cmd_cat:features": (
         "⚡ <b>Automation, AI & Storage:</b>\n\n"

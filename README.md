@@ -132,6 +132,39 @@ Set your own branding (owner-only):
 
 </div>
 
+### 🔒 Gated DOWNLOAD (link gate)
+
+Optional — **off by default**, so nothing changes until you switch it on. When
+enabled, the channel post's quality rows collapse into a single
+<kbd>⬇️ DOWNLOAD</kbd> button and the bot reveals 480p · 720p · 1080p only
+after the viewer has passed a second channel:
+
+```mermaid
+flowchart LR
+    A["📺 Channel post<br/>⬇️ DOWNLOAD"] --> B["🤖 Bot<br/>HERE IS YOUR LINK!"]
+    B --> C["✋ REQUEST TO JOIN<br/>2nd channel"]
+    C --> D["✅ Admin approves"]
+    D --> E["🔄 TRY AGAIN"]
+    E --> F["480p · 720p · 1080p<br/>buttons revealed"]
+```
+
+```bash
+/linkgate -100123456789 request   # join-request button (as in the demo)
+/linkgate @secondchannel timer     # 2-minute expiring invite link
+/linkgate @secondchannel link      # plain public link
+/linkgate                          # show current state
+/linkgate off                      # back to quality buttons on the post
+/refreshalbums                     # re-render existing posts
+```
+
+`request` mode falls back to a timer link automatically if the bot lacks invite
+rights, so the button is never dead. Owners skip the gate.
+
+**END OF SEASON sticker** *(optional — skipped entirely when unset)*: reply to
+any sticker with <kbd>/endsticker</kbd> and it is posted to the series channel
+once a season's batch finishes with every episode delivered. `/endsticker clear`
+removes it.
+
 <img src="assets/divider.png" width="100%" alt="divider">
 
 <a id="commands"></a>
@@ -209,6 +242,9 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 | `/delthumb`       | Delete custom thumbnail                        |
 | `/thumbuser`      | Set the channel handle shown on thumbnails *(owner)* |
 | `/thumblogo`      | Set the PNG logo shown on thumbnails *(owner)* |
+| `/mapchannel`     | Map a dedicated channel to a series *(owner)*      |
+| `/linkgate`       | Gate the post's DOWNLOAD button behind a 2nd channel *(owner)* |
+| `/endsticker`     | Set the END OF SEASON sticker *(owner)*            |
 
 **🔐 ForceSub & Timers**
 

@@ -9,6 +9,7 @@ from bot.telegram.types import Message, CallbackQuery, InlineKeyboardButton, Inl
 
 from bot.auth import require_owner, add_user, remove_user, get_users, is_owner
 import bot.logger
+from bot.endseason import EOS_STICKER_KEY as _EOS_KEY  # single source of truth
 
 log = logging.getLogger(__name__)
 
@@ -893,7 +894,9 @@ async def cmd_mapchannel(client: Client, message: Message):
         f"🔗 <b>Invite Link:</b> {invite_link or 'None'}\n"
         f"🔄 <b>Auto-Monitor:</b> 🟢 Enabled\n\n"
         f"🎧 <b>Choose Audio Track for uploads to this channel:</b>\n"
-        f"<i>(You can change this later with /setaudio {slug} &lt;audio&gt;)</i>",
+        f"<i>(You can change this later with /setaudio {slug} &lt;audio&gt;)</i>\n\n"
+        f"🏷️ <i>Optional — reply to a sticker with <code>/endsticker</code> and it will be "
+        f"posted here as the END OF SEASON card once a season's batch completes.</i>",
         parse_mode=enums.ParseMode.HTML,
         reply_markup=audio_markup,
         disable_web_page_preview=True,
@@ -1347,6 +1350,164 @@ _BRAND_LOGO_KEY = "thumb_brand_logo_path"
 def _brand_logo_path() -> str:
     """Stable local path for the admin-supplied PNG logo (kept out of git)."""
     return str(Path(__file__).resolve().parent.parent.parent / "data" / "thumb_brand_logo.png")
+
+
+# ── Link gate (issue #33): second-channel gate for the ⬇ DOWNLOAD button ───
+
+@require_owner
+async def cmd_linkgate(client: Client, message: Message):
+    """Configure the second channel that gates the channel post's DOWNLOAD button.
+
+    Usage:
+      /linkgate                          — show current state
+      /linkgate <channel_id|@user>       — turn the gate on (join-request mode)
+      /linkgate <channel_id|@user> <mode> — mode: request | timer | link
+      /linkgate off                      — turn the gate off (old behaviour)
+    """
+    from bot.database import db
+    import bot.linkgate as lg
+
+    args = _parse_args(message)
+
+    if args and args[0].lower() in ("off", "disable", "none", "0"):
+        await lg.set_gate_channel(None)
+        await message.reply_text(
+            "✅ <b>Link gate disabled.</b>\n\nChannel posts go back to showing the "
+            "480p · 720p · 1080p buttons directly.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if args:
+        target = args[0].strip()
+        mode = args[1].strip().lower() if len(args) > 1 else None
+        if mode is not None and mode not in lg.MODES:
+            await message.reply_text(
+                f"❌ Unknown mode <code>{htmlmod.escape(mode)}</code>. "
+                f"Use one of: {', '.join(lg.MODES)}",
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+
+        # Validate the channel exists before accepting it.
+        chan_val: int | str = int(target) if target.lstrip("-").isdigit() else target
+        try:
+            chat = await client.get_chat(chan_val)
+            chan_val = chat.id
+        except Exception as e:
+            await message.reply_text(
+                f"❌ Could not open that channel: <code>{htmlmod.escape(str(e)[:160])}</code>\n\n"
+                "Give me a channel the <b>bot is an admin of</b>, e.g. "
+                "<code>/linkgate -100123456789 request</code>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+            return
+
+        await lg.set_gate_channel(chan_val)
+        if mode:
+            await lg.set_gate_mode(mode)
+        eff_mode = await lg.get_gate_mode()
+        await message.reply_text(
+            "✅ <b>Link gate enabled</b> (issue #33)\n\n"
+            f"• <b>Channel:</b> <code>{chan_val}</code>\n"
+            f"• <b>Mode:</b> <code>{eff_mode}</code>\n"
+            f"• <b>Button:</b> <code>{'✋ REQUEST TO JOIN' if eff_mode == 'request' else '📢 JOIN CHANNEL'}</code>\n\n"
+            "Channel posts now show a single <b>⬇️ DOWNLOAD</b> button. Users pass "
+            "the gate first, then the bot reveals <b>480p · 720p · 1080p</b>.\n\n"
+            "<i>Run <code>/refreshalbums</code> to re-render existing posts.</i>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    # Status view.
+    chan = await lg.get_gate_channel()
+    mode = await lg.get_gate_mode()
+    text = (
+        "🔒 <b>Link Gate (issue #33)</b>\n\n"
+        f"• <b>State:</b> <code>{'ON' if chan else 'OFF'}</code>\n"
+        f"• <b>Channel:</b> <code>{htmlmod.escape(str(chan)) if chan else '—'}</code>\n"
+        f"• <b>Mode:</b> <code>{mode}</code>\n\n"
+        "<b>Commands:</b>\n"
+        "• <code>/linkgate &lt;channel_id_or_@user&gt; [mode]</code> — enable\n"
+        f"• Modes: {', '.join(f'<code>{m}</code>' for m in lg.MODES)}\n"
+        "• <code>/linkgate off</code> — disable (show quality buttons directly)\n"
+        "• <code>/refreshalbums</code> — re-render existing channel posts"
+    )
+    await message.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
+
+# ── END OF SEASON sticker (issue #33, optional) ─────────────────────────────
+
+
+async def _get_end_of_season_sticker() -> str:
+    from bot.endseason import get_end_of_season_sticker
+    return await get_end_of_season_sticker()
+
+
+@require_owner
+async def cmd_endsticker(client: Client, message: Message):
+    """Set/clear the END OF SEASON sticker posted after a full batch.
+
+    Usage:
+      Reply to a sticker with /endsticker  — install it
+      /endsticker clear                    — remove it (posts skip the sticker)
+      /endsticker                          — show current state
+    """
+    from bot.database import db
+    args = _parse_args(message)
+
+    if args and args[0].lower() in ("clear", "off", "none", "reset"):
+        if db:
+            await db.set_config(_EOS_KEY, "")
+        await message.reply_text(
+            "✅ END OF SEASON sticker cleared — the bot will no longer post a sticker.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if not args:
+        current = await _get_end_of_season_sticker()
+        if current:
+            try:
+                await message.reply_sticker(sticker=current)
+            except Exception:
+                pass
+            await message.reply_text(
+                "🏷 <b>END OF SEASON sticker is installed.</b>\n\n"
+                "<i>Reply to a sticker with <code>/endsticker</code> to replace it, "
+                "or <code>/endsticker clear</code> to remove it.</i>",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        else:
+            await message.reply_text(
+                "ℹ️ <b>No END OF SEASON sticker set.</b>\n\n"
+                "Optional — reply to a sticker with <code>/endsticker</code> and the bot "
+                "posts it to the series channel once a season's batch completes.\n"
+                "<code>/endsticker clear</code> removes it (default: nothing is posted).",
+                parse_mode=enums.ParseMode.HTML,
+            )
+        return
+
+    rep = message.reply_to_message
+    file_id = rep.sticker.file_id if rep and rep.sticker else None
+    if not file_id:
+        await message.reply_text(
+            "⚠️ <b>Please reply to a sticker with:</b> <code>/endsticker</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    if db:
+        await db.set_config(_EOS_KEY, file_id)
+    try:
+        await message.reply_sticker(sticker=file_id)
+    except Exception:
+        pass
+    await message.reply_text(
+        "✅ <b>END OF SEASON sticker installed.</b>\n\n"
+        "It will be posted to the series channel after a season's batch finishes.",
+        parse_mode=enums.ParseMode.HTML,
+    )
 
 
 @require_owner

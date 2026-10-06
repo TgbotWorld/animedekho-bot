@@ -37,6 +37,10 @@ async def cmd_start(client: Client, message: Message):
         elif param.startswith("join_"):
             await _handle_channel_join_request(client, message, param[5:])
             return
+        elif param.startswith("dl_"):
+            # Issue #33: gated ⬇ DOWNLOAD button on channel posts.
+            await _handle_gated_download(client, message, param)
+            return
 
     if bot.logger.bot_logger and user:
         await bot.logger.bot_logger.log_bot_start(user.id, user.username or user.first_name)
@@ -145,6 +149,10 @@ async def start_callback(client: Client, query):
             "• /epstyle — Switch episode upload post UI (classic / modern)\n"
             "• /poststyle — Switch channel album card UI (classic / modern)\n"
             "• /setthumb — Configure custom thumbnails\n"
+            "• /thumbuser — Handle stamped on thumbnails\n"
+            "• /thumblogo — PNG logo in the thumbnail lockup\n"
+            "• /linkgate — Gate the channel post DOWNLOAD button\n"
+            "• /endsticker — END OF SEASON sticker\n"
             "• /setdump — Configure dump storage channel</blockquote>\n\n"
             "<i>Click below to return to the main menu.</i>"
         )
@@ -276,6 +284,86 @@ async def cmd_autosearch(client: Client, message: Message):
         f"Usage: <code>/autosearch on</code> or <code>/autosearch off</code>",
         parse_mode=enums.ParseMode.HTML,
     )
+
+
+async def _handle_gated_download(client: Client, message: Message, param: str):
+    """Issue #33: gate the ⬇ DOWNLOAD button behind a second channel.
+
+    1. Force-subscribe check (existing timer/standard link flow).
+    2. Link gate check — join-request / timer / plain link to the gate channel.
+    3. Once through, reveal the real 480p · 720p · 1080p buttons.
+    """
+    from bot.database import db
+    import html as htmlmod
+    from bot.linkgate import decode_gate_param, gate_prompt
+    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    if not db:
+        await message.reply_text("⚠️ Database not available.")
+        return
+
+    user = message.from_user
+    user_id = user.id if user else 0
+    slug, season = decode_gate_param(param)
+    if not slug:
+        await message.reply_text("⚠️ Invalid download link.")
+        return
+
+    # 1. Force-subscribe (existing behaviour, unchanged). `retry_param` must be
+    #    the *encoded* form — that's what lands in the ?start= URL.
+    from bot.fsub import check_fsub
+    from utils.helpers import encode_file_param
+    is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=encode_file_param(param))
+    if not is_sub:
+        await message.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
+        return
+
+    # 2. Link gate (issue #33) — returns None once the user is through.
+    prompt = await gate_prompt(client, user_id, slug, season)
+    if prompt is not None:
+        text, markup = prompt
+        await message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+        return
+
+    # 3. Through the gate → show the real quality buttons.
+    from bot.library import qualities_for_series, build_quality_buttons
+    qualities = await qualities_for_series(slug)
+    if not qualities:
+        await message.reply_text("❌ No files found for this series yet.")
+        return
+
+    is_movie = "movie" in slug.lower()
+    try:
+        doc = await db.files.find_one({"series_slug": slug})
+        title = (doc or {}).get("series_title") or slug
+    except Exception:
+        title = slug
+
+    bot_me = getattr(client, "me", None)
+    b_name = bot_me.username if bot_me and bot_me.username else "bot"
+    text = (
+        f"📺 <b>{htmlmod.escape(title)}</b>\n"
+        f"<b>──────────────────────</b>\n\n"
+        f"<blockquote>• {'Movie' if is_movie else f'Season {season:02d}'} | "
+        f"Quality - {', '.join(qualities)} | #Official</blockquote>\n\n"
+        "📊 <b>Select quality to download:</b>"
+    )
+    markup = build_quality_buttons(
+        qualities, slug, is_movie=is_movie, bot_username=b_name,
+    )
+    buttons = list(markup.inline_keyboard)
+    buttons.append([InlineKeyboardButton("🔙 Menu", url=f"https://t.me/{b_name}?start=start")])
+
+    try:
+        await message.reply_text(
+            text,
+            parse_mode=enums.ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    except Exception as e:
+        log.warning("Gated download reply failed for %s: %s", slug, e)
+        await message.reply_text(f"❌ Could not open the download menu: <code>{htmlmod.escape(str(e)[:160])}</code>",
+                                 parse_mode=enums.ParseMode.HTML)
 
 
 async def _handle_channel_join_request(client: Client, message: Message, series_slug: str):

@@ -1583,6 +1583,15 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
     if bot.logger.bot_logger:
         await bot.logger.bot_logger.log_batch_complete(series.title, season, completed, total)
 
+    # Issue #33: a fully delivered season closes with the owner's
+    # "END OF SEASON" sticker (no-op unless /endsticker was used).
+    if completed == total and total > 0:
+        try:
+            from bot.endseason import post_end_of_season
+            await post_end_of_season(client, dest_channel_id, series.title, season)
+        except Exception as _eos_err:
+            log.debug("END OF SEASON sticker skipped: %s", _eos_err)
+
     # Auto-delete all bot messages after 12 hours (43200 seconds)
     asyncio.create_task(_auto_delete_messages(client, chat_id, sent_messages, 43200))
 

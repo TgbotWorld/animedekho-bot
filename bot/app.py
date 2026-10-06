@@ -235,6 +235,8 @@ async def _on_start(client: Client):
                 BotCommand("delthumb", "Delete custom thumbnail"),
                 BotCommand("thumbuser", "Set channel handle on thumbnails (owner)"),
                 BotCommand("thumblogo", "Set PNG logo on thumbnails (owner)"),
+                BotCommand("linkgate", "Gate the channel post DOWNLOAD button (owner)"),
+                BotCommand("endsticker", "Set END OF SEASON sticker (owner)"),
                 BotCommand("automonitor", "Automatic episode monitoring"),
                 BotCommand("poststyle", "Modern-only style status (classic retired)"),
                 BotCommand("startstyle", "Modern-only style status (classic retired)"),

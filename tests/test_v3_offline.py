@@ -601,6 +601,153 @@ def main() -> int:
         print(f"[FAIL] i33 thumbnail: {_te}")
         ok = False
 
+    # ── Issue #33 (C): gated DOWNLOAD button + END OF SEASON sticker ────────
+    try:
+        import pathlib as _pl3
+
+        # Deep-link codec accepts the new dl_ family.
+        from utils.helpers import encode_file_param, decode_file_param
+        _raw = encode_file_param("dl_solo-leveling_2")
+        ok &= check("i33 dl_ param survives encode/decode",
+                    decode_file_param(_raw) == "dl_solo-leveling_2",
+                    decode_file_param(_raw))
+        ok &= check("i33 raw dl_ param passes through",
+                    decode_file_param("dl_x_1") == "dl_x_1")
+
+        from bot.linkgate import encode_gate_param, decode_gate_param, MODES, DEFAULT_MODE
+        ok &= check("i33 gate param round-trips",
+                    decode_gate_param(decode_file_param(encode_gate_param("solo-leveling", 2)))
+                    == ("solo-leveling", 2))
+        ok &= check("i33 gate param tolerates junk",
+                    decode_gate_param("dl_") == ("", 1) and decode_gate_param("") == ("", 1)
+                    and decode_gate_param("get_x") == ("", 1))
+        ok &= check("i33 gate param survives a non-encoded slug",
+                    decode_gate_param("dl_my_show_3") == ("my_show", 3))
+        ok &= check("i33 gate modes are request|timer|link",
+                    MODES == ("request", "timer", "link") and DEFAULT_MODE == "request",
+                    str(MODES))
+
+        # Gate OFF (the default) ⇒ buttons are byte-identical to before.
+        from bot.library import LibraryManager, build_quality_buttons
+        _mgr = LibraryManager(None, None, -100123456789, "AnimeDekhoBot")
+        _off = _mgr._build_album_buttons(
+            "solo-leveling", ["S01E01"], ["480p", "720p", "1080p"], False)
+        _off_texts = [b.text for r in _off.inline_keyboard for b in r]
+        ok &= check("i33 gate off keeps quality buttons",
+                    _off_texts == ["480p", "720p", "1080p"], str(_off_texts))
+        ok &= check("i33 gate off has no DOWNLOAD button",
+                    not any("DOWNLOAD" in t.upper() for t in _off_texts))
+
+        # Gate ON ⇒ a single ⬇ DOWNLOAD deep link, no quality rows leaked.
+        _on = _mgr._build_album_buttons(
+            "solo-leveling", ["S02E05"], ["480p", "720p", "1080p"], False,
+            gated=True, season=2)
+        _on_rows = _on.inline_keyboard
+        _on_texts = [b.text for r in _on_rows for b in r]
+        ok &= check("i33 gate on = one DOWNLOAD button",
+                    len(_on_rows) == 1 and len(_on_rows[0]) == 1
+                    and "DOWNLOAD" in _on_texts[0], str(_on_texts))
+        _dl_url = _on_rows[0][0].url
+        ok &= check("i33 DOWNLOAD is a bot deep link",
+                    "?start=" in _dl_url, _dl_url)
+        ok &= check("i33 gate param resolves back to slug+season",
+                    decode_gate_param(decode_file_param(_dl_url.split("start=")[1]))
+                    == ("solo-leveling", 2))
+        ok &= check("i33 gate on hides quality buttons",
+                    not any(t in _on_texts for t in ("480p", "720p", "1080p")))
+
+        # Shared builder: same buttons for the post and the post-gate reveal.
+        _shared = build_quality_buttons(["480p", "720p"], "solo-leveling",
+                                        bot_username="AnimeDekhoBot")
+        _shared_texts = [b.text for r in _shared.inline_keyboard for b in r]
+        ok &= check("i33 shared quality builder used by both paths",
+                    _shared_texts == ["480p", "720p"], str(_shared_texts))
+
+        # Gate-off default is honoured by the async resolver with no DB.
+        _res = asyncio.run(_mgr._album_gate_kwargs(["S02E05"], False))
+        ok &= check("i33 gate resolver defaults off without db",
+                    _res.get("gated") is False and _res.get("season") == 2, str(_res))
+
+        # END OF SEASON: unset ⇒ never posts; set ⇒ posts to the channel.
+        from bot import endseason as _eos
+        _sticker = asyncio.run(_eos.get_end_of_season_sticker())
+        ok &= check("i33 end-of-season unset by default", _sticker == "", repr(_sticker))
+
+        class _FakeClient:
+            def __init__(self):
+                self.sent = []
+            async def send_sticker(self, chat_id=None, sticker=None, **kw):
+                self.sent.append((chat_id, sticker))
+        _fc = _FakeClient()
+        _posted = asyncio.run(_eos.post_end_of_season(_fc, -100123456789, "Solo Leveling", 2))
+        ok &= check("i33 end-of-season no-ops when unset", _posted is False and not _fc.sent)
+
+        async def _fake_get():
+            return "STICKER_FILE_ID"
+        _orig_get = _eos.get_end_of_season_sticker
+        _eos.get_end_of_season_sticker = _fake_get
+        try:
+            _posted2 = asyncio.run(_eos.post_end_of_season(_fc, -100123456789, "Solo Leveling", 2))
+            ok &= check("i33 end-of-season posts when set",
+                        _posted2 is True and _fc.sent == [(-100123456789, "STICKER_FILE_ID")],
+                        str(_fc.sent))
+            # A failing channel must not raise out of the batch flow.
+            class _Boom:
+                async def send_sticker(self, **kw):
+                    raise RuntimeError("no rights")
+            _posted3 = asyncio.run(_eos.post_end_of_season(_Boom(), -100123456789, "Solo Leveling", 2))
+            ok &= check("i33 end-of-season swallows send errors", _posted3 is False)
+            _posted4 = asyncio.run(_eos.post_end_of_season(_fc, None, "Solo Leveling", 2))
+            ok &= check("i33 end-of-season needs a channel", _posted4 is False)
+        finally:
+            _eos.get_end_of_season_sticker = _orig_get
+
+        # Commands registered + handlers exist.
+        _hsrc = _pl3.Path("bot/handlers/__init__.py").read_text()
+        ok &= check("i33 linkgate registered",
+                    'filters.command("linkgate")' in _hsrc)
+        ok &= check("i33 endsticker registered",
+                    'filters.command("endsticker")' in _hsrc)
+        _asrc = _pl3.Path("bot/handlers/admin.py").read_text()
+        ok &= check("i33 linkgate handler exists", "async def cmd_linkgate" in _asrc)
+        ok &= check("i33 endsticker handler exists", "async def cmd_endsticker" in _asrc)
+        ok &= check("i33 endsticker validates sticker reply",
+                    "rep.sticker.file_id" in _asrc)
+        ok &= check("i33 mapchannel advertises the sticker prompt",
+                    "endsticker" in _asrc.split("Channel Mapped Successfully")[1][:1400])
+
+        # /start routes the dl_ family.
+        _csrc = _pl3.Path("bot/handlers/commands.py").read_text()
+        ok &= check("i33 /start routes dl_ params",
+                    'param.startswith("dl_")' in _csrc)
+        ok &= check("i33 gated download handler exists",
+                    "async def _handle_gated_download" in _csrc)
+        ok &= check("i33 gated download runs fsub then gate",
+                    "check_fsub" in _csrc.split("async def _handle_gated_download")[1][:3000]
+                    and "gate_prompt" in _csrc.split("async def _handle_gated_download")[1][:3000])
+
+        # Album posts consult the gate (and fail open).
+        _lsrc = _pl3.Path("bot/library.py").read_text()
+        ok &= check("i33 all 3 album call sites gate-aware",
+                    _lsrc.count("_album_gate_kwargs(sorted_eps, is_movie)") == 3,
+                    str(_lsrc.count("_album_gate_kwargs(sorted_eps, is_movie)")))
+        ok &= check("i33 gate failure fails open (posts still go out)",
+                    "gated = False" in _lsrc)
+
+        # Batch completion fires the end-of-season hook.
+        _cbsrc = _pl3.Path("bot/handlers/callbacks.py").read_text()
+        ok &= check("i33 batch completion posts end-of-season sticker",
+                    "post_end_of_season" in _cbsrc and "completed == total" in _cbsrc)
+
+        # Nobody can hit the gate without the config: linkgate is owner-only.
+        ok &= check("i33 linkgate is owner-only",
+                    _asrc.split("async def cmd_linkgate")[0].rstrip().endswith("@require_owner"))
+    except Exception as _ce:
+        import traceback as _tb3
+        _tb3.print_exc()
+        print(f"[FAIL] i33 channel flow: {_ce}")
+        ok = False
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 
