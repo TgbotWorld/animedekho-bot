@@ -126,9 +126,9 @@ Set your own branding (owner-only):
 
 <div align="center">
 
-<img src="assets/thumb_showcase.jpg" alt="Streaming Card thumbnail preview" width="75%">
+<img src="assets/thumb_showcase.jpg" alt="Solo Leveling — streaming card thumbnail preview" width="75%">
 
-<p><sub><code>streaming</code> template · auto-generated at 1280×720 for every upload</sub></p>
+<p><sub><b>Example:</b> <i>Solo Leveling</i> · <code>streaming</code> template · auto-generated at 1280×720 for every upload</sub></p>
 
 </div>
 

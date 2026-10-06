@@ -47,7 +47,7 @@ async def handle_text(client: Client, message: Message):
 async def do_search(client: Client, message: Message, query: str):
     """Execute anime search and display result buttons."""
     user = message.from_user
-    msg = await message.reply_text("🔍 Searching...")
+    msg = await message.reply_text("🔍 Searching the library…")
 
     # Log the search
     if bot.logger.bot_logger and user:
@@ -57,9 +57,9 @@ async def do_search(client: Client, message: Message, query: str):
         results = await api.search(query)
         if not results:
             try:
-                await msg.edit_text("❌ No results found. Try a different name.")
+                await msg.edit_text("🚫 No results — try another spelling or the original title.")
             except Exception:
-                await message.reply_text("❌ No results found. Try a different name.")
+                await message.reply_text("🚫 No results — try another spelling or the original title.")
             return
 
         diag_prefix = ""
@@ -73,7 +73,10 @@ async def do_search(client: Client, message: Message, query: str):
             diag_str = ", ".join(f"{k}: {v}" for k, v in src_counts.items())
             diag_prefix = f"🛠 <b>[Admin Diagnostics]</b> <i>{diag_str}</i>\n\n"
 
-        search_header = f"{diag_prefix}🔍 <b>Results for:</b> {esc(query)}\n\nSelect one:"
+        search_header = (
+            f"{diag_prefix}🔍 <b>Results for:</b> {esc(query)}\n\n"
+            "🎯 <i>Tap a title to open it:</i>"
+        )
 
         try:
             await msg.edit_text(

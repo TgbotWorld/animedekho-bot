@@ -34,7 +34,7 @@ def main_menu(invite_link: str | None = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📂 Browse Genres", callback_data="m:genres")],
     ]
     if invite_link:
-        buttons.append([InlineKeyboardButton("📢 Join Our Channel", url=invite_link)])
+        buttons.append([InlineKeyboardButton("📢 Join the Channel ↗", url=invite_link)])
     return InlineKeyboardMarkup(buttons)
 
 

@@ -14,6 +14,44 @@ import bot.logger
 log = logging.getLogger(__name__)
 
 
+def _start_caption(user_mention: str) -> str:
+    """Streaming-style welcome shared by /start and the Home callback."""
+    return (
+        f"🍿 <b>AnimeDekho</b> — {user_mention}\n\n"
+        "<blockquote><b>Your anime, on demand.</b>\n"
+        "Search any title, pick a quality and I'll deliver it — 480p → 4K, "
+        "Hindi-dubbed series &amp; movies, one tidy post per show.</blockquote>"
+    )
+
+
+def _start_markup(main_channel: str):
+    """The three buttons every /start screen shows."""
+    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Main Channel ↗", url=main_channel)],
+        [
+            InlineKeyboardButton("✨ About", callback_data="start:about"),
+            InlineKeyboardButton("📖 Help", callback_data="start:help"),
+        ],
+    ])
+
+
+def _screen_markup(main_channel: str):
+    """About / Help screens: a way back to the menu."""
+    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚡ Main Channel ↗", url=main_channel)],
+        [InlineKeyboardButton("🔙 Menu", callback_data="start:home")],
+    ])
+
+
+async def _home_channel(db) -> str:
+    """Channel link used by the /start screens (main link → invite → default)."""
+    main_link = await db.get_config("main_channel_link") if db else None
+    invite_link = await db.get_config("channel_invite_link") if db else None
+    return main_link or invite_link or "https://t.me/animedekho"
+
+
 async def cmd_start(client: Client, message: Message):
     user = message.from_user
     user_id = user.id if user else 0
@@ -53,23 +91,12 @@ async def cmd_start(client: Client, message: Message):
     start_style = await db.get_start_style() if db else "modern"
 
     if start_style == "modern":
-        from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
         first_name = user.first_name if user else "Friend"
         user_mention = f"<a href='tg://user?id={user_id}'>{re.sub(r'[<>&]', '', first_name)}</a>" if user_id else (first_name or "Friend")
 
-        main_chan = await db.get_config("main_channel_link") or invite_link or "https://t.me/animedekho"
-        modern_markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("• ⚡ MAIN CHANNEL • ↗", url=main_chan)],
-            [
-                InlineKeyboardButton("• ABOUT •", callback_data="start:about"),
-                InlineKeyboardButton("HELP •", callback_data="start:help"),
-            ]
-        ])
-
-        caption = (
-            f"Bᴀᴋᴀᴀᴀ!!!.....{user_mention}\n\n"
-            f"<blockquote><b>I AM FILE STORE + AUTO ANIME BOT, I CAN STORE PRIVATE FILES IN SPECIFIED CHANNEL AND OTHER USERS CAN ACCESS IT FROM SPECIAL LINK.</b></blockquote>"
-        )
+        main_chan = await _home_channel(db)
+        modern_markup = _start_markup(main_chan)
+        caption = _start_caption(user_mention)
 
         start_pic = await db.get_start_pic() if db else None
         # Default stylish banner fallback if user has not set a custom start picture
@@ -97,10 +124,10 @@ async def cmd_start(client: Client, message: Message):
 
     welcome_text = (
         "🎌 <b>AnimeDekho Bot</b>\n\n"
-        "Stream Hindi dubbed anime!\n\n"
-        f"• {tv_emoji} <b>Series</b> — browse recent series\n"
-        "• 📂 <b>Genres</b> — filter by genre\n\n"
-        "Just type any anime name to search!"
+        "Stream Hindi-dubbed anime on demand.\n\n"
+        f"• {tv_emoji} <b>Recent Series</b> — what just dropped\n"
+        "• 📂 <b>Browse Genres</b> — pick a mood\n\n"
+        "Type any anime name and I'll find it for you."
     )
 
     markup = main_menu(invite_link=invite_link)
@@ -116,65 +143,54 @@ async def start_callback(client: Client, query):
     """Handle modern start menu callbacks (About, Help, Home)."""
     data = query.data
     from bot.database import db
-    from bot.telegram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
     if data == "start:about":
         text = (
-            "✨ <b>ABOUT ANIME DEKHO BOT</b> ✨\n\n"
-            "<blockquote><b>🤖 Name:</b> AnimeDekho Bot\n"
-            "<b>⚡ Version:</b> 2.5 Modern\n"
-            "<b>🐍 Framework:</b> Wzgram / Pyrogram\n"
-            "<b>📦 Engine:</b> Multi-Audio HLS / DASH\n"
-            "<b>🚀 Features:</b>\n"
-            "• Channel Auto-Mapping &amp; Dedicated Channels\n"
-            "• Auto Episode Monitor &amp; Airing Schedules\n"
-            "• Anti-Copyright 2-Min Invite Links &amp; Auto-Delete\n"
-            "• Dump Cache Channel &amp; Custom Thumbnails</blockquote>\n\n"
-            "<i>Click below to return to the main menu.</i>"
+            "🍿 <b>ABOUT ANIMEDEKHO</b> 🍿\n\n"
+            "<blockquote><b>🤖 Bot:</b> AnimeDekho\n"
+            "<b>⚡ Engine:</b> V3 streaming · multi-audio HLS / DASH\n"
+            "<b>🐍 Framework:</b> WZGram / Pyrogram\n\n"
+            "<b>🎬 Watch</b>\n"
+            "• Netflix-style auto thumbnail on every upload\n"
+            "• 480p → 720p → 1080p → 4K, Hindi dub first\n"
+            "• One master post per anime, updated in place\n\n"
+            "<b>⚙️ Automate</b>\n"
+            "• Auto episode monitor &amp; airing schedules\n"
+            "• Channel auto-mapping &amp; dedicated channels\n"
+            "• Anti-copyright 2-minute invite links &amp; auto-delete\n"
+            "• Optional DOWNLOAD gate behind a second channel</blockquote>\n\n"
+            "<i>Tap below to go back to the menu.</i>"
         )
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀ Back", callback_data="start:home")]])
+        markup = _screen_markup(await _home_channel(db))
     elif data == "start:help":
         text = (
-            "📖 <b>HELP & COMMANDS GUIDE</b> 📖\n\n"
-            "<blockquote><b>User Commands:</b>\n"
-            "• /start — Open start menu\n"
-            "• /search &lt;anime&gt; — Search anime series &amp; movies\n"
-            "• /schedule — View today's anime release schedule\n"
-            "• /help — Show help information\n\n"
-            "<b>Admin / Owner Commands:</b>\n"
-            "• /automonitor — Toggle automated episode downloader\n"
-            "• /mapchannel — Route anime uploads to dedicated channel\n"
-            "• /startstyle — Switch /start UI (classic / modern)\n"
-            "• /schedstyle — Switch /schedule UI (classic / modern)\n"
-            "• /epstyle — Switch episode upload post UI (classic / modern)\n"
-            "• /poststyle — Switch channel album card UI (classic / modern)\n"
-            "• /setthumb — Configure custom thumbnails\n"
-            "• /thumbuser — Handle stamped on thumbnails\n"
-            "• /thumblogo — PNG logo in the thumbnail lockup\n"
-            "• /linkgate — Gate the channel post DOWNLOAD button\n"
+            "📖 <b>HELP &amp; COMMANDS</b> 📖\n\n"
+            "<blockquote><b>🧭 Everyday</b>\n"
+            "• /start — Open the menu\n"
+            "• /search &lt;anime&gt; — Search series &amp; movies\n"
+            "• /schedule — Today's release schedule\n"
+            "• /help — This guide\n\n"
+            "<b>🎛️ Owner &amp; Admin</b>\n"
+            "• /settings — Interactive control panel\n"
+            "• /commands — Categorized command catalog\n"
+            "• /source — Switch the default download source\n"
+            "• /automonitor — Auto-download new episodes\n"
+            "• /mapchannel — Route a series to its own channel\n"
+            "• /linkgate — Gate the post's DOWNLOAD button\n"
             "• /endsticker — END OF SEASON sticker\n"
+            "• /thumbuser · /thumblogo — Thumbnail branding\n"
+            "• /startpic · /setthumb — Banner &amp; file art\n"
             "• /setdump — Configure dump storage channel</blockquote>\n\n"
-            "<i>Click below to return to the main menu.</i>"
+            "<i>Tap below to go back to the menu.</i>"
         )
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("◀ Back", callback_data="start:home")]])
+        markup = _screen_markup(await _home_channel(db))
     else:  # start:home
         user = query.from_user
         user_id = user.id if user else 0
         first_name = user.first_name if user else "Friend"
         user_mention = f"<a href='tg://user?id={user_id}'>{re.sub(r'[<>&]', '', first_name)}</a>" if user_id else (first_name or "Friend")
-        invite_link = await db.get_config("channel_invite_link") if db else None
-        main_chan = (await db.get_config("main_channel_link") if db else None) or invite_link or "https://t.me/animedekho"
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("• ⚡ MAIN CHANNEL • ↗", url=main_chan)],
-            [
-                InlineKeyboardButton("• ABOUT •", callback_data="start:about"),
-                InlineKeyboardButton("HELP •", callback_data="start:help"),
-            ]
-        ])
-        text = (
-            f"Bᴀᴋᴀᴀᴀ!!!.....{user_mention}\n\n"
-            f"<blockquote><b>I AM FILE STORE + AUTO ANIME BOT, I CAN STORE PRIVATE FILES IN SPECIFIED CHANNEL AND OTHER USERS CAN ACCESS IT FROM SPECIAL LINK.</b></blockquote>"
-        )
+        markup = _start_markup(await _home_channel(db))
+        text = _start_caption(user_mention)
 
     try:
         if query.message.photo:
@@ -194,40 +210,37 @@ async def cmd_help(client: Client, message: Message):
     from config.settings import settings
     is_owner_user = message.from_user and message.from_user.id == settings.bot.owner_id
     owner_help = (
-        "\n\n<b>Owner & Admin Commands:</b>\n"
-        "• <b>/settings</b> — Interactive control panel & live toggles\n"
-        "• <b>/commands</b> — Interactive categorized commands guide\n"
-        "/stats — View real-time VPS stats and net speed\n"
-        "/health — System health & bot diagnostics\n"
-        "/users — View total network users\n"
-        "/broadcast — Broadcast text message\n"
-        "/pbroadcast — Broadcast photo\n"
-        "/dbroadcast — Broadcast video/doc\n"
-        "/ban &lt;id&gt; — Ban a user\n"
-        "/uban &lt;id&gt; — Unban a user\n"
-        "/fsub — Manage Force Subscribe channel\n"
-        "/fsub_mod — Toggle FSub 2-min timer link mode\n"
-        "/dlt_time — Set file/video auto-delete timer\n"
-        "/startstyle — Switch /start menu style (classic/modern)\n"
-        "/schedstyle — Switch /schedule style (classic/modern)\n"
-        "/epstyle — Switch episode post style (classic/modern)\n"
-        "/poststyle — Switch channel card style (classic/modern)\n"
-        "/startpic — Set custom banner for /start\n"
-        "/tutorial — Full system guide\n"
-        "/ai &lt;query&gt; — Chat with Autonomous AI Agent\n"
-        "/setai — View & change AI model/provider\n"
-        "/addbot — Add child worker bot\n"
-        "/delete — Delete a series or file"
+        "\n\n<b>🎛️ Owner &amp; Admin Commands</b>\n"
+        "• <b>/settings</b> — Interactive control panel &amp; live toggles\n"
+        "• <b>/commands</b> — Interactive categorized command guide\n"
+        "• /stats — Real-time VPS stats &amp; network speed\n"
+        "• /health — System health &amp; bot diagnostics\n"
+        "• /users — Total registered users\n"
+        "• /broadcast · /pbroadcast · /dbroadcast — Announce to everyone\n"
+        "• /ban &lt;id&gt; · /uban &lt;id&gt; — Ban or unban a user\n"
+        "• /fsub · /fsub_mod · /dlt_time — Force-subscribe &amp; auto-delete timers\n"
+        "• /startstyle · /schedstyle · /epstyle · /poststyle — UI styles\n"
+        "• /startpic — Custom banner for /start\n"
+        "• /source — Show or change the default download source\n"
+        "• /linkgate · /endsticker — Channel post extras (gate + sticker)\n"
+        "• /thumbuser · /thumblogo — Thumbnail branding\n"
+        "• /setdump — Dump storage channel\n"
+        "• /tutorial — Full system guide\n"
+        "• /ai &lt;query&gt; — Chat with the autonomous AI agent\n"
+        "• /setai — View &amp; change AI model/provider\n"
+        "• /addbot — Add a child worker bot\n"
+        "• /delete — Delete a series or file"
     ) if is_owner_user else ""
 
     await message.reply_text(
-        "📖 <b>Commands</b>\n\n"
-        "/start — Main menu\n"
-        "/search &lt;name&gt; — Search anime or movies\n"
-        "/schedule — Anime airing schedule\n"
-        "/commands — Interactive categorized commands guide\n"
-        "/help — This message\n\n"
-        "Just type any anime name in chat to search!"
+        "📖 <b>AnimeDekho — Help</b>\n\n"
+        "<b>🧭 Everyday</b>\n"
+        "• /start — Main menu\n"
+        "• /search &lt;name&gt; — Search anime or movies\n"
+        "• /schedule — Today's airing schedule\n"
+        "• /commands — Interactive categorized guide\n"
+        "• /help — This message\n\n"
+        "💡 <i>Just type any anime name in chat to search!</i>"
         f"{owner_help}",
         parse_mode=enums.ParseMode.HTML,
     )

@@ -314,15 +314,15 @@ class ChildBotManager:
                     main_user = f"@{library_manager.bot_username}"
 
             welcome = (
-                f"🤖 <b>AnimeDekho Worker Bot</b> (@{username})\n\n"
-                f"⚡ <b>Assigned Tier:</b> <code>{quality.upper()}</code>\n"
-                f"📥 I deliver requested anime episodes and movies directly to you with maximum download speed.\n\n"
-                f"🔍 <b>To search and browse all anime, use our Main Bot:</b>\n"
+                f"🤖 <b>AnimeDekho Delivery Bot</b> (@{username})\n\n"
+                f"⚡ <b>Assigned tier:</b> <code>{quality.upper()}</code>\n"
+                f"📥 I push the episode or movie you request straight to this chat, at full speed.\n\n"
+                f"🔎 <b>Browse the whole catalogue in the main bot:</b>\n"
                 f"👉 {main_user or 'Main Controller Bot'}"
             )
             buttons = []
             if main_user:
-                buttons.append([InlineKeyboardButton("🚀 Go to Main Bot", url=f"https://t.me/{main_user.lstrip('@')}")])
+                buttons.append([InlineKeyboardButton("🚀 Open Main Bot ↗", url=f"https://t.me/{main_user.lstrip('@')}")])
             await m.reply_text(welcome, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons) if buttons else None)
 
         @client.on_message(filters.command("help") & filters.private)
@@ -332,13 +332,13 @@ class ChildBotManager:
                 main_user = f"@{self.main_client.me.username}"
 
             await m.reply_text(
-                f"📖 <b>Worker Bot Help</b>\n\n"
-                f"This bot is an automated file delivery worker for {main_user}.\n"
-                f"Click on any episode or quality button in our channel or main bot to download.\n\n"
+                f"📖 <b>Delivery Bot Help</b>\n\n"
+                f"I'm the delivery worker for {main_user or 'the main bot'} — I push the files you pick.\n"
+                f"Tap any episode or quality button in the channel or main bot and I'll send it here.\n\n"
                 "<b>Commands:</b>\n"
-                "/start — Start bot\n"
-                "/help — View help\n"
-                "/tutorial — How it works",
+                "• /start — Open the menu\n"
+                "• /help — This message\n"
+                "• /tutorial — How the network works",
                 parse_mode=enums.ParseMode.HTML,
             )
 
