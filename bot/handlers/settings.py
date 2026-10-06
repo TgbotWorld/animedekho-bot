@@ -176,7 +176,7 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
     auto_sched = await db.get_auto_schedule_post() if db else False
     auto_search = await db.get_auto_search() if db else True
     custom_emoji = await db.get_enable_custom_emoji() if db else False
-    thumb_template = await db.get_thumb_template() if db else "modern"
+    thumb_template = await db.get_thumb_template() if db else "streaming"
     random_thumb = await db.get_random_thumb_template() if db else False
     upload_mode = await db.get_upload_mode() if db else "video"
 
@@ -194,16 +194,10 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         return "Video 🎬" if mode == "video" else "Document 📄"
 
     def _template_badge(tmpl: str, rand: bool) -> str:
-        if rand:
-            return "Random 🎲"
-        names = {
-            "modern": "Modern 🎨",
-            "cinematic": "Cinema 🎬",
-            "movie_gold": "Gold 👑",
-            "neon_cyber": "Cyber ⚡",
-            "minimal": "Minimal 🪟",
-        }
-        return names.get(tmpl.lower(), tmpl.capitalize())
+        # Issue #33: every legacy template was retired in favour of one
+        # streaming-card style, so old stored values report the same badge.
+        del rand
+        return "Streaming 🎬"
 
     def _dlt_badge(sec: int) -> str:
         if sec <= 0:
@@ -371,30 +365,26 @@ async def settings_callback(client: Client, query: CallbackQuery):
         alert_msg = f"Telegram Premium Custom Emojis: {'ENABLED' if new_val else 'DISABLED'}"
 
     elif data == "set_toggle:thumb_template":
-        templates = ["modern", "cinematic", "movie_gold", "neon_cyber", "minimal"]
-        cur = await db.get_thumb_template()
-        cur_idx = templates.index(cur) if cur in templates else 0
-        new_template = templates[(cur_idx + 1) % len(templates)]
-        await db.set_thumb_template(new_template)
+        # Issue #33: single streaming-card style — toggle retired, enforce it.
+        await db.set_thumb_template("streaming")
         await db.set_random_thumb_template(False)
         try:
             from config import Config
-            Config.THUMB_TEMPLATE = new_template
+            Config.THUMB_TEMPLATE = "streaming"
             Config.RANDOM_THUMB_TEMPLATE = False
         except Exception:
             pass
-        alert_msg = f"Thumbnail Style: {new_template.upper()}"
+        alert_msg = "Thumbnail Style: Streaming Card (older styles retired)"
 
     elif data == "set_toggle:random_thumb":
-        cur = await db.get_random_thumb_template()
-        new_val = not cur
-        await db.set_random_thumb_template(new_val)
+        # Issue #33: only one template remains, so random selection is moot.
+        await db.set_random_thumb_template(False)
         try:
             from config import Config
-            Config.RANDOM_THUMB_TEMPLATE = new_val
+            Config.RANDOM_THUMB_TEMPLATE = False
         except Exception:
             pass
-        alert_msg = f"Random Thumbnail Mode: {'ENABLED (Different template per upload)' if new_val else 'DISABLED'}"
+        alert_msg = "Random Thumbnail Mode: DISABLED (single Streaming Card style)"
 
     elif data == "set_toggle:auto_thumb":
         cur = await db.get_auto_thumb()

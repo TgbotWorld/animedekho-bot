@@ -148,12 +148,19 @@ class Config:
     # Auto Thumbnail: Automatically generate branded 1280x720 HD thumbnails with title & badges
     AUTO_THUMB = os.environ.get("AUTO_THUMB", "on").lower() in ("on", "true", "1", "yes")
 
-    # Modular Thumbnail Template (Issue #11)
-    # Options: "modern", "cinematic", "movie_gold", "neon_cyber", "minimal", "random"
-    THUMB_TEMPLATE = os.environ.get("THUMB_TEMPLATE", "modern").lower()
+    # Thumbnail template (issue #33): every legacy name aliases to the single
+    # streaming-card style; "random" is accepted for backwards compatibility.
+    # Options: "streaming", "random", or any legacy name ("modern", "cinematic",
+    # "movie_gold", "neon_cyber", "minimal") which now renders "streaming".
+    THUMB_TEMPLATE = os.environ.get("THUMB_TEMPLATE", "streaming").lower()
 
     # Random Thumbnail Mode: When True, chooses a different random template on every upload
     RANDOM_THUMB_TEMPLATE = os.environ.get("RANDOM_THUMB_TEMPLATE", "off").lower() in ("on", "true", "1", "yes")
+
+    # Thumbnail branding (issue #33): channel handle + PNG logo stamped on the
+    # lockup. Overridden at runtime by /thumbuser and /thumblogo.
+    THUMB_BRAND_USERNAME = os.environ.get("THUMB_BRAND_USERNAME", "")
+    THUMB_BRAND_LOGO = os.environ.get("THUMB_BRAND_LOGO", "")
 
     # Auto Schedule Channel Post: Automatically post/update schedule card at 12:00 AM IST
     AUTO_SCHEDULE_POST = os.environ.get("AUTO_SCHEDULE_POST", "off").lower() in ("on", "true", "1", "yes")

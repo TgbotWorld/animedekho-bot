@@ -41,7 +41,7 @@
 
 ```diff
 + 🔎  Watches AnimeDekho for new episode & movie drops
-+ 🖼️  Auto-generates cinematic 1280×720 branded thumbnails (5 styles)
++ 🖼️  Auto-generates Netflix-style 1280×720 streaming-card thumbnails (own logo + handle)
 + 🎞️  Downloads multi-quality streams — 480p → 720p → 1080p → 4K
 + 🎚️  Multi-source resolver — AnimeDekho-first default, switchable live via /source
 + 🩺  Per-stage diagnostics & health probes on every download
@@ -59,7 +59,7 @@
   <tr>
     <td width="50%">
       <h3>🎨 Auto Thumbnail Studio</h3>
-      <p>Five premium 1280×720 HD designs + chaos mode. Branded, professional, zero design work.</p>
+      <p>One Netflix-style 1280×720 key-art card, stamped with your own handle and PNG logo.</p>
     </td>
     <td width="50%">
       <h3>📚 Smart Library Engine</h3>
@@ -98,22 +98,37 @@
   </tr>
 </table>
 
-### 🎨 Thumbnail Templates
+### 🎨 Thumbnail Template
 
-| Template      | Aesthetic                      | Made For                |
-|---------------|--------------------------------|-------------------------|
-| `modern`      | Stylized glass · gradient accents & giant quality watermark | Weekly TV episodes |
-| `cinematic`   | Indigo widescreen letterbox    | Movies & story arcs     |
-| `movie_gold`  | Luxury metallic gold frame     | OVAs & feature films    |
-| `neon_cyber`  | Electric cyan × hot pink       | Shonen · Sci-Fi · Action|
-| `minimal`     | Clean frosted-glass look       | Aesthetic channels      |
-| `random`      | Fresh style on every upload    | Maximum surprise factor |
+One style — a Netflix/streaming key-art card, auto-generated at 1280×720 for every upload.
+
+| Piece                  | What it shows                                                        |
+|------------------------|-----------------------------------------------------------------------|
+| **Brand lockup**       | Your PNG logo (or a gradient monogram tile) + your channel handle      |
+| **Eyebrow + rule**     | `ANIME • HINDI DUB` / `MOVIE • …` in wide-tracked caps                 |
+| **Oversized title**    | Up to 3 auto-scaled lines, white on a soft shadow                      |
+| **Metadata bullets**   | `EPISODES: 12 \| S01` · `AUDIO TRACK:` · `QUALITY:` (mirrors the post) |
+| **CTA + quality pills**| Gradient `DOWNLOAD` button and the resolved tier (`1080P • FULL HD`)   |
+| **Watermark**          | `@yourhandle` bottom-right over the feathered key art                  |
+
+<code>THUMB_TEMPLATE</code> still accepts the retired names (`modern`, `cinematic`,
+`movie_gold`, `neon_cyber`, `minimal`) — they all resolve to this one style, so
+existing deployments render correctly after a pull.
+
+Set your own branding (owner-only):
+
+```bash
+/thumbuser @YourChannel      # handle stamped in the lockup + watermark
+/thumbuser clear             # fall back to the bot's own username
+/thumblogo                   # reply to a PNG/JPG → install it top-left
+/thumblogo clear             # back to the monogram tile
+```
 
 <div align="center">
 
-<img src="assets/thumb_showcase.jpg" alt="Modern Glass thumbnail preview" width="75%">
+<img src="assets/thumb_showcase.jpg" alt="Streaming Card thumbnail preview" width="75%">
 
-<p><sub><code>modern</code> template · auto-generated at 1280×720 for every upload</sub></p>
+<p><sub><code>streaming</code> template · auto-generated at 1280×720 for every upload</sub></p>
 
 </div>
 
@@ -192,6 +207,8 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 | `/startpic`       | Set banner photo for /start modern UI          |
 | `/setthumb`       | Set custom upload thumbnail                    |
 | `/delthumb`       | Delete custom thumbnail                        |
+| `/thumbuser`      | Set the channel handle shown on thumbnails *(owner)* |
+| `/thumblogo`      | Set the PNG logo shown on thumbnails *(owner)* |
 
 **🔐 ForceSub & Timers**
 
@@ -273,8 +290,10 @@ cp .env.example .env
 | `FSUB_CHANNEL`          | Force-sub channel (defaults to main)                   | —            |
 | `NETWORK_CHANNEL_LINK`  | Link for the *download network* button                 | `t.me/animedekho` |
 | `DATABASE_NAME`         | MongoDB database name                                  | `animedekho_bot` |
-| `THUMB_TEMPLATE`        | `modern` · `cinematic` · `movie_gold` · `neon_cyber` · `minimal` | `modern` |
-| `RANDOM_THUMB_TEMPLATE` | Random template every upload                           | `off`        |
+| `THUMB_TEMPLATE`        | Thumbnail style — `streaming` (legacy names alias to it)             | `streaming` |
+| `RANDOM_THUMB_TEMPLATE` | *(retired — single style)*                                           | `off`        |
+| `THUMB_BRAND_USERNAME`  | Channel handle stamped on thumbnails                                 | —            |
+| `THUMB_BRAND_LOGO`      | Path to the PNG logo in the thumbnail lockup                         | —            |
 | `AUTO_THUMB`            | Auto-generate branded thumbnails                       | `on`         |
 | `AUTO_SEARCH`           | Type-in-chat search trigger                            | `on`         |
 | `FSUB_MOD`              | 2-minute expiring invite links                         | `on`         |

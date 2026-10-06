@@ -286,33 +286,319 @@ def main() -> int:
         print(f"[FAIL] source feature: {_se}")
         ok = False
 
-    # ── Thumbnail: upgraded Modern template renders 16:9 artwork ──────────
+    # ── Issue #33 reliability: failure TTL + dead-host bench + retries ────
+    try:
+        from extractors import reliability as rel
+        rel.reset()
+
+        # item 3: 3-minute dead-host bench
+        ok &= check("i33 bench window is 180s", rel.BENCH_SECS == 180.0, str(rel.BENCH_SECS))
+        # item 2: max 3 fresh-link attempts
+        ok &= check("i33 max download attempts is 3", rel.attempts_for() == 3, str(rel.attempts_for()))
+        ok &= check("i33 attempt budget stops at limit",
+                    rel.next_attempt(1) == 2 and rel.next_attempt(2) == 3
+                    and rel.next_attempt(3) is None and rel.next_attempt(9) is None)
+
+        # item 3: connection-level error benches the whole host
+        rel.record_host_dead("https://dead.example/f1.mp4", "All connection attempts failed")
+        ok &= check("i33 conn error benches host",
+                    rel.is_host_benched("https://dead.example/other.mp4")
+                    and rel.bench_remaining("https://dead.example/other.mp4") > 170)
+        ok &= check("i33 bench leaves other hosts alone",
+                    not rel.is_host_benched("https://alive.example/x.mp4"))
+        ok &= check("i33 benched host also parks its URL",
+                    rel.is_url_parked("https://dead.example/f1.mp4"))
+
+        # item 1/3: 3 distinct dead URLs on one host trip the bench
+        rel.reset()
+        for i in range(rel.BENCH_HOST_FAILURES):
+            rel.record_failure(f"https://flaky.example/f{i}.mp4", "http-404")
+        ok &= check("i33 3 dead URLs bench the host",
+                    rel.is_host_benched("https://flaky.example/anything"),
+                    str(rel.snapshot()))
+
+        # item 1: per-URL TTL + pick-first-available
+        rel.reset()
+        rel.record_failure("https://h.example/a.mp4", "http-404")
+        ok &= check("i33 dead URL parked", rel.is_url_parked("https://h.example/a.mp4")
+                    and rel.failure_remaining("https://h.example/a.mp4") > 500)
+        ok &= check("i33 sibling URLs unaffected", not rel.is_url_parked("https://h.example/b.mp4"))
+        ok &= check("i33 first_available skips parked",
+                    rel.first_available(["https://h.example/a.mp4", "https://h.example/b.mp4"])
+                    == "https://h.example/b.mp4")
+        rel.clear_url("https://h.example/a.mp4")
+        ok &= check("i33 success clears TTL", not rel.is_url_parked("https://h.example/a.mp4"))
+        ok &= check("i33 snapshot reports state", isinstance(rel.snapshot(), dict))
+
+        # probe must refuse benched/parked URLs without touching the network
+        from extractors.health_probe import probe_url_health, select_fastest_healthy
+        rel.reset()
+        rel.record_host_dead("https://benchme.example/a.mp4", "connection refused")
+        _pr = asyncio.run(probe_url_health("https://benchme.example/b.mp4"))
+        ok &= check("i33 probe short-circuits benched host",
+                    _pr.get("error") == "host-benched" and not _pr.get("ok"))
+        rel.reset()
+        rel.record_failure("https://parkme.example/a.mp4", "http-404")
+        _pr2 = asyncio.run(probe_url_health("https://parkme.example/a.mp4"))
+        ok &= check("i33 probe short-circuits TTL-parked URL",
+                    _pr2.get("error") == "url-ttl" and not _pr2.get("ok"))
+
+        # selection must skip benched candidates and say why
+        rel.reset()
+        rel.record_host_dead("https://bad.example/x.mp4", "connection refused")
+        _cands = [
+            {"url": "https://bad.example/x.mp4", "source": "A", "quality": "720p", "provider": "bad"},
+            {"url": "https://good.example/y.mp4", "source": "B", "quality": "720p", "provider": "good"},
+        ]
+        _best, _diags = asyncio.run(select_fastest_healthy(_cands, probe=False))
+        ok &= check("i33 selection skips benched host",
+                    _best and _best["source"] == "B", str(_best))
+        ok &= check("i33 bench visible in diagnostics",
+                    any("benched" in (d.get("error") or "").lower() for d in _diags),
+                    str(_diags))
+        # bench alone must not hard-fail: last resort still usable
+        _only = [{"url": "https://bad.example/x.mp4", "source": "A", "quality": "720p", "provider": "bad"}]
+        _best2, _ = asyncio.run(select_fastest_healthy(_only, probe=False))
+        ok &= check("i33 benched candidate is last resort, not a dead end",
+                    _best2 is not None and _best2["source"] == "A")
+
+        # item 1: RareAnimes returns every mirror for the episode
+        # (extractors/__init__ re-exports the instance as `rareanimes`, which
+        #  shadows the submodule attribute — import the real module.)
+        import importlib as _il
+        _ra = _il.import_module("extractors.rareanimes")
+        _HTML = """
+        <div class="entry-content">
+          <a href="https://srv1.example/dl">Episode 01 Server 1</a>
+          <a href="https://srv2.example/dl">Ep 1 Server 2</a>
+          <a href="https://srv1.example/dl">Episode 01 dup</a>
+          <a href="https://srv3.example/dl">Episode 02</a>
+        </div>"""
+
+        class _Resp:
+            text = _HTML
+            status_code = 200
+
+        class _Scraper:
+            def get(self, *a, **k):
+                return _Resp()
+
+        _orig_scraper, _orig_search = _ra._get_scraper, _ra.rareanimes._sync_search
+        _ra._get_scraper = lambda: _Scraper()  # module-level helper, not a method
+        _ra.rareanimes._sync_search = lambda q: [{
+            "title": "Solo Leveling Season 1 Hindi Dubbed",
+            "url": "https://www.rareanimes.mov/solo-leveling-season-1/",
+            "poster": "",
+        }]
+        try:
+            rel.reset()
+            _res = _ra.rareanimes._sync_resolve("Solo Leveling", 1, 1, "480p")
+            ok &= check("i33 rareanimes returns a link", bool(_res and _res.get("url")),
+                        str(_res))
+            _alts = (_res or {}).get("alternates") or []
+            ok &= check("i33 rareanimes exposes spare mirrors",
+                        len(_alts) == 1 and _res.get("servers_found") == 2,
+                        f"alts={_alts} found={(_res or {}).get('servers_found')}")
+            ok &= check("i33 rareanimes dedupes mirrors",
+                        _res.get("url") != _alts[0] if _alts else False)
+            # bench the chosen mirror → extractor must fall back to the spare
+            rel.record_host_dead(_res["url"], "connection refused")
+            _res2 = _ra.rareanimes._sync_resolve("Solo Leveling", 1, 1, "480p")
+            ok &= check("i33 rareanimes fails over past a benched mirror",
+                        _res2 and _res2.get("url") == _alts[0], str(_res2))
+        finally:
+            _ra._get_scraper, _ra.rareanimes._sync_search = _orig_scraper, _orig_search
+            rel.reset()
+
+        # item 2: download_media retries with a fresh link (max 3)
+        import bot.downloader as _dl
+        _orig_once, _orig_probe = _dl._download_once, None
+        import extractors.health_probe as _hp
+        _orig_probe = _hp.probe_url_health
+        _calls = {"once": 0, "refresh": 0}
+        _seen_urls = []
+
+        async def _ok_probe(u, referer=""):
+            return {"ok": True, "latency_ms": 1.0, "bytes": 1, "status": 200, "error": ""}
+
+        async def _fail_then_ok(u, q, op, pm, t, v, r, j):
+            _calls["once"] += 1
+            _seen_urls.append(u)
+            return _calls["once"] >= 3  # fail twice, succeed on attempt 3
+
+        async def _refresh():
+            _calls["refresh"] += 1
+            return f"https://fresh.example/take{_calls['refresh']}.mp4"
+
+        _hp.probe_url_health = _ok_probe
+        _dl._download_once = _fail_then_ok
+        try:
+            rel.reset()
+            _ok = asyncio.run(_dl.download_media(
+                "https://start.example/a.mp4", "720p",
+                "/tmp/does-not-matter.mp4", None, "Solo Leveling",
+                refresh_url=_refresh,
+            ))
+            ok &= check("i33 download succeeds within 3 attempts",
+                        _ok and _calls["once"] == 3, str(_calls))
+            ok &= check("i33 each retry used a fresh link",
+                        _calls["refresh"] == 2 and len(set(_seen_urls)) == 3,
+                        f"{_calls} {_seen_urls}")
+            ok &= check("i33 failed start URL parked after failure",
+                        rel.is_url_parked("https://start.example/a.mp4"))
+
+            # budget respected: never more than 3 engine passes
+            _calls["once"] = 0
+            _calls["refresh"] = 0
+            _seen_urls.clear()
+
+            async def _always_fail(u, q, op, pm, t, v, r, j):
+                _calls["once"] += 1
+                _seen_urls.append(u)
+                return False
+
+            _dl._download_once = _always_fail
+            _ok2 = asyncio.run(_dl.download_media(
+                "https://start2.example/a.mp4", "720p",
+                "/tmp/does-not-matter.mp4", None, "Solo",
+                refresh_url=_refresh,
+            ))
+            ok &= check("i33 stops after 3 attempts (no hammering)",
+                        not _ok2 and _calls["once"] == 3, str(_calls))
+
+            # spare mirrors (item 1) are consumed before paying for re-resolve
+            _calls["once"] = 0
+            _calls["refresh"] = 0
+            _seen_urls.clear()
+            _ok3 = asyncio.run(_dl.download_media(
+                "https://start3.example/a.mp4", "720p",
+                "/tmp/does-not-matter.mp4", None, "Solo",
+                refresh_url=_refresh,
+                alternates=["https://mirror.example/b.mp4", "https://mirror.example/b.mp4"],
+            ))
+            ok &= check("i33 spare mirror preferred over re-resolve",
+                        _calls["refresh"] == 1 and "https://mirror.example/b.mp4" in _seen_urls,
+                        f"{_calls} {_seen_urls}")
+        finally:
+            _dl._download_once = _orig_once
+            _hp.probe_url_health = _orig_probe
+            rel.reset()
+
+        # nothing in the tree should hand a benched URL straight back
+        import pathlib as _pl
+        ms_src = _pl.Path("extractors/multisource.py").read_text()
+        ok &= check("i33 multisource honours bench", "reliability" in ms_src
+                    and "first_available" in ms_src)
+        hp_src = _pl.Path("extractors/health_probe.py").read_text()
+        ok &= check("i33 probes consult the bench", "is_host_benched" in hp_src
+                    and "is_url_parked" in hp_src)
+        cb_src = pathlib.Path("bot/handlers/callbacks.py").read_text()
+        ok &= check("i33 multisource results carry mirrors",
+                    "alternates=ms_res.get" in cb_src and "alternates=ms0.get" in cb_src)
+    except Exception as _r33:
+        import traceback as _tb
+        _tb.print_exc()
+        print(f"[FAIL] issue #33 reliability: {_r33}")
+        ok = False
+
+    # ── Issue #33: single streaming-card thumbnail + branding commands ────
     try:
         import tempfile as _tf
+        import pathlib as _pl2
         from PIL import Image as _PILImage
-        from bot.thumbnail import generate_auto_thumbnail, list_available_templates
+        from bot.thumbnail import (
+            generate_auto_thumbnail, list_available_templates, get_template,
+        )
+
+        # One style only — the five legacy templates were retired.
+        ok &= check("i33 only streaming template registered",
+                    list_available_templates() == ["streaming"],
+                    str(list_available_templates()))
+        # ...but every legacy config value still resolves (no silent regression).
+        for _legacy in ("modern", "cinematic", "movie_gold", "neon_cyber", "minimal", "", "STREAMING"):
+            ok &= check(f"i33 legacy template '{_legacy or '(empty)'}' aliases",
+                        get_template(_legacy).name == "streaming",
+                        get_template(_legacy).name)
+
         _thumb_out = os.path.join(_tf.gettempdir(), "adk_thumb_test.jpg")
         _thumb = generate_auto_thumbnail(
-            title="Solo Leveling",
-            episode_info="S01 E05",
+            title="Welcome to the Outcast's Restaurant!",
+            episode_info="Episodes: 12 | S01",
             quality="1080p",
             audio="Hindi Dub",
             poster_path="",
             output_path=_thumb_out,
             bot_username="AnimeDekhoBot",
-            template_name="modern",
+            template_name="streaming",
+            brand_username="@Animerulz_Pro",
         )
-        ok &= check("thumb modern renders", bool(_thumb) and os.path.exists(_thumb))
+        ok &= check("i33 streaming thumb renders", bool(_thumb) and os.path.exists(_thumb))
         if _thumb and os.path.exists(_thumb):
             with _PILImage.open(_thumb) as _im:
-                ok &= check("thumb is 1280x720", _im.size == (1280, 720), f"got {_im.size}")
-            ok &= check("thumb has real content", os.path.getsize(_thumb) > 20000,
+                ok &= check("i33 thumb is 1280x720", _im.size == (1280, 720), f"got {_im.size}")
+            ok &= check("i33 thumb has real content", os.path.getsize(_thumb) > 20000,
                         f"{os.path.getsize(_thumb)}B")
             os.remove(_thumb)
-        ok &= check("thumb template list", list_available_templates() == [
-            "modern", "cinematic", "movie_gold", "neon_cyber", "minimal"])
+
+        # Legacy stored template names keep rendering (library passes them through).
+        _legacy_out = os.path.join(_tf.gettempdir(), "adk_thumb_legacy.jpg")
+        _lt = generate_auto_thumbnail(
+            title="Solo Leveling", episode_info="S01 E05", quality="720p",
+            audio="Hindi Dub", poster_path="", output_path=_legacy_out,
+            template_name="movie_gold",
+        )
+        ok &= check("i33 legacy template name still renders", bool(_lt) and os.path.exists(_lt))
+        if _lt:
+            os.remove(_lt)
+
+        # Branding logo: a PNG set via /thumblogo must composite into the lockup.
+        _logo = os.path.join(_tf.gettempdir(), "adk_test_logo.png")
+        _PILImage.new("RGBA", (128, 128), (236, 72, 153, 255)).save(_logo)
+        _logo_out = os.path.join(_tf.gettempdir(), "adk_thumb_logo.jpg")
+        _with_logo = generate_auto_thumbnail(
+            title="Solo Leveling", episode_info="S01 E01", quality="1080p",
+            audio="Hindi Dub", poster_path="", output_path=_logo_out,
+            logo_path=_logo,
+        )
+        ok &= check("i33 thumb with PNG logo renders",
+                    bool(_with_logo) and os.path.exists(_with_logo))
+        if _with_logo:
+            with _PILImage.open(_with_logo) as _im:
+                _px = list(_im.convert("RGB").crop((72, 52, 132, 112)).getdata())
+                _pink = sum(1 for r, g, b in _px if r > 200 and g < 130 and 110 < b < 200)
+                ok &= check("i33 logo pixels present in lockup", _pink > 200, f"pink={_pink}")
+            os.remove(_with_logo)
+        os.remove(_logo)
+
+        # Commands registered + wired.
+        _hsrc = _pl2.Path("bot/handlers/__init__.py").read_text()
+        ok &= check("i33 thumbuser registered",
+                    'filters.command("thumbuser")' in _hsrc)
+        ok &= check("i33 thumblogo registered",
+                    'filters.command("thumblogo")' in _hsrc)
+        _asrc = _pl2.Path("bot/handlers/admin.py").read_text()
+        ok &= check("i33 thumbuser handler exists", "async def cmd_thumbuser" in _asrc)
+        ok &= check("i33 thumblogo handler exists", "async def cmd_thumblogo" in _asrc)
+        ok &= check("i33 thumblogo validates image",
+                    "im.verify()" in _asrc)
+        ok &= check("i33 branding persisted to db",
+                    "thumb_brand_username" in _asrc and "thumb_brand_logo_path" in _asrc)
+        _apsrc = _pl2.Path("bot/app.py").read_text()
+        ok &= check("i33 branding restored on boot",
+                    "thumb_brand_username" in _apsrc and "thumb_brand_logo_path" in _apsrc)
+        # No template class may be left registered besides 'streaming'.
+        _tsrc = _pl2.Path("bot/thumbnail.py").read_text()
+        _regs = [ln for ln in _tsrc.splitlines() if ln.startswith("@register_template")]
+        ok &= check("i33 exactly one register_template decorator",
+                    len(_regs) == 1, str(_regs))
+        # Category settings must not offer retired styles.
+        _ssrc = _pl2.Path("bot/handlers/settings.py").read_text()
+        ok &= check("i33 settings no longer offer retired styles",
+                    '"cinematic"' not in _ssrc and '"neon_cyber"' not in _ssrc)
     except Exception as _te:
-        print(f"[FAIL] thumbnail render: {_te}")
+        import traceback as _tb2
+        _tb2.print_exc()
+        print(f"[FAIL] i33 thumbnail: {_te}")
         ok = False
 
     print("\nALL PASS" if ok else "\nSOME FAILURES")

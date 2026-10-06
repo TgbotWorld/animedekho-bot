@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 
 from bot.telegram import Client
 
@@ -65,6 +66,24 @@ async def _on_start(client: Client):
             log.info("Custom emoji runtime initialized: %s", custom_emoji_state)
         except Exception as e:
             log.debug("Failed initializing custom emoji state: %s", e)
+
+        # Thumbnail branding set by /thumbuser + /thumblogo (issue #33) —
+        # restore it so a restart doesn't silently drop the owner's logo/handle.
+        try:
+            from config import Config
+            _bh = await db.get_config("thumb_brand_username", "")
+            _bl = await db.get_config("thumb_brand_logo_path", "")
+            if _bh:
+                Config.THUMB_BRAND_USERNAME = str(_bh)
+            if _bl and os.path.exists(str(_bl)):
+                Config.THUMB_BRAND_LOGO = str(_bl)
+            elif _bl:
+                await db.set_config("thumb_brand_logo_path", "")
+            if _bh or _bl:
+                log.info("Thumbnail branding restored (handle=%r logo=%r)",
+                         Config.THUMB_BRAND_USERNAME, Config.THUMB_BRAND_LOGO)
+        except Exception as e:
+            log.debug("Thumbnail branding restore skipped: %s", e)
 
     # Resolve channel peers so Pyrogram can send to them
     # Try get_chat first, fall back to raw API (needed on fresh sessions)
@@ -214,6 +233,8 @@ async def _on_start(client: Client):
                 BotCommand("setdump", "Configure dump storage channel"),
                 BotCommand("setthumb", "Set custom thumbnail for uploads"),
                 BotCommand("delthumb", "Delete custom thumbnail"),
+                BotCommand("thumbuser", "Set channel handle on thumbnails (owner)"),
+                BotCommand("thumblogo", "Set PNG logo on thumbnails (owner)"),
                 BotCommand("automonitor", "Automatic episode monitoring"),
                 BotCommand("poststyle", "Modern-only style status (classic retired)"),
                 BotCommand("startstyle", "Modern-only style status (classic retired)"),

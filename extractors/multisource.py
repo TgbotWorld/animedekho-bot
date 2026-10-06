@@ -197,6 +197,23 @@ class MultiSourceManager:
             if not res or not res.get("url"):
                 return None, f"{name}: no result", "skip"
 
+            # Issue #33: if this source's first pick is benched/TTL-parked,
+            # swap in one of its own spare mirrors before giving up on it.
+            try:
+                from extractors import reliability as _rel
+                _alts = [u for u in (res.get("alternates") or []) if u]
+                if not _rel.is_available(res["url"]):
+                    _swap = _rel.first_available(_alts)
+                    if not _swap:
+                        return None, f"{name}: host benched / URL in failure TTL", "skip"
+                    _alts = [u for u in _alts if u != _swap] + [res["url"]]
+                    log.info("Source '%s' primary URL parked — using spare mirror", name)
+                    res = dict(res)
+                    res["url"] = _swap
+                    res["alternates"] = _alts
+            except Exception as _be:
+                log.debug("bench check skipped: %s", _be)
+
             # V3 #2: skip known non-exact qualities outright.
             got_q = res.get("quality", "Unknown") or "Unknown"
             got_norm = normalize_quality(got_q)
@@ -271,6 +288,9 @@ class MultiSourceManager:
                 # Referer matters for probes/downloads on gated hosts
                 # (HubCloud googleapis, ToonFlix worker proxy).
                 "referer": res.get("referer", ""),
+                # Issue #33 item 1: spare mirrors the source listed for this
+                # episode — handed to the downloader as free retry ammo.
+                "alternates": [u for u in (res.get("alternates") or []) if u and u != curr_url],
             }
             if got_norm == "Unknown":
                 return entry, f"{name}: Unknown quality (verify post-download)", "unknown"

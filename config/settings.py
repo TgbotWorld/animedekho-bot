@@ -102,7 +102,7 @@ class BotConfig:
     )
     thumb_template: str = field(
         default_factory=lambda: getattr(Config, "THUMB_TEMPLATE", None)
-        or os.environ.get("THUMB_TEMPLATE", "modern").lower()
+        or os.environ.get("THUMB_TEMPLATE", "streaming").lower()
     )
     random_thumb_template: bool = field(
         default_factory=lambda: getattr(Config, "RANDOM_THUMB_TEMPLATE", None)

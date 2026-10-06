@@ -1227,51 +1227,116 @@ async def download_media(
     referer: str = "",
     job_id: str | None = None,
     refresh_url=None,
+    alternates: list[str] | None = None,
+    max_attempts: int | None = None,
 ) -> bool:
     """
-    Unified multi-engine downloader:
+    Unified multi-engine downloader with a bounded fresh-link retry budget:
     1. If URL is MP4 / direct file: use direct HTTP stream download.
     2. If URL is M3U8: try N_m3u8DL-RE.
     3. If N_m3u8DL-RE fails or is unavailable: fallback to FFmpeg.
 
-    refresh_url: optional async callable returning a FRESH direct URL for the
-    same title/quality (fixes time-limited signed links that 403 between
-    resolution and download). When provided, the URL is preflight-checked
-    first; a dead link triggers exactly one fresh re-resolve before failing.
+    Issue #33 item 2: a failed attempt re-resolves a FRESH link and retries,
+    up to 3 attempts total (extractors.reliability.MAX_DOWNLOAD_ATTEMPTS).
+    Known extra mirrors from the source (``alternates``) are consumed before
+    paying for a full re-resolve.
     """
-    if refresh_url is not None:
-        # Stale-URL preflight: signed/proxied links can 403 between resolve
-        # and download. Verify reachability first; on failure pull ONE fresh
-        # URL from the source instead of burning minutes on a dead link.
+    from extractors import reliability as _rel
+
+    attempts = _rel.attempts_for(max_attempts)
+    pending: list[str] = [u for u in (alternates or []) if u and u != stream_url]
+    current_url = stream_url
+    current_variant = variant_url
+
+    for attempt in range(1, attempts + 1):
+        # ── Preflight: dead/stale link → swap in a fresh one before the
+        #    expensive engine work (signed HubCloud/worker links 403 fast).
         try:
             from extractors.health_probe import probe_url_health
-            pre = await probe_url_health(stream_url, referer or "")
-            if not pre.get("ok"):
-                log.warning("Preflight %s for [%s] %s — refreshing URL once",
-                            pre.get("error", "failed"), quality, stream_url[:80])
-                try:
-                    fresh = refresh_url()
-                    if asyncio.iscoroutine(fresh):
-                        fresh = await fresh
-                except Exception as re:
-                    log.warning("URL refresh failed: %s", re)
-                    fresh = None
-                if fresh and isinstance(fresh, str) and fresh.startswith("http") and fresh != stream_url:
-                    pre2 = await probe_url_health(fresh, referer or "")
-                    if pre2.get("ok"):
-                        log.info("Refresh recovered reachability (%s) — downloading fresh URL",
-                                 pre2.get("latency_ms"))
-                        if variant_url == stream_url:
-                            variant_url = ""
-                        stream_url = fresh
-                    else:
-                        log.warning("Fresh URL also unreachable (%s) — trying original anyway",
-                                    pre2.get("error"))
-                elif fresh and fresh != stream_url:
-                    stream_url = fresh
+            pre = await probe_url_health(current_url, referer or "")
         except Exception as pe:
             log.debug("Preflight check skipped: %s", pe)
+            pre = {"ok": True}
 
+        if not pre.get("ok") and attempt < attempts:
+            fresh = await _next_fresh_url(pending, refresh_url, current_url)
+            if fresh:
+                log.warning("Preflight %s for [%s] %s — using fresh link (attempt %d/%d)",
+                            pre.get("error", "failed"), quality, current_url[:80], attempt, attempts)
+                current_url, current_variant = _swap_url(current_url, current_variant, fresh)
+                pre = {"ok": True}
+            else:
+                log.warning("Preflight %s but no fresh link available — trying anyway",
+                            pre.get("error", "failed"))
+
+        ok = await _download_once(
+            current_url, quality, output_path, progress_msg, title,
+            current_variant, referer, job_id,
+        )
+        if ok:
+            if attempt > 1:
+                log.info("Download recovered on attempt %d/%d via %s", attempt, attempts, current_url[:80])
+            return True
+
+        # This exact link is bad — park it so the next re-resolve cannot
+        # hand it straight back.
+        _rel.record_failure(current_url, "download-failed")
+
+        if attempt >= attempts:
+            break
+        fresh = await _next_fresh_url(pending, refresh_url, current_url)
+        if not fresh:
+            log.warning("Download failed and no fresh link left (attempt %d/%d)", attempt, attempts)
+            break
+        log.warning("Download attempt %d/%d failed — re-resolving fresh link", attempt, attempts)
+        current_url, current_variant = _swap_url(current_url, current_variant, fresh)
+
+    log.warning("download_media failed after %d attempt(s): [%s] %s", attempts, quality, stream_url[:120])
+    return False
+
+
+def _swap_url(old_url: str, old_variant: str, fresh: str) -> tuple[str, str]:
+    """Point at *fresh*; a variant tied to the old master URL is meaningless."""
+    return fresh, "" if old_variant == old_url else old_variant
+
+
+async def _next_fresh_url(pending: list[str], refresh_url, current_url: str) -> str:
+    """Issue #33 item 2: cheapest fresh link first (spare mirror → re-resolve)."""
+    while pending:
+        cand = pending.pop(0)
+        if cand and cand != current_url:
+            try:
+                from extractors import reliability as _rel
+                if not _rel.is_available(cand):
+                    continue
+            except Exception:
+                pass
+            return cand
+    if refresh_url is None:
+        return ""
+    try:
+        fresh = refresh_url()
+        if asyncio.iscoroutine(fresh):
+            fresh = await fresh
+    except Exception as re:
+        log.warning("URL refresh failed: %s", re)
+        return ""
+    if isinstance(fresh, str) and fresh.startswith("http") and fresh != current_url:
+        return fresh
+    return ""
+
+
+async def _download_once(
+    stream_url: str,
+    quality: str,
+    output_path: str,
+    progress_msg: Message | None,
+    title: str,
+    variant_url: str,
+    referer: str,
+    job_id: str | None,
+) -> bool:
+    """Single engine pass (no retries) — the original download_media body."""
     is_hls = (
         ".m3u8" in stream_url.lower()
         or ".m3u8" in variant_url.lower()
@@ -1524,11 +1589,14 @@ async def download_and_upload(
     is_movie: bool = False,
     job_id: str | None = None,
     refresh_url=None,
+    alternates: list[str] | None = None,
 ) -> tuple[bool, Message | None]:
     """Download video + upload via Pyrogram MTProto with progress, custom thumbnail, and dump channel.
 
     refresh_url: optional async callable returning a fresh direct URL
-    (forwarded to download_media for stale-link recovery)."""
+    (forwarded to download_media for stale-link recovery).
+    alternates: spare mirrors from the source (Issue #33 item 1) consumed
+    before paying for a fresh re-resolve."""
     output_path = str(_TEMP_BASE / filename)
     overall_start = time.time()
     thumb_path = None
@@ -1633,7 +1701,7 @@ async def download_and_upload(
 
         success = await download_media(
             stream_url, quality, output_path, progress_msg, title, variant_url=variant_url, referer=referer, job_id=job_id,
-            refresh_url=refresh_url,
+            refresh_url=refresh_url, alternates=alternates,
         )
 
         if not success:

@@ -12,6 +12,7 @@ from .admin import (
     cmd_albummode, cmd_createchannel, cmd_mapchannel, cmd_unmapchannel, cmd_channels,
     cmd_health, cmd_logs, cmd_errors, cmd_clearerrors, health_callback,
     cmd_setdump, cmd_setthumb, cmd_delthumb, cmd_viewthumb, cmd_automonitor, cmd_poststyle,
+    cmd_thumbuser, cmd_thumblogo,
     cmd_startstyle, cmd_startpic, cmd_epstyle, cmd_schedstyle,
     cmd_setaudio, map_audio_callback, cmd_postsched,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "cmd_fsub", "cmd_fsub_mod", "cmd_dlt_time", "cmd_tutorial",
     "cmd_schedule", "schedule_callback",
     "cmd_setdump", "cmd_setthumb", "cmd_delthumb", "cmd_viewthumb", "cmd_automonitor", "cmd_poststyle",
+    "cmd_thumbuser", "cmd_thumblogo",
     "cmd_startstyle", "cmd_startpic", "cmd_epstyle", "cmd_schedstyle", "start_callback",
     "cmd_setaudio", "map_audio_callback", "cmd_postsched",
     "register_handlers",
@@ -96,6 +98,8 @@ def register_handlers(app: Client):
     app.add_handler(MessageHandler(cmd_setthumb, filters.command("setthumb") & filters.private))
     app.add_handler(MessageHandler(cmd_delthumb, filters.command("delthumb") & filters.private))
     app.add_handler(MessageHandler(cmd_viewthumb, filters.command("viewthumb") & filters.private))
+    app.add_handler(MessageHandler(cmd_thumbuser, filters.command("thumbuser") & filters.private))
+    app.add_handler(MessageHandler(cmd_thumblogo, filters.command("thumblogo") & filters.private))
     app.add_handler(MessageHandler(cmd_automonitor, filters.command(["automonitor", "monitor"]) & filters.private))
     app.add_handler(MessageHandler(cmd_poststyle, filters.command("poststyle") & filters.private))
     app.add_handler(MessageHandler(cmd_startstyle, filters.command("startstyle") & filters.private))

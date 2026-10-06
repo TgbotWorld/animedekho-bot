@@ -420,9 +420,9 @@ class LibraryManager:
                     from bot.thumbnail import generate_thumbnail
                     auto_thumb_on = await self.db.get_auto_thumb() if self.db else True
                     if auto_thumb_on or post_style == "modern":
-                        template_choice = await self.db.get_thumb_template() if self.db else "modern"
-                        if is_movie:
-                            template_choice = "movie_gold"
+                        # Issue #33: one streaming-card style serves both
+                        # movies and series (legacy templates retired).
+                        template_choice = await self.db.get_thumb_template() if self.db else "streaming"
                         gen_card = generate_thumbnail(
                             title=series_title,
                             quality="HD",

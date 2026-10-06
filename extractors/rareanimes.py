@@ -140,23 +140,44 @@ class RareAnimesExtractor:
             if not content:
                 content = soup
 
-            # Search for episode-specific link or download section
+            # Search for episode-specific link or download section.
+            # Issue #33 item 1: collect EVERY server for this episode instead of
+            # the first <a> we meet — the site lists several mirrors per ep and
+            # the first one is frequently the dead one.
+            seen_hrefs: list[str] = []
+            ep_url = ""
             for a in content.find_all("a", href=True):
                 txt = a.get_text(" ", strip=True).lower()
-                href = a["href"]
+                href = a["href"].strip()
+                if not href.startswith("http") or href in seen_hrefs:
+                    continue
                 # Match episode number e.g. "Ep 1", "Episode 01", "1x01"
                 ep_match = re.search(r"(?:ep|episode|e)\s*0*(\d+)\b", txt)
                 if ep_match and int(ep_match.group(1)) == episode:
-                    if "http" in href:
-                        return {
-                            "url": href,
-                            "quality": "Unknown",
-                            "requested_quality": quality_pref,
-                            "detected_quality": "Unknown",
-                            "verified_quality": "Unknown",
-                            "source": "RareAnimes",
-                            "poster": target_post.get("poster"),
-                        }
+                    seen_hrefs.append(href)
+
+            if not seen_hrefs:
+                return None
+
+            # Prefer servers whose host is not benched / not in failure TTL,
+            # then keep the page's natural mirror order.
+            from extractors import reliability as _rel
+            available = [u for u in seen_hrefs if _rel.is_available(u)]
+            ordered = available + [u for u in seen_hrefs if u not in available]
+            ep_url = ordered[0]
+
+            return {
+                "url": ep_url,
+                "quality": "Unknown",
+                "requested_quality": quality_pref,
+                "detected_quality": "Unknown",
+                "verified_quality": "Unknown",
+                "source": "RareAnimes",
+                "poster": target_post.get("poster"),
+                # Issue #33 item 1: remaining mirrors for failover.
+                "alternates": [u for u in ordered if u != ep_url],
+                "servers_found": len(seen_hrefs),
+            }
         except Exception as e:
             log.warning("RareAnimes resolve error for %s: %s", post_url, e)
 

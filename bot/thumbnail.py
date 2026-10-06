@@ -1,13 +1,14 @@
 """
 Auto Thumbnail Generator for AnimeDekho Bot — Modular Multi-Template Architecture.
 
-Supports 5 distinct visual designs + random mode:
-1. 'modern': Stylized modern glass — gradient accent cap & title, ambient
-   glow field, feature chips, giant quality watermark and brand lockup.
-2. 'cinematic': Moody widescreen theatrical master with silver frame & cinematic bars.
-3. 'movie_gold': Luxury obsidian & champagne gold VIP aesthetic (tailored for movies).
-4. 'neon_cyber': Futuristic cyberpunk with electric cyan & hot magenta neon glow.
-5. 'minimal': Clean frosted studio matte card with refined minimalist typography.
+Issue #33 retired the five older styles in favour of ONE Netflix/streaming
+key-art card (issue #33 reference screenshots):
+- 'streaming': brand lockup (optional PNG logo + channel handle), wide-tracked
+  eyebrow, oversized title, metadata bullets, DOWNLOAD + quality pills, and a
+  handle watermark over feathered key art.
+
+Legacy template names ('modern', 'cinematic', 'movie_gold', 'neon_cyber',
+'minimal') are aliased to 'streaming' so old configs keep rendering.
 
 Also includes `enhance_custom_thumbnail` to fix low-quality / blurry custom thumbnails,
 ensuring razor-sharp text, proper 16:9 framing, and Telegram video player optimization.
@@ -446,11 +447,11 @@ class BaseThumbnailTemplate:
         output_path: str = "",
         bot_username: str = "AnimeDekhoBot",
         is_movie: bool = False,
+        brand_username: str = "",
+        logo_path: str = "",
     ) -> str | None:
         raise NotImplementedError
 
-
-# ── Template 1: Modern Glass (v2 — stylized gradient design) ────────────────
 
 def _grad_color(stops: list, t: float) -> tuple:
     """Interpolate RGBA across gradient stops [(pos, rgba), ...]."""
@@ -550,19 +551,57 @@ def _shade_rgba(color, factor: float) -> tuple:
     return (ch(r), ch(g), ch(b), a)
 
 
-@register_template("modern")
-class ModernGradientTemplate(BaseThumbnailTemplate):
-    """Stylized modern glass — gradient title, ambient glow field, feature chips."""
-    name = "modern"
-    display_name = "Modern Glass"
-    description = "Stylized glass card with gradient typography, ambient glow and feature chips."
+def _tracked_text(draw, xy, text: str, font, fill, tracking: int = 3) -> int:
+    """Letter-spaced text (the reference art uses wide-tracked eyebrows)."""
+    x, y = xy
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += draw.textbbox((0, 0), ch, font=font)[2] + tracking
+    return x - xy[0]
 
-    # Brand accent gradient shared across cap, borders and monogram tile.
+
+def _tracked_width(draw, text: str, font, tracking: int = 3) -> int:
+    w = 0
+    for ch in text:
+        w += draw.textbbox((0, 0), ch, font=font)[2] + tracking
+    return max(0, w - tracking)
+
+
+def _load_logo_image(logo_path: str) -> Image.Image | None:
+    """Load the admin-supplied PNG/JPG brand logo (issue #33 optional extra)."""
+    if not logo_path or not os.path.exists(str(logo_path)):
+        return None
+    try:
+        with Image.open(logo_path) as im:
+            return im.convert("RGBA")
+    except Exception as e:
+        log.debug("Failed loading brand logo: %s", e)
+        return None
+
+
+@register_template("streaming")
+class StreamingCardTemplate(BaseThumbnailTemplate):
+    """Netflix-style key-art hero: art bleeds on the right, info rail on the left.
+
+    Mirrors the reference art in issue #33: brand lockup + wide-tracked eyebrow
+    on top, oversized title, metadata bullets, CTA + quality pills, handle
+    watermark over the art.
+    """
+    name = "streaming"
+    display_name = "Streaming Card"
+    description = "Netflix-style key-art hero with info rail, brand lockup and quality pills."
+
+    # Violet → pink → cyan signature, used for the underline, eyebrow and CTA.
     ACCENT = [
-        (0.0, (34, 211, 238, 255)),
-        (0.5, (59, 130, 246, 255)),
-        (1.0, (139, 92, 246, 255)),
+        (0.0, (167, 139, 250, 255)),
+        (0.55, (236, 72, 153, 255)),
+        (1.0, (34, 211, 238, 255)),
     ]
+
+    # Left info rail geometry.
+    RAIL_X = 72
+    RAIL_W = 566
+    PANEL = (13, 11, 24, 255)
 
     def generate(
         self,
@@ -574,676 +613,248 @@ class ModernGradientTemplate(BaseThumbnailTemplate):
         output_path: str = "",
         bot_username: str = "AnimeDekhoBot",
         is_movie: bool = False,
+        brand_username: str = "",
+        logo_path: str = "",
     ) -> str | None:
         try:
             W, H = CANVAS_WIDTH, CANVAS_HEIGHT
-            canvas = Image.new("RGBA", (W, H), (8, 10, 18, 255))
+            canvas = Image.new("RGBA", (W, H), self.PANEL)
 
-            # ── 1. Ambient background: blurred poster + graded darks + glows
-            bg = _prepare_blurred_bg(poster_path, blur_radius=38)
-            if bg:
-                canvas.paste(bg, (0, 0))
-            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            dov = ImageDraw.Draw(overlay)
-            for y in range(H):
-                dov.line([(0, y), (W, y)], fill=(8, 10, 18, int(120 + (y / H) * 80)))
-            for x in range(360, W):
-                dov.line([(x, 0), (x, H)], fill=(6, 8, 16, int(((x - 360) / (W - 360)) * 90)))
-            canvas = Image.alpha_composite(canvas, overlay)
-            for center, radius, color, alpha in (
-                ((1010, 60), 420, (34, 211, 238), 55),
-                ((240, 680), 430, (139, 92, 246), 50),
-                ((640, 380), 560, (59, 130, 246), 26),
-            ):
-                canvas.alpha_composite(_radial_glow((W, H), center, radius, color, alpha))
+            # ── 1. Key art on the right, feathered into the panel ──────────
+            art = _resolve_poster_image(poster_path)
+            if art:
+                # cover-crop into the art box (x >= ART_X)
+                ART_X = 500
+                box_w, box_h = W - ART_X, H
+                scale = max(box_w / art.width, box_h / art.height)
+                art = art.resize((max(1, int(art.width * scale)), max(1, int(art.height * scale))),
+                                 Image.Resampling.LANCZOS)
+                ox = max(0, (art.width - box_w) // 2)
+                oy = max(0, (art.height - box_h) // 2)
+                art = art.crop((ox, oy, ox + box_w, oy + box_h))
+                # Feather: art fully hidden under the rail, ramping in right.
+                mask = Image.new("L", (W, H), 0)
+                md = ImageDraw.Draw(mask)
+                ramp_start, ramp_end = 560, 940
+                for x in range(W):
+                    if x < ramp_start:
+                        a = 0
+                    elif x > ramp_end:
+                        a = 255
+                    else:
+                        a = int(255 * ((x - ramp_start) / (ramp_end - ramp_start)) ** 0.85)
+                    md.line([(x, 0), (x, H - 1)], fill=a)
+                layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                layer.paste(art, (ART_X, 0))
+                canvas.paste(layer, (0, 0), mask)
+            else:
+                # No art — keep the panel and add a soft glow so it isn't flat.
+                canvas.alpha_composite(_radial_glow((W, H), (1030, 360), 470, (167, 139, 250), 44))
+
+            # Vertical scrim on the art so the bottom watermark stays legible.
+            scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            sd = ImageDraw.Draw(scrim)
+            for y in range(int(H * 0.55), H):
+                a = int(150 * ((y - H * 0.55) / (H * 0.45)))
+                sd.line([(0, y), (W, y)], fill=(5, 4, 12, a))
+            canvas.alpha_composite(scrim)
+
+            # Panel edge shade: keep the rail readable where art bleeds in.
+            edge = _multi_gradient((W, H), [
+                (0.0, (13, 11, 24, 255)),
+                (0.44, (13, 11, 24, 255)),
+                (0.68, (13, 11, 24, 0)),
+                (1.0, (13, 11, 24, 0)),
+            ])
+            canvas.alpha_composite(edge)
 
             draw = ImageDraw.Draw(canvas)
+            # Translucent strokes go on this layer: ImageDraw writes alpha
+            # INTO the RGBA canvas (it doesn't blend), and _save_optimized_jpeg
+            # flattens straight to RGB — so a 26%-white pill would land as solid
+            # white. Compositing the layer afterwards preserves the intent.
+            overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            x0 = self.RAIL_X
+            right = x0 + self.RAIL_W
 
-            # ── 2. Poster: ambient glow + drop shadow + gradient hairline ──
-            px, py, pw, ph = 56, 84, 360, 540
-            p_img = _resolve_poster_image(poster_path)
-            glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            ImageDraw.Draw(glow).rounded_rectangle(
-                (px - 14, py - 14, px + pw + 14, py + ph + 14), radius=26, fill=(56, 189, 248, 110)
-            )
-            canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(radius=30)))
-            if p_img:
+            def _flush_overlay() -> None:
+                """Composite translucent strokes, then start a fresh layer."""
+                nonlocal overlay, od
+                canvas.alpha_composite(overlay)
+                overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                od = ImageDraw.Draw(overlay)
+
+            brand = (brand_username or bot_username or "AnimeDekhoBot").lstrip("@").strip()
+            handle = f"@{brand}" if brand else "@AnimeDekhoBot"
+
+            # ── 2. Brand lockup: logo tile (or monogram) + wide-tracked name ─
+            by = 52
+            logo = _load_logo_image(logo_path)
+            if logo:
                 try:
-                    p_resized = p_img.resize((pw, ph), Image.Resampling.LANCZOS)
-                    p_rounded = _round_corners(p_resized, radius=18)
-                    shadow = Image.new("RGBA", (pw + 40, ph + 40), (0, 0, 0, 0))
-                    ImageDraw.Draw(shadow).rounded_rectangle(
-                        (20, 20, pw + 20, ph + 20), radius=24, fill=(0, 0, 0, 225)
-                    )
-                    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=14))
-                    canvas.alpha_composite(shadow, (px - 20, py - 20))
-                    canvas.paste(p_rounded, (px, py), p_rounded)
-                    # gradient hairline border
-                    bmask = Image.new("L", (W, H), 0)
-                    ImageDraw.Draw(bmask).rounded_rectangle(
-                        (px - 2, py - 2, px + pw + 2, py + ph + 2), radius=20, outline=255, width=3
-                    )
-                    border = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    border.paste(_multi_gradient((W, H), self.ACCENT), (0, 0), bmask)
-                    canvas.alpha_composite(border)
-                    # bottom readability shade inside poster
-                    shade_y1 = py + ph - 150
-                    smask = Image.new("L", (W, H), 0)
-                    ImageDraw.Draw(smask).rounded_rectangle(
-                        (px, shade_y1, px + pw, py + ph), radius=18, fill=255
-                    )
-                    sg = _multi_gradient((pw, 150), [(0.0, (0, 0, 0, 0)), (1.0, (0, 0, 0, 155))], horizontal=False)
-                    slayer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    slayer.paste(sg, (px, shade_y1))
-                    sout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    sout.paste(slayer, (0, 0), smask)
-                    canvas.alpha_composite(sout)
-                except Exception as pe:
-                    log.debug("Modern poster error: %s", pe)
+                    side = 60
+                    lg = logo.copy()
+                    # cover-crop to a square, then round the corners
+                    s = max(side / lg.width, side / lg.height)
+                    lg = lg.resize((max(1, int(lg.width * s)), max(1, int(lg.height * s))),
+                                   Image.Resampling.LANCZOS)
+                    lg = lg.crop(((lg.width - side) // 2, (lg.height - side) // 2,
+                                  (lg.width - side) // 2 + side, (lg.height - side) // 2 + side))
+                    lg = _round_corners(lg, radius=14)
+                    sh = Image.new("RGBA", (side + 30, side + 30), (0, 0, 0, 0))
+                    ImageDraw.Draw(sh).rounded_rectangle(
+                        (15, 15, side + 15, side + 15), radius=16, fill=(0, 0, 0, 190))
+                    canvas.alpha_composite(sh.filter(ImageFilter.GaussianBlur(radius=10)), (x0 - 15, by - 15))
+                    canvas.paste(lg, (x0, by), lg)
+                    draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=14,
+                                           outline=(255, 255, 255, 80), width=2)
+                    tx_logo = x0 + side + 20
+                except Exception as le:
+                    log.debug("Logo paste failed: %s", le)
+                    tx_logo = x0
             else:
-                # No poster available — elegant placeholder panel.
-                draw.rounded_rectangle(
-                    (px, py, px + pw, py + ph), radius=18, fill=(13, 20, 38, 255),
-                    outline=(71, 85, 105, 200), width=2,
+                # Monogram tile — same footprint as the logo version.
+                side = 60
+                canvas.alpha_composite(_rounded_gradient_layer(
+                    (W, H), (x0, by, x0 + side, by + side), 14, self.ACCENT))
+                draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=14,
+                                       outline=(255, 255, 255, 90), width=2)
+                mono = (brand[:2] or "AD").upper()
+                font_mono = _get_font(26, bold=True, weight="extrabold")
+                mb = draw.textbbox((0, 0), mono, font=font_mono)
+                draw.text(
+                    (x0 + side // 2 - (mb[2] - mb[0]) // 2 - mb[0],
+                     by + side // 2 - (mb[3] - mb[1]) // 2 - mb[1]),
+                    mono, font=font_mono, fill=(255, 255, 255, 255),
                 )
-                wcx, wcy = px + pw // 2, py + ph // 2
-                draw.ellipse((wcx - 70, wcy - 70, wcx + 70, wcy + 70),
-                             fill=(34, 211, 238, 30), outline=(34, 211, 238, 180), width=3)
-                draw.polygon([(wcx - 22, wcy - 34), (wcx - 22, wcy + 34), (wcx + 40, wcy)],
-                             fill=(34, 211, 238, 220))
+                tx_logo = x0 + side + 20
 
-            # ── 3. Glass card with gradient accent cap ─────────────────────
-            cx1, cy1, cx2, cy2 = 448, 52, 1232, 664
-            card_mask = Image.new("L", (W, H), 0)
-            ImageDraw.Draw(card_mask).rounded_rectangle((cx1, cy1, cx2, cy2), radius=26, fill=255)
-            card_fill = Image.new("RGBA", (W, H), (11, 17, 32, 232))
-            cf = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            cf.paste(card_fill, (0, 0))
-            cout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            cout.paste(cf, (0, 0), card_mask)
-            canvas.alpha_composite(cout)
-            draw.rounded_rectangle((cx1, cy1, cx2, cy2), radius=26, outline=(255, 255, 255, 60), width=1)
+            font_brand = _get_font(27, bold=True, weight="extrabold")
+            nb = draw.textbbox((0, 0), brand.upper(), font=font_brand)
+            draw.text((tx_logo, by + 6), brand.upper(), font=font_brand, fill=(255, 255, 255, 255))
+            # Gradient underline beneath the brand name.
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (tx_logo, by + 44, tx_logo + max(40, nb[2] - nb[0]), by + 49), 3, self.ACCENT))
 
-            # Gradient accent cap (top 32px band, top corners rounded).
-            band = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            band.paste(_multi_gradient((cx2 - cx1, 32), self.ACCENT), (cx1, cy1))
-            bm = Image.new("L", (W, H), 0)
-            bmd = ImageDraw.Draw(bm)
-            bmd.rounded_rectangle((cx1, cy1, cx2, cy1 + 58), radius=26, fill=255)
-            bmd.rectangle((cx1, cy1 + 32, cx2, cy2), fill=0)
-            bout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            bout.paste(band, (0, 0), bm)
-            canvas.alpha_composite(bout)
+            # ── 3. Rule + wide-tracked eyebrow ─────────────────────────────
+            ry = by + 76
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (x0, ry, right, ry + 2), 1,
+                [(0.0, (255, 255, 255, 90)), (1.0, (255, 255, 255, 12))],
+            ))
 
-            # Frosted sheen across the upper card.
-            sheen_mask = Image.new("L", (W, H), 0)
-            ImageDraw.Draw(sheen_mask).rectangle((cx1, 110, cx2, 344), fill=255)
-            sheen = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            sheen.paste(_multi_gradient((W, 234), [(0.0, (255, 255, 255, 24)), (1.0, (255, 255, 255, 0))], horizontal=False), (0, 110))
-            sout = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            sout.paste(sheen, (0, 0), sheen_mask)
-            canvas.alpha_composite(sout)
+            eyebrow = ("MOVIE" if is_movie else "ANIME") + "  •  " + _format_audio_tag(audio)
+            font_eye = _get_font(19, bold=True, weight="bold")
+            _tracked_text(draw, (x0, ry + 24), eyebrow, font_eye,
+                          (196, 181, 253, 255), tracking=4)
 
-            # Big translucent play watermark (behind the content) — composed
-            # on a layer so its low alpha survives the RGB flatten.
-            wm = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-            wdraw = ImageDraw.Draw(wm)
-            wcx, wcy, wr = 1108, 302, 92
-            wdraw.ellipse((wcx - wr, wcy - wr, wcx + wr, wcy + wr),
-                          fill=(255, 255, 255, 14), outline=(255, 255, 255, 34), width=3)
-            wdraw.polygon([(wcx - 26, wcy - 40), (wcx - 26, wcy + 40), (wcx + 46, wcy)],
-                          fill=(255, 255, 255, 40))
-            canvas.alpha_composite(wm)
+            # ── 4. Oversized title ─────────────────────────────────────────
+            ty = ry + 66
+            title_lines, font_title, line_h = _wrap_and_fit_title(
+                draw, title, max_w=self.RAIL_W, base_size=64, min_size=40, max_lines=3,
+            )
+            for line in title_lines:
+                # White with a soft shadow — the reference title is flat white.
+                bb = draw.textbbox((0, 0), line, font=font_title)
+                tw, th = bb[2] - bb[0], bb[3] - bb[1]
+                tmask = Image.new("L", (tw + 20, th + 20), 0)
+                ImageDraw.Draw(tmask).text((10 - bb[0], 10 - bb[1]), line, font=font_title, fill=255)
+                sh = Image.new("RGBA", tmask.size, (0, 0, 0, 255))
+                sh.putalpha(tmask.point(lambda p: p * 170 // 255))
+                canvas.alpha_composite(sh, (x0 - 10 + 3, ty - 10 + 5))
+                txt = Image.new("RGBA", tmask.size, (0, 0, 0, 0))
+                txt.paste(Image.new("RGBA", tmask.size, (255, 255, 255, 255)), (0, 0), tmask)
+                canvas.alpha_composite(txt, (x0 - 10, ty - 10))
+                ty += line_h
+            ty += 20
 
-            # ── 4. Content ─────────────────────────────────────────────────
-            tx, right = cx1 + 40, cx2 - 40
-            avail = right - tx
-            y = 118
+            # ── 5. Metadata bullets (matches the channel post format) ───────
+            font_meta = _get_font(21, bold=False, weight="medium")
+            meta_lines = []
+            if is_movie:
+                meta_lines.append(("QUALITY", (quality or "HD").upper()))
+            else:
+                if episode_info:
+                    # episode_info often already reads "Episodes: 12 | S01"
+                    # (the channel-post format) — don't prefix a second label.
+                    raw_ep = _clean_text(episode_info).strip()
+                    if re.match(r"(?i)^episodes?\b", raw_ep):
+                        meta_lines.append((None, raw_ep.upper()))
+                    else:
+                        meta_lines.append(("EPISODE", raw_ep.upper()))
+                meta_lines.append(("AUDIO TRACK", _format_audio_tag(audio)))
+                meta_lines.append(("QUALITY", (quality or "HD").upper()))
+            for label, value in meta_lines:
+                dot_x = x0
+                draw.ellipse((dot_x, ty + 8, dot_x + 8, ty + 16), fill=(236, 72, 153, 255))
+                if label is None:
+                    draw.text((dot_x + 20, ty), value, font=font_meta, fill=(226, 232, 240, 255))
+                    ty += 34
+                    continue
+                lb = draw.textbbox((0, 0), f"{label}: ", font=font_meta)
+                draw.text((dot_x + 20, ty), f"{label}:", font=font_meta, fill=(148, 163, 184, 255))
+                draw.text((dot_x + 20 + (lb[2] - lb[0]) + 4, ty), value,
+                          font=font_meta, fill=(226, 232, 240, 255))
+                ty += 34
+            ty += 16
 
+            # ── 6. CTA + quality pills ─────────────────────────────────────
             font_pill = _get_font(20, bold=True, weight="bold")
-
-            # Quality pill (shaded gradient of its tier color).
+            # Primary "DOWNLOAD" pill (gradient fill).
+            cta = "DOWNLOAD"
+            cb = draw.textbbox((0, 0), cta, font=font_pill)
+            cw, chh = (cb[2] - cb[0]) + 56, 54
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (x0, ty, x0 + cw, ty + chh), 14,
+                [(0.0, _shade_rgba(self.ACCENT[0][1], 1.0)), (1.0, _shade_rgba(self.ACCENT[1][1], 1.0))],
+            ))
+            draw.text((x0 + 28, ty + 15), cta, font=font_pill, fill=(255, 255, 255, 255))
+            # Secondary outline pill: quality tier.
             q_label, q_color = _get_quality_pill(quality)
             qb = draw.textbbox((0, 0), q_label, font=font_pill)
-            qw = (qb[2] - qb[0]) + 34
+            qx = x0 + cw + 16
+            qw = (qb[2] - qb[0]) + 44
+            # Translucent fill → overlay (see note above), then flush so the
+            # label is painted on top of it rather than under it.
+            od.rounded_rectangle((qx, ty, qx + qw, ty + chh), radius=14,
+                                 fill=(255, 255, 255, 26), outline=(255, 255, 255, 130), width=2)
+            _flush_overlay()
+            draw.text((qx + 22, ty + 15), q_label, font=font_pill, fill=(241, 245, 249, 255))
+            # Dot accent in the pill's tier color.
+            draw.ellipse((qx + qw - 20, ty + chh // 2 - 5, qx + qw - 10, ty + chh // 2 + 5),
+                         fill=q_color[:3] + (255,))
+
+            # ── 7. Watermarks: handle bottom-right, brand note bottom-left ──
+            font_wm = _get_font(22, bold=True, weight="bold")
+            wm = handle.upper()
+            wb = draw.textbbox((0, 0), wm, font=font_wm)
+            ww = wb[2] - wb[0]
+            wmx, wmy = W - 64 - ww, H - 58
+            # Shadow pass on the overlay so it stays a soft shadow (26-170 alpha
+            # written straight onto RGBA would flatten to solid black).
+            od.text((wmx + 2, wmy + 3), wm, font=font_wm, fill=(0, 0, 0, 170))
+            _flush_overlay()
+            draw.text((wmx, wmy), wm, font=font_wm, fill=(255, 255, 255, 235))
             canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (tx, y, tx + qw, y + 40), 10,
-                [(0.0, _shade_rgba(q_color, 0.82)), (1.0, _shade_rgba(q_color, 1.18))],
-            ))
-            draw.text((tx + 17, y + 9), q_label, font=font_pill, fill=(255, 255, 255, 255))
+                (W, H), (wmx, wmy + 30, wmx + ww, wmy + 33), 2, self.ACCENT))
 
-            # Audio pill (glass).
-            audio_text = _format_audio_tag(audio)
-            ab = draw.textbbox((0, 0), audio_text, font=font_pill)
-            aw = (ab[2] - ab[0]) + 34
-            ax = tx + qw + 14
-            draw.rounded_rectangle((ax, y, ax + aw, y + 40), radius=10,
-                                   fill=(30, 41, 59, 235), outline=(100, 116, 139, 170), width=1)
-            draw.text((ax + 17, y + 9), audio_text, font=font_pill, fill=(241, 245, 249, 255))
-            y += 40 + 24
+            # Small HD/quality tag on the art, top-right.
+            tag = q_label.split(" • ")[0]
+            font_tag = _get_font(20, bold=True, weight="extrabold")
+            tb = draw.textbbox((0, 0), tag, font=font_tag)
+            tw = (tb[2] - tb[0]) + 30
+            tx = W - 64 - tw
+            od.rounded_rectangle((tx, 52, tx + tw, 52 + 42), radius=11,
+                                 fill=(10, 9, 18, 210), outline=(255, 255, 255, 110), width=2)
+            _flush_overlay()
+            draw.text((tx + 15, 62), tag, font=font_tag, fill=(255, 255, 255, 240))
 
-            # Main title — gradient fill + soft shadow (auto-wrapped).
-            title_lines, font_title, line_h = _wrap_and_fit_title(
-                draw, title, max_w=avail, base_size=48, min_size=34, max_lines=2,
-            )
-            for line in title_lines:
-                _gradient_text(canvas, (tx, y), line, font_title,
-                               [(0.0, (255, 255, 255, 255)), (1.0, (165, 215, 255, 255))])
-                y += line_h
-            y += 14
-
-            # Episode / movie ribbon (amber gradient).
-            ep_tag = _format_episode_tag(episode_info, is_movie)
-            font_ep = _get_font(23, bold=True, weight="extrabold")
-            eb = draw.textbbox((0, 0), ep_tag, font=font_ep)
-            ew = (eb[2] - eb[0]) + 44
-            canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (tx, y, tx + ew, y + 48), 12,
-                [(0.0, (251, 191, 36, 255)), (1.0, (245, 158, 11, 255))],
-            ))
-            draw.text((tx + 22, y + 11), ep_tag, font=font_ep, fill=(15, 23, 42, 255))
-            y += 48 + 24
-
-            # Gradient divider.
-            canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (tx, y, right, y + 3), 2,
-                [(0.0, (34, 211, 238, 220)), (0.55, (59, 130, 246, 150)), (1.0, (139, 92, 246, 60))],
-            ))
-
-            # ── 5. Feature chips (flow directly after the divider) ──────────
-            chips_y = int(y + 30)
-            font_chip = _get_font(17, bold=True, weight="semibold")
-            chip_x = tx
-            for label, icon in (
-                ("FAST DIRECT PLAY", "bolt"),
-                ("HD MASTER", "play"),
-                ("MULTI-AUDIO", "wave"),
-            ):
-                cb = draw.textbbox((0, 0), label, font=font_chip)
-                cw = (cb[2] - cb[0]) + 62
-                draw.rounded_rectangle((chip_x, chips_y, chip_x + cw, chips_y + 44), radius=22,
-                                       fill=(20, 30, 52, 210), outline=(71, 85, 105, 150), width=1)
-                icx, icy = chip_x + 20, chips_y + 22
-                if icon == "bolt":
-                    draw.polygon([(icx + 7, icy - 11), (icx - 4, icy + 2), (icx + 2, icy + 2),
-                                  (icx - 3, icy + 12), (icx + 9, icy - 2), (icx + 3, icy - 2)],
-                                 fill=(34, 211, 238, 255))
-                elif icon == "play":
-                    draw.ellipse((icx - 10, icy - 10, icx + 10, icy + 10),
-                                 fill=(34, 211, 238, 60), outline=(34, 211, 238, 200), width=2)
-                    draw.polygon([(icx - 3, icy - 6), (icx - 3, icy + 6), (icx + 7, icy)],
-                                 fill=(255, 255, 255, 255))
-                else:
-                    for i, bh in enumerate((9, 16, 12)):
-                        bx = icx - 7 + i * 7
-                        draw.rounded_rectangle((bx, icy - bh // 2, bx + 4, icy + bh // 2),
-                                               radius=2, fill=(139, 92, 246, 255))
-                draw.text((chip_x + 38, chips_y + 12), label, font=font_chip, fill=(226, 232, 240, 255))
-                chip_x += cw + 14
-
-            # Giant translucent quality watermark (bottom-right, brand-tinted)
-            # — fills the lower card zone with a stylized, modern signature.
-            q_short = (quality or "HD").upper().strip().replace(" ", "")
-            if "2160" in q_short or "UHD" in q_short:
-                q_short = "4K"
-            font_giant = _get_font(86, bold=True, weight="extrabold")
-            gb = draw.textbbox((0, 0), q_short, font=font_giant)
-            _gradient_text(
-                canvas, (right - (gb[2] - gb[0]), chips_y + 74), q_short, font_giant,
-                [(0.0, (34, 211, 238, 95)), (1.0, (139, 92, 246, 95))],
-                shadow_alpha=0,
-            )
-
-            # ── 6. Brand lockup ────────────────────────────────────────────
-            by = 576
-            canvas.alpha_composite(_rounded_gradient_layer((W, H), (tx, by, tx + 54, by + 54), 14, self.ACCENT))
-            draw.rounded_rectangle((tx, by, tx + 54, by + 54), radius=14,
-                                   outline=(255, 255, 255, 90), width=2)
-            font_mono = _get_font(25, bold=True, weight="extrabold")
-            mb = draw.textbbox((0, 0), "AD", font=font_mono)
-            draw.text(
-                (tx + 27 - (mb[2] - mb[0]) // 2 - mb[0], by + (54 - (mb[3] - mb[1])) // 2 - mb[1]),
-                "AD", font=font_mono, fill=(255, 255, 255, 255),
-            )
-            font_brand = _get_font(26, bold=True, weight="extrabold")
-            nb = draw.textbbox((0, 0), "ANIMEDEKHO", font=font_brand)
-            draw.text((tx + 70, by), "ANIMEDEKHO", font=font_brand, fill=(255, 255, 255, 255))
-            canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (tx + 70, by + 38, tx + 70 + max(1, nb[2] - nb[0]), by + 41), 2, self.ACCENT,
-            ))
-            font_handle = _get_font(18, bold=False, weight="medium")
-            draw.text((tx + 70, by + 47), f"@{bot_username.lstrip('@')}",
-                      font=font_handle, fill=(125, 211, 252, 255))
+            _flush_overlay()  # nothing pending — guarantees no stroke is lost
 
             return _save_optimized_jpeg(canvas, output_path)
         except Exception as e:
-            log.error("ModernGradientTemplate generation error: %s", e, exc_info=True)
-            return None
-
-
-# ── Template 2: Cinematic Glow (Theatrical Letterbox) ──────────────────────
-
-@register_template("cinematic")
-class CinematicGlowTemplate(BaseThumbnailTemplate):
-    """Moody widescreen letterbox with theatrical bars, silver frame, and cyan accents."""
-    name = "cinematic"
-    display_name = "Cinematic Glow"
-    description = "Theatrical widescreen look with atmospheric indigo glow and silver metallic borders."
-
-    def generate(
-        self,
-        title: str,
-        episode_info: str = "",
-        quality: str = "720p",
-        audio: str = "Hindi Dub",
-        poster_path: str = "",
-        output_path: str = "",
-        bot_username: str = "AnimeDekhoBot",
-        is_movie: bool = False,
-    ) -> str | None:
-        try:
-            canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (5, 7, 12, 255))
-            bg = _prepare_blurred_bg(poster_path, blur_radius=38)
-            if bg:
-                canvas.paste(bg, (0, 0))
-
-            # Deep moody overlay with letterbox bars
-            overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            draw_ov = ImageDraw.Draw(overlay)
-            for y in range(CANVAS_HEIGHT):
-                alpha = int(160 + (y / CANVAS_HEIGHT) * 75)
-                draw_ov.line([(0, y), (CANVAS_WIDTH, y)], fill=(6, 8, 16, alpha))
-
-            # 42px Widescreen letterbox bars
-            lb_h = 42
-            draw_ov.rectangle([(0, 0), (CANVAS_WIDTH, lb_h)], fill=(2, 3, 6, 255))
-            draw_ov.rectangle([(0, CANVAS_HEIGHT - lb_h), (CANVAS_WIDTH, CANVAS_HEIGHT)], fill=(2, 3, 6, 255))
-            draw_ov.line([(0, lb_h), (CANVAS_WIDTH, lb_h)], fill=(56, 189, 248, 120), width=1)
-            draw_ov.line([(0, CANVAS_HEIGHT - lb_h), (CANVAS_WIDTH, CANVAS_HEIGHT - lb_h)], fill=(56, 189, 248, 120), width=1)
-            canvas = Image.alpha_composite(canvas, overlay)
-            draw = ImageDraw.Draw(canvas)
-
-            # Poster with double metallic silver frame
-            poster_w, poster_h = 340, 490
-            poster_x, poster_y = 75, 115
-            p_img = _resolve_poster_image(poster_path)
-            if p_img:
-                try:
-                    p_resized = p_img.resize((poster_w, poster_h), Image.Resampling.LANCZOS)
-                    p_rounded = _round_corners(p_resized, radius=14)
-                    draw.rounded_rectangle(
-                        (poster_x - 4, poster_y - 4, poster_x + poster_w + 4, poster_y + poster_h + 4),
-                        radius=18, outline=(226, 232, 240, 200), width=2,
-                    )
-                    canvas.paste(p_rounded, (poster_x, poster_y), p_rounded)
-                except Exception as pe:
-                    log.debug("Cinematic poster error: %s", pe)
-
-            text_x = 470
-            curr_y = 135
-            available_w = CANVAS_WIDTH - text_x - 60
-
-            # Theatrical Header with Vector Gold Stars
-            font_hdr = _get_font(20, bold=True, weight="bold")
-            hdr_text = "THEATRICAL MASTER • ULTRA HD STREAM"
-            _draw_vector_star(draw, text_x + 8, curr_y + 11, r_outer=7, r_inner=3, fill=(245, 158, 11, 240))
-            draw.text((text_x + 24, curr_y), hdr_text, font=font_hdr, fill=(148, 163, 184, 255))
-            curr_y += 42
-
-            # Title
-            title_lines, font_title, line_height = _wrap_and_fit_title(
-                draw, title, max_w=available_w, base_size=44, min_size=32, max_lines=2,
-            )
-            for line in title_lines:
-                draw.text((text_x + 2, curr_y + 2), line, font=font_title, fill=(0, 0, 0, 240))
-                draw.text((text_x, curr_y), line, font=font_title, fill=(255, 255, 255, 255))
-                curr_y += line_height
-            curr_y += 18
-
-            # Cinema Badge
-            badge_text = _format_episode_tag(episode_info, is_movie)
-            font_badge = _get_font(22, bold=True, weight="extrabold")
-            b_bb = draw.textbbox((0, 0), badge_text, font=font_badge)
-            bw = (b_bb[2] - b_bb[0]) + 44
-            bh = 48
-            draw.rounded_rectangle(
-                (text_x, curr_y, text_x + bw, curr_y + bh),
-                radius=8, fill=(15, 23, 42, 240), outline=(56, 189, 248, 220), width=2,
-            )
-            draw.text((text_x + 22, curr_y + 11), badge_text, font=font_badge, fill=(224, 242, 254, 255))
-            curr_y += bh + 28
-
-            # Specs
-            q_label = (quality or "1080P").upper()
-            draw.text((text_x, curr_y), f"RESOLUTION : {q_label} ULTRA STREAM", font=_get_font(22, bold=True, weight="bold"), fill=(56, 189, 248, 255))
-            curr_y += 34
-            audio_text = _format_audio_tag(audio)
-            draw.text((text_x, curr_y), f"AUDIO TRACK : {audio_text} (ORIGINAL)", font=_get_font(22, bold=False, weight="semibold"), fill=(226, 232, 240, 255))
-
-            # Watermark in Letterbox bar
-            wm_text = f"ANIMEDEKHO THEATRICAL • @{bot_username.lstrip('@')}"
-            draw.text((CANVAS_WIDTH - 390, CANVAS_HEIGHT - 30), wm_text, font=_get_font(16, bold=True, weight="bold"), fill=(148, 163, 184, 255))
-
-            return _save_optimized_jpeg(canvas, output_path)
-        except Exception as e:
-            log.error("CinematicGlowTemplate generation error: %s", e, exc_info=True)
-            return None
-
-
-# ── Template 3: Movie Gold (Luxury VIP) ────────────────────────────────────
-
-@register_template("movie_gold")
-class MovieGoldTemplate(BaseThumbnailTemplate):
-    """Luxury obsidian and gold theme designed specifically for movies and VIP releases."""
-    name = "movie_gold"
-    display_name = "Movie Gold VIP"
-    description = "Luxury gold borders and warm obsidian tones tailored for movie premieres."
-
-    def generate(
-        self,
-        title: str,
-        episode_info: str = "",
-        quality: str = "720p",
-        audio: str = "Hindi Dub",
-        poster_path: str = "",
-        output_path: str = "",
-        bot_username: str = "AnimeDekhoBot",
-        is_movie: bool = True,
-    ) -> str | None:
-        try:
-            canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (12, 10, 6, 255))
-            bg = _prepare_blurred_bg(poster_path, blur_radius=32)
-            if bg:
-                canvas.paste(bg, (0, 0))
-
-            # Warm dark gold ambient gradient
-            overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            draw_ov = ImageDraw.Draw(overlay)
-            for y in range(CANVAS_HEIGHT):
-                alpha = int(160 + (y / CANVAS_HEIGHT) * 80)
-                draw_ov.line([(0, y), (CANVAS_WIDTH, y)], fill=(12, 10, 8, alpha))
-            # Outer Gold Border frame
-            draw_ov.rectangle([(16, 16), (CANVAS_WIDTH - 16, CANVAS_HEIGHT - 16)], outline=(212, 175, 55, 140), width=2)
-            canvas = Image.alpha_composite(canvas, overlay)
-            draw = ImageDraw.Draw(canvas)
-
-            # Poster with Gold Frame
-            poster_w, poster_h = 350, 500
-            poster_x, poster_y = 70, 110
-            p_img = _resolve_poster_image(poster_path)
-            if p_img:
-                try:
-                    p_resized = p_img.resize((poster_w, poster_h), Image.Resampling.LANCZOS)
-                    p_rounded = _round_corners(p_resized, radius=14)
-                    draw.rounded_rectangle(
-                        (poster_x - 4, poster_y - 4, poster_x + poster_w + 4, poster_y + poster_h + 4),
-                        radius=18, outline=(212, 175, 55, 230), width=3,
-                    )
-                    canvas.paste(p_rounded, (poster_x, poster_y), p_rounded)
-                except Exception as pe:
-                    log.debug("Movie gold poster error: %s", pe)
-
-            text_x = 475
-            curr_y = 115
-            available_w = CANVAS_WIDTH - text_x - 65
-
-            # Gold VIP Header
-            header_text = "OFFICIAL VIP PREMIERE" if is_movie else "SPECIAL VIP BROADCAST"
-            font_vip = _get_font(18, bold=True, weight="bold")
-            v_bb = draw.textbbox((0, 0), header_text, font=font_vip)
-            vw = (v_bb[2] - v_bb[0]) + 60
-            vh = 38
-            draw.rounded_rectangle((text_x, curr_y, text_x + vw, curr_y + vh), radius=6, fill=(212, 175, 55, 230))
-            _draw_vector_star(draw, text_x + 16, curr_y + 19, r_outer=7, r_inner=3, fill=(24, 18, 5, 255))
-            draw.text((text_x + 30, curr_y + 9), header_text, font=font_vip, fill=(24, 18, 5, 255))
-            _draw_vector_star(draw, text_x + vw - 16, curr_y + 19, r_outer=7, r_inner=3, fill=(24, 18, 5, 255))
-            curr_y += vh + 20
-
-            # Title
-            title_lines, font_title, line_height = _wrap_and_fit_title(
-                draw, title, max_w=available_w, base_size=46, min_size=32, max_lines=2,
-            )
-            for line in title_lines:
-                draw.text((text_x + 2, curr_y + 2), line, font=font_title, fill=(0, 0, 0, 240))
-                draw.text((text_x, curr_y), line, font=font_title, fill=(255, 255, 255, 255))
-                curr_y += line_height
-            curr_y += 16
-
-            # Golden Main Ribbon
-            main_tag = _format_episode_tag(episode_info, is_movie)
-            font_ribbon = _get_font(23, bold=True, weight="extrabold")
-            m_bb = draw.textbbox((0, 0), main_tag, font=font_ribbon)
-            mw = (m_bb[2] - m_bb[0]) + 44
-            mh = 50
-            draw.rounded_rectangle((text_x, curr_y, text_x + mw, curr_y + mh), radius=10, fill=(212, 175, 55, 240))
-            draw.text((text_x + 22, curr_y + 12), main_tag, font=font_ribbon, fill=(24, 18, 5, 255))
-            curr_y += mh + 26
-
-            # Quality & Audio Pills
-            q_label = (quality or "1080P").upper()
-            draw.text((text_x, curr_y), f"QUALITY : {q_label} ULTRA HD MASTER", font=_get_font(22, bold=True, weight="bold"), fill=(245, 210, 100, 255))
-            curr_y += 34
-            audio_text = _format_audio_tag(audio)
-            draw.text((text_x, curr_y), f"AUDIO : {audio_text} / DUAL AUDIO", font=_get_font(22, bold=False, weight="semibold"), fill=(243, 244, 246, 255))
-            curr_y += 45
-
-            # Gold Divider & Branding
-            draw.line([(text_x, curr_y), (CANVAS_WIDTH - 65, curr_y)], fill=(212, 175, 55, 80), width=2)
-            curr_y += 20
-            draw.text((text_x, curr_y), f"VIP RELEASE BY @{bot_username.lstrip('@')}", font=_get_font(20, bold=True, weight="semibold"), fill=(212, 175, 55, 220))
-
-            return _save_optimized_jpeg(canvas, output_path)
-        except Exception as e:
-            log.error("MovieGoldTemplate generation error: %s", e, exc_info=True)
-            return None
-
-
-# ── Template 4: Neon Cyber (Cyberpunk Anime) ───────────────────────────────
-
-@register_template("neon_cyber")
-class NeonCyberTemplate(BaseThumbnailTemplate):
-    """Cyberpunk neon aesthetic with electric cyan and hot magenta borders."""
-    name = "neon_cyber"
-    display_name = "Neon Cyber"
-    description = "Cyberpunk glowing neon aesthetic with dual cyan and magenta accents."
-
-    def generate(
-        self,
-        title: str,
-        episode_info: str = "",
-        quality: str = "720p",
-        audio: str = "Hindi Dub",
-        poster_path: str = "",
-        output_path: str = "",
-        bot_username: str = "AnimeDekhoBot",
-        is_movie: bool = False,
-    ) -> str | None:
-        try:
-            canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (7, 7, 15, 255))
-            bg = _prepare_blurred_bg(poster_path, blur_radius=28)
-            if bg:
-                canvas.paste(bg, (0, 0))
-
-            # Dark overlay with slight magenta tint
-            overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            draw_ov = ImageDraw.Draw(overlay)
-            for y in range(CANVAS_HEIGHT):
-                alpha = int(160 + (y / CANVAS_HEIGHT) * 80)
-                draw_ov.line([(0, y), (CANVAS_WIDTH, y)], fill=(8, 8, 18, alpha))
-            canvas = Image.alpha_composite(canvas, overlay)
-            draw = ImageDraw.Draw(canvas)
-
-            # Poster with Cyber Neon Dual Border (Cyan top/left, Pink bottom/right)
-            poster_w, poster_h = 350, 500
-            poster_x, poster_y = 70, 110
-            p_img = _resolve_poster_image(poster_path)
-            if p_img:
-                try:
-                    p_resized = p_img.resize((poster_w, poster_h), Image.Resampling.LANCZOS)
-                    p_rounded = _round_corners(p_resized, radius=10)
-                    draw.rounded_rectangle(
-                        (poster_x - 5, poster_y - 5, poster_x + poster_w + 5, poster_y + poster_h + 5),
-                        radius=14, outline=(0, 240, 255, 230), width=2,
-                    )
-                    draw.rounded_rectangle(
-                        (poster_x - 2, poster_y - 2, poster_x + poster_w + 2, poster_y + poster_h + 2),
-                        radius=11, outline=(255, 0, 128, 200), width=2,
-                    )
-                    canvas.paste(p_rounded, (poster_x, poster_y), p_rounded)
-                except Exception as pe:
-                    log.debug("Neon cyber poster error: %s", pe)
-
-            text_x = 475
-            curr_y = 115
-            available_w = CANVAS_WIDTH - text_x - 65
-
-            # Cyber Header Badge
-            draw.text((text_x, curr_y), "// CYBER DIRECT LINK // SPEED 10Gbps", font=_get_font(20, bold=True, weight="bold"), fill=(0, 240, 255, 255))
-            curr_y += 44
-
-            # Title
-            title_lines, font_title, line_height = _wrap_and_fit_title(
-                draw, title, max_w=available_w, base_size=46, min_size=32, max_lines=2,
-            )
-            for line in title_lines:
-                draw.text((text_x + 2, curr_y + 2), line, font=font_title, fill=(0, 240, 255, 140))
-                draw.text((text_x, curr_y), line, font=font_title, fill=(255, 255, 255, 255))
-                curr_y += line_height
-            curr_y += 18
-
-            # Cyber Episode Tag
-            ep_tag = _format_episode_tag(episode_info, is_movie)
-            cyber_ep = f"// {ep_tag} //"
-            font_ep = _get_font(23, bold=True, weight="extrabold")
-            e_bb = draw.textbbox((0, 0), cyber_ep, font=font_ep)
-            ew = (e_bb[2] - e_bb[0]) + 44
-            eh = 50
-            draw.rectangle((text_x, curr_y, text_x + ew, curr_y + eh), fill=(255, 0, 128, 220), outline=(0, 240, 255, 255), width=2)
-            draw.text((text_x + 22, curr_y + 12), cyber_ep, font=font_ep, fill=(255, 255, 255, 255))
-            curr_y += eh + 26
-
-            # Badges
-            q_label = (quality or "1080P").upper()
-            draw.text((text_x, curr_y), f"QUALITY : [ {q_label} ]", font=_get_font(22, bold=True, weight="bold"), fill=(0, 240, 255, 255))
-            curr_y += 34
-            audio_text = _format_audio_tag(audio)
-            draw.text((text_x, curr_y), f"AUDIO : [ {audio_text} ]", font=_get_font(22, bold=False, weight="semibold"), fill=(255, 0, 128, 255))
-            curr_y += 46
-
-            # Neon Divider
-            draw.line([(text_x, curr_y), (CANVAS_WIDTH - 65, curr_y)], fill=(0, 240, 255, 140), width=2)
-            curr_y += 20
-            draw.text((text_x, curr_y), f"SYS.OP: @{bot_username.lstrip('@')}", font=_get_font(20, bold=True, weight="semibold"), fill=(148, 163, 184, 255))
-
-            return _save_optimized_jpeg(canvas, output_path)
-        except Exception as e:
-            log.error("NeonCyberTemplate generation error: %s", e, exc_info=True)
-            return None
-
-
-# ── Template 5: Minimal Card (Frosted Matte Studio) ───────────────────────
-
-@register_template("minimal")
-class MinimalCardTemplate(BaseThumbnailTemplate):
-    """Clean frosted glass card with refined minimalist typography and high-contrast badges."""
-    name = "minimal"
-    display_name = "Minimal Card"
-    description = "Refined frosted glass card with modern, uncluttered typography."
-
-    def generate(
-        self,
-        title: str,
-        episode_info: str = "",
-        quality: str = "720p",
-        audio: str = "Hindi Dub",
-        poster_path: str = "",
-        output_path: str = "",
-        bot_username: str = "AnimeDekhoBot",
-        is_movie: bool = False,
-    ) -> str | None:
-        try:
-            canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (15, 23, 42, 255))
-            bg = _prepare_blurred_bg(poster_path, blur_radius=34)
-            if bg:
-                canvas.paste(bg, (0, 0))
-
-            # Translucent Frosted Glass Card in Center
-            card_x1, card_y1 = 45, 45
-            card_x2, card_y2 = CANVAS_WIDTH - 45, CANVAS_HEIGHT - 45
-            glass_card = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            draw_card = ImageDraw.Draw(glass_card)
-            draw_card.rounded_rectangle(
-                (card_x1, card_y1, card_x2, card_y2),
-                radius=24, fill=(15, 23, 42, 220), outline=(255, 255, 255, 60), width=1,
-            )
-            canvas = Image.alpha_composite(canvas, glass_card)
-            draw = ImageDraw.Draw(canvas)
-
-            # Poster
-            poster_w, poster_h = 340, 500
-            poster_x, poster_y = 80, 110
-            p_img = _resolve_poster_image(poster_path)
-            if p_img:
-                try:
-                    p_resized = p_img.resize((poster_w, poster_h), Image.Resampling.LANCZOS)
-                    p_rounded = _round_corners(p_resized, radius=16)
-                    draw.rounded_rectangle(
-                        (poster_x - 2, poster_y - 2, poster_x + poster_w + 2, poster_y + poster_h + 2),
-                        radius=18, outline=(255, 255, 255, 90), width=1,
-                    )
-                    canvas.paste(p_rounded, (poster_x, poster_y), p_rounded)
-                except Exception as pe:
-                    log.debug("Minimal poster error: %s", pe)
-
-            text_x = 470
-            curr_y = 120
-            available_w = card_x2 - text_x - 50
-
-            # Minimal High-Contrast Dark Pill Badge (Prevents white-on-white washed out text)
-            q_label, _ = _get_quality_pill(quality)
-            audio_text = _format_audio_tag(audio)
-            ep_tag = _format_episode_tag(episode_info, is_movie)
-            pill_text = f"{q_label}  •  {audio_text}  •  {ep_tag}"
-
-            font_pill = _get_font(20, bold=True, weight="bold")
-            p_bb = draw.textbbox((0, 0), pill_text, font=font_pill)
-            pw = (p_bb[2] - p_bb[0]) + 36
-            ph = 40
-            draw.rounded_rectangle(
-                (text_x, curr_y, text_x + pw, curr_y + ph),
-                radius=8, fill=(30, 41, 59, 240), outline=(56, 189, 248, 140), width=1,
-            )
-            draw.text((text_x + 18, curr_y + 9), pill_text, font=font_pill, fill=(56, 189, 248, 255))
-            curr_y += ph + 24
-
-            # Title
-            title_lines, font_title, line_height = _wrap_and_fit_title(
-                draw, title, max_w=available_w, base_size=46, min_size=32, max_lines=2,
-            )
-            for line in title_lines:
-                draw.text((text_x, curr_y), line, font=font_title, fill=(255, 255, 255, 255))
-                curr_y += line_height
-            curr_y += 20
-
-            # Subtle Divider
-            draw.line([(text_x, curr_y), (card_x2 - 50, curr_y)], fill=(255, 255, 255, 30), width=1)
-            curr_y += 30
-
-            # Description features
-            font_feat = _get_font(21, bold=False, weight="medium")
-            draw.text((text_x, curr_y), "• Original Studio Quality Direct Stream", font=font_feat, fill=(148, 163, 184, 255))
-            curr_y += 32
-            draw.text((text_x, curr_y), "• Multi-Language Audio Tracks Included", font=font_feat, fill=(148, 163, 184, 255))
-            curr_y += 32
-            draw.text((text_x, curr_y), "• Instant Fast Telegram Playback", font=font_feat, fill=(148, 163, 184, 255))
-            curr_y += 48
-
-            # Branding
-            draw.text((text_x, curr_y), f"@{bot_username.lstrip('@')}", font=_get_font(22, bold=True, weight="bold"), fill=(56, 189, 248, 255))
-
-            return _save_optimized_jpeg(canvas, output_path)
-        except Exception as e:
-            log.error("MinimalCardTemplate generation error: %s", e, exc_info=True)
+            log.error("StreamingCardTemplate generation error: %s", e, exc_info=True)
             return None
 
 
@@ -1254,29 +865,30 @@ def list_available_templates() -> list[str]:
     return list(TEMPLATES.keys())
 
 
+#: The single template new/legacy configs resolve to.
+DEFAULT_TEMPLATE = "streaming"
+
+
 def get_template(
     name: str = "",
     is_movie: bool = False,
     random_mode: bool = False,
 ) -> BaseThumbnailTemplate:
     """
-    Resolve template instance:
-    - If random_mode or name=='random', randomly choose from available templates.
-    - If is_movie and no name provided, prefer 'movie_gold' or 'cinematic'.
-    - Fallback to 'modern'.
+    Resolve template instance.
+
+    Issue #33 retired the old templates ('modern', 'cinematic', 'movie_gold',
+    'neon_cyber', 'minimal') in favour of a single streaming-card style, so
+    any legacy name a deployment still has stored resolves to it instead of
+    silently regressing to a removed class.
     """
+    del is_movie  # one style now serves both movies and series
     if random_mode or (name and name.lower() == "random"):
-        chosen_name = random.choice(list(TEMPLATES.keys()))
-        cls = TEMPLATES.get(chosen_name, ModernGradientTemplate)
+        cls = TEMPLATES.get(random.choice(list(TEMPLATES.keys())), StreamingCardTemplate)
         return cls()
 
     key = name.lower().strip() if name else ""
-    if not key and is_movie:
-        key = "movie_gold"
-
-    cls = TEMPLATES.get(key)
-    if not cls:
-        cls = ModernGradientTemplate
+    cls = TEMPLATES.get(key) or TEMPLATES.get(DEFAULT_TEMPLATE) or StreamingCardTemplate
     return cls()
 
 
@@ -1290,6 +902,8 @@ def generate_auto_thumbnail(
     bot_username: str = "AnimeDekhoBot",
     template_name: str | None = None,
     is_movie: bool = False,
+    brand_username: str = "",
+    logo_path: str = "",
 ) -> str | None:
     """
     Generate a 1280x720 professional YouTube/Telegram video thumbnail using the selected template.
@@ -1297,7 +911,10 @@ def generate_auto_thumbnail(
     1. Explicit `template_name` argument if provided.
     2. Config `RANDOM_THUMB_TEMPLATE` or DB `random_thumb_template` if enabled.
     3. Config `THUMB_TEMPLATE` or DB `thumb_template`.
-    4. Fallback to 'modern' (or 'movie_gold' for movies).
+    4. Fallback to 'streaming' (legacy names are aliased there too).
+
+    brand_username / logo_path: optional admin-set channel handle and PNG logo
+    for the lockup (issue #33 "optional" extra).
     """
     try:
         if not output_path:
@@ -1312,13 +929,22 @@ def generate_auto_thumbnail(
         if not resolved_template_name:
             try:
                 from config import Config
-                resolved_template_name = getattr(Config, "THUMB_TEMPLATE", "modern")
+                resolved_template_name = getattr(Config, "THUMB_TEMPLATE", DEFAULT_TEMPLATE)
                 is_random = getattr(Config, "RANDOM_THUMB_TEMPLATE", False)
             except Exception:
-                resolved_template_name = "modern"
+                resolved_template_name = DEFAULT_TEMPLATE
+
+        if not brand_username or not logo_path:
+            # Owner-set branding (persisted by /thumbuser + /thumblogo).
+            try:
+                from config import Config
+                brand_username = brand_username or str(getattr(Config, "THUMB_BRAND_USERNAME", "") or "")
+                logo_path = logo_path or str(getattr(Config, "THUMB_BRAND_LOGO", "") or "")
+            except Exception:
+                pass
 
         template = get_template(
-            name=resolved_template_name or "modern",
+            name=resolved_template_name or DEFAULT_TEMPLATE,
             is_movie=is_movie,
             random_mode=is_random,
         )
@@ -1333,6 +959,8 @@ def generate_auto_thumbnail(
             output_path=output_path,
             bot_username=bot_username,
             is_movie=is_movie,
+            brand_username=brand_username,
+            logo_path=logo_path,
         )
         return result
     except Exception as e:
@@ -1368,4 +996,5 @@ def generate_thumbnail(
         bot_username=bot_username,
         template_name=template or template_name,
         is_movie=is_movie,
+        **{k: kwargs[k] for k in ("brand_username", "logo_path") if k in kwargs},
     )

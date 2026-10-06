@@ -1310,11 +1310,11 @@ class Database:
             pass
 
     async def get_thumb_template(self) -> str:
-        """Get selected thumbnail template (modern, cinematic, movie_gold, neon_cyber, minimal, random)."""
+        """Get selected thumbnail template (issue #33: 'streaming'; legacy names still accepted)."""
         from config import Config
-        def_val = getattr(Config, "THUMB_TEMPLATE", "modern")
+        def_val = getattr(Config, "THUMB_TEMPLATE", "streaming")
         val = await self.get_config("thumb_template", default=def_val)
-        return str(val).lower() if val else "modern"
+        return str(val).lower() if val else "streaming"
 
     async def set_thumb_template(self, template: str):
         """Set selected thumbnail template."""

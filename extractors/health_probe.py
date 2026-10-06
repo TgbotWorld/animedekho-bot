@@ -67,6 +67,18 @@ async def probe_url_health(url: str, referer: str = "") -> dict:
             return res
     except Exception:
         pass
+    # Issue #33: dead-host bench (3 min) + per-URL failure TTL. A parked link
+    # answers instantly instead of costing another 8s probe round-trip.
+    try:
+        from extractors import reliability as _rel
+        if _rel.is_host_benched(url):
+            res["error"] = "host-benched"
+            return res
+        if _rel.is_url_parked(url):
+            res["error"] = "url-ttl"
+            return res
+    except Exception:
+        pass
     headers = dict(_PROBE_HEADERS)
     if referer:
         headers["Referer"] = referer
@@ -89,10 +101,35 @@ async def probe_url_health(url: str, referer: str = "") -> dict:
                 else:
                     res["error"] = f"http-{resp.status}"
     except asyncio.TimeoutError:
+        # Ambiguous (slow ≠ dead) — never TTL a link just for being slow.
         res["error"] = "timeout"
     except Exception as e:
         res["error"] = str(e)[:80]
+    # Issue #33: feed probe outcomes back into the reliability layer.
+    # Conservative on purpose: park only *definitive* answers. A 4xx means the
+    # link itself is gone (TTL); a connection-level error means the host is
+    # gone (bench). Timeouts / 5xx stay retryable — slow is not dead.
+    try:
+        from extractors import reliability as _rel
+        if res["ok"]:
+            _rel.clear_url(url)
+        elif str(res.get("status") or "") in ("404", "410", "403", "451"):
+            _rel.record_failure(url, res["error"])
+        elif res["error"] and _is_conn_error(res["error"]):
+            _rel.record_host_dead(url, res["error"])
+    except Exception:
+        pass
     return res
+
+
+def _is_conn_error(err: str) -> bool:
+    low = str(err).lower()
+    return any(m in low for m in (
+        "connection refused", "cannot connect", "all connection attempts failed",
+        "name or service not known", "temporary failure in name resolution",
+        "getaddrinfo failed", "no route to host", "network is unreachable",
+        "server disconnected", "remote end closed",
+    ))
 
 
 async def select_fastest_healthy(
@@ -111,6 +148,32 @@ async def select_fastest_healthy(
     """
     if not candidates:
         return None, []
+    # Issue #33: benched/parked links never get probed — and never win — but
+    # the bench alone must not make us fail outright (they stay as a last
+    # resort so a bad TTL can't turn into "no sources left").
+    try:
+        from extractors import reliability as _rel
+        avail = [c for c in candidates if _rel.is_available(c.get("url", ""))]
+    except Exception:
+        avail, _rel = list(candidates), None
+    if not avail:
+        avail = list(candidates)
+    diags_pre: list[dict] = []
+    if _rel is not None and len(avail) != len(candidates):
+        for c in candidates:
+            if c in avail:
+                continue
+            why = "Host benched (3m)" if _rel.is_host_benched(c.get("url", "")) else "URL in failure TTL"
+            diags_pre.append({
+                "source": c.get("source", "?"),
+                "provider": c.get("provider", "?"),
+                "quality": c.get("quality", "?"),
+                "status": "Skipped — " + why,
+                "latency_ms": None,
+                "error": why,
+            })
+        log.info("MultiSource: bench/TTL skipped %d candidate(s)", len(candidates) - len(avail))
+    candidates = avail
     if not probe:
         diag = [{
             "source": c.get("source", "?"),
@@ -120,13 +183,13 @@ async def select_fastest_healthy(
             "latency_ms": None,
             "error": "",
         } for c in candidates]
-        return candidates[0], diag
+        return candidates[0], diags_pre + diag
     # NOTE: single candidates are probed too — a lone dead/403 link must be
     # visible in diagnostics instead of being selected blind.
     subset = candidates[:max_probe]
     results = await asyncio.gather(*[probe_url_health(c.get("url", ""), c.get("referer", "")) for c in subset])
     scored = []
-    diags = []
+    diags = list(diags_pre)
     for cand, pr in zip(subset, results):
         if pr["ok"]:
             scored.append((pr["latency_ms"], cand))

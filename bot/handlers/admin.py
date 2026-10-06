@@ -1338,6 +1338,139 @@ async def cmd_viewthumb(client: Client, message: Message):
         await message.reply_text("ℹ️ No custom thumbnail configured. Bot is using automatic official AniList / scraped posters by default.", parse_mode=enums.ParseMode.HTML)
 
 
+# ── Thumbnail branding (issue #33: username + PNG logo via command) ────────
+
+_BRAND_USER_KEY = "thumb_brand_username"
+_BRAND_LOGO_KEY = "thumb_brand_logo_path"
+
+
+def _brand_logo_path() -> str:
+    """Stable local path for the admin-supplied PNG logo (kept out of git)."""
+    return str(Path(__file__).resolve().parent.parent.parent / "data" / "thumb_brand_logo.png")
+
+
+@require_owner
+async def cmd_thumbuser(client: Client, message: Message):
+    """Set/clear the channel handle stamped on auto-generated thumbnails.
+
+    Usage:
+      /thumbuser @MyChannel   — show @MyChannel in the lockup + watermark
+      /thumbuser clear        — fall back to the bot's own username
+      /thumbuser              — show the current value
+    """
+    from bot.database import db
+    from config import Config
+    args = _parse_args(message)
+    current = getattr(Config, "THUMB_BRAND_USERNAME", "") or ""
+
+    if not args:
+        await message.reply_text(
+            f"🏷 <b>Thumbnail handle:</b> <code>{htmlmod.escape(current) or '(bot username)'}</code>\n\n"
+            "<b>Usage:</b> <code>/thumbuser @YourChannel</code>\n"
+            "<b>Clear:</b> <code>/thumbuser clear</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    token = args[0].strip()
+    if token.lower() in ("clear", "off", "none", "reset"):
+        token = ""
+    elif not token.startswith("@"):
+        token = "@" + token
+
+    Config.THUMB_BRAND_USERNAME = token
+    if db:
+        await db.set_config(_BRAND_USER_KEY, token)
+    await message.reply_text(
+        f"✅ <b>Thumbnail handle set to:</b> <code>{htmlmod.escape(token) or '(bot username)'}</code>",
+        parse_mode=enums.ParseMode.HTML,
+    )
+
+
+@require_owner
+async def cmd_thumblogo(client: Client, message: Message):
+    """Set/clear the PNG logo shown in the thumbnail lockup (issue #33).
+
+    Usage:
+      Reply to a PNG/JPG with /thumblogo  — install that image as the logo
+      /thumblogo clear                    — remove it (monogram tile returns)
+      /thumblogo                          — preview the current logo
+    """
+    from bot.database import db
+    from config import Config
+    from pathlib import Path
+    from PIL import Image
+    args = _parse_args(message)
+    current = getattr(Config, "THUMB_BRAND_LOGO", "") or ""
+
+    if args and args[0].lower() in ("clear", "off", "none", "reset"):
+        Config.THUMB_BRAND_LOGO = ""
+        if db:
+            await db.set_config(_BRAND_LOGO_KEY, "")
+        try:
+            p = _brand_logo_path()
+            if os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+        await message.reply_text("✅ Logo removed — the monogram tile is back.", parse_mode=enums.ParseMode.HTML)
+        return
+
+    if not args:
+        if current and os.path.exists(current):
+            try:
+                await message.reply_photo(
+                    photo=current,
+                    caption="🏷 <b>Current thumbnail logo</b>\n<i>Reply to an image with /thumblogo to replace it.</i>",
+                    parse_mode=enums.ParseMode.HTML,
+                )
+                return
+            except Exception:
+                pass
+        await message.reply_text(
+            "ℹ️ <b>No logo installed.</b>\n\n"
+            "<b>Set:</b> reply to a PNG/JPG with <code>/thumblogo</code>\n"
+            "<b>Clear:</b> <code>/thumblogo clear</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    # Install from the replied message.
+    rep = message.reply_to_message
+    media = None
+    if rep:
+        if rep.photo:
+            media = rep.photo.file_id
+        elif rep.document and rep.document.mime_type and rep.document.mime_type.startswith("image/"):
+            media = rep.document.file_id
+    if not media:
+        await message.reply_text(
+            "⚠️ <b>Please reply to a PNG/JPG with:</b> <code>/thumblogo</code>",
+            parse_mode=enums.ParseMode.HTML,
+        )
+        return
+
+    try:
+        dest = _brand_logo_path()
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        got = await client.download_media(media, file_name=dest)
+        if not got or not os.path.exists(str(got)):
+            raise IOError("download failed")
+        # Guard: must actually be an image (a stray PDF/video would break PIL).
+        with Image.open(str(got)) as im:
+            im.verify()
+        Config.THUMB_BRAND_LOGO = str(got)
+        if db:
+            await db.set_config(_BRAND_LOGO_KEY, str(got))
+        await message.reply_text(
+            "✅ <b>Logo installed</b> — it will appear top-left on every auto-generated thumbnail.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except Exception as e:
+        await message.reply_text(f"❌ Could not install logo: <code>{htmlmod.escape(str(e)[:160])}</code>",
+                                 parse_mode=enums.ParseMode.HTML)
+
+
 # ── Automatic Episode Monitoring (Point 1) ───────────────────────────
 
 @require_owner
