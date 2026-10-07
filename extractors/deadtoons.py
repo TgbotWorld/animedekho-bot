@@ -148,18 +148,65 @@ class DeadToonsExtractor:
 
             # Look for episode download link (e.g., /episode/.../{season}x{episode})
             pattern = re.compile(rf"/{season}x0*{episode}\b", re.I)
+            ep_href = None
             for a in soup.find_all("a", href=True):
                 href = a["href"]
                 if pattern.search(href) or f"episode/{season}x{episode}" in href.lower():
-                    return {
-                        "url": href,
-                        "quality": "Unknown",
-                            "requested_quality": quality_pref,
-                            "detected_quality": "Unknown",
-                            "verified_quality": "Unknown",
-                        "source": "DeadToons",
-                        "poster": target_post.get("poster"),
-                    }
+                    ep_href = href
+                    break
+
+            if not ep_href:
+                return None
+
+            # Issue #35: an /episode/ link is an HTML page, not media. The old
+            # code returned it as the stream URL, so the downloader fetched a
+            # web page and presented it as a download. Follow the page and
+            # extract the real media link; if the page is blocked (403/CF) or
+            # carries no media, return None so the next source gets a chance.
+            ep_url = ep_href if ep_href.startswith("http") else f"{self._base_url}{ep_href}"
+            r_ep = s.get(ep_url, timeout=12)
+            if r_ep.status_code != 200:
+                log.warning("DeadToons: episode page %s returned HTTP %d", ep_url, r_ep.status_code)
+                return None
+            ep_ctype = (r_ep.headers.get("Content-Type") or "").lower()
+            if "text/html" not in ep_ctype:
+                # Served media directly instead of a page.
+                return {
+                    "url": ep_url,
+                    "quality": "Unknown",
+                    "requested_quality": quality_pref,
+                    "detected_quality": "Unknown",
+                    "verified_quality": "Unknown",
+                    "source": "DeadToons",
+                    "poster": target_post.get("poster"),
+                }
+            ep_soup = BeautifulSoup(r_ep.text, "html.parser")
+            media_url = None
+            for a in ep_soup.find_all("a", href=True):
+                h = a["href"]
+                if any(ext in h.lower() for ext in (".mp4", ".mkv", ".webm", ".m3u8")):
+                    media_url = h
+                    break
+            if not media_url:
+                for fr in ep_soup.find_all(["iframe", "source"], src=True):
+                    src = fr["src"]
+                    if any(ext in src.lower() for ext in (".mp4", ".mkv", ".webm", ".m3u8")):
+                        media_url = src
+                        break
+            if not media_url:
+                log.warning("DeadToons: no extractable media link on episode page %s", ep_url)
+                return None
+            if not media_url.startswith("http"):
+                media_url = f"{self._base_url}{media_url}"
+            return {
+                "url": media_url,
+                "quality": "Unknown",
+                "requested_quality": quality_pref,
+                "detected_quality": "Unknown",
+                "verified_quality": "Unknown",
+                "source": "DeadToons",
+                "poster": target_post.get("poster"),
+            }
         except Exception as e:
             log.warning("DeadToons resolve error for %s: %s", post_url, e)
 

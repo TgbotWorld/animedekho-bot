@@ -283,11 +283,23 @@ def _calc_eta(pct: float, elapsed: float) -> str:
     return _format_time(remaining)
 
 
-def _download_progress_text(title: str, quality: str, pct: float, size_bytes: float, elapsed: float, speed: float, eta: str = "") -> str:
+def _download_progress_text(title: str, quality: str, pct: float, size_bytes: float, elapsed: float, speed: float, eta: str = "", total_bytes: float = 0) -> str:
+    """Issue #36: ``size_bytes`` is what is on disk so far; ``total_bytes`` is
+    the REAL final size when known (HTTP Content-Length). When the total is
+    known the meter shows ``current / total`` so the displayed size can never
+    be mistaken for something bigger than the actual file."""
     spin = _spinner()
     speed_str = _format_speed(speed) if speed > 0 else "⏳ starting..."
     bar = _progress_bar(pct)
     eta_str = eta or _calc_eta(pct, elapsed)
+    # Never display a total smaller than what is already downloaded.
+    if total_bytes and total_bytes < size_bytes:
+        total_bytes = size_bytes
+    size_line = (
+        f"📦 {_format_size(size_bytes)} / {_format_size(total_bytes)}"
+        if total_bytes > 0
+        else f"📦 {_format_size(size_bytes)}"
+    )
 
     lines = [
         f"{spin} <b>⬇️ Downloading</b>",
@@ -297,7 +309,7 @@ def _download_progress_text(title: str, quality: str, pct: float, size_bytes: fl
         f"",
         f"<code>{bar}</code> <b>{pct:.1f}%</b>",
         f"",
-        f"📦 {_format_size(size_bytes)}  ⚡ {speed_str}",
+        f"{size_line}  ⚡ {speed_str}",
         f"⏱ {_format_time(elapsed)}  ⏳ ETA: {eta_str}",
     ]
     return "\n".join(lines)
@@ -454,7 +466,7 @@ async def direct_http_download(
                             if progress_msg and downloaded > 50_000:
                                 await _update_progress(
                                     progress_msg,
-                                    _download_progress_text(title, quality, pct, downloaded, elapsed, speed),
+                                    _download_progress_text(title, quality, pct, downloaded, elapsed, speed, total_bytes=total_bytes),
                                     last_edit,
                                     interval=3.0,
                                     job_id=job_id,
@@ -529,6 +541,16 @@ async def n_m3u8dl_re_download(
 
     # Attempt 1: Try with resolution selector if height is specified
     async def _run_dl(target_url: str, select_res: bool) -> bool:
+        # Issue #36: leftover files from a failed attempt still match the
+        # progress glob below and inflate the size meter on the retry
+        # (users saw "1.9 GB" for a file that finished at 200–400 MB).
+        for stale in Path(save_dir).glob(f"{glob_escape(stem)}*"):
+            if stale.is_file():
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
         cmd = [
             "N_m3u8DL-RE", target_url,
             "--save-dir", save_dir, "--save-name", stem,
@@ -593,11 +615,19 @@ async def n_m3u8dl_re_download(
                     break
                 await asyncio.sleep(3)
                 try:
-                    total = sum(
+                    # Issue #36: during the merge phase the same payload lives
+                    # in TWO places (segments in the tmp dir + the merged output
+                    # in save_dir). The old code summed both — plus stale files
+                    # from earlier attempts — so the meter showed 1.9 GB for a
+                    # file that finished at 200–400 MB. Count each location
+                    # separately and report the larger: it is the same data,
+                    # never two downloads at once.
+                    save_total = sum(
                         f.stat().st_size for f in Path(save_dir).glob(f"*{glob_escape(stem)}*")
                         if f.is_file()
                     )
-                    total += sum(f.stat().st_size for f in job_temp_dir.glob("**/*") if f.is_file())
+                    tmp_total = sum(f.stat().st_size for f in job_temp_dir.glob("**/*") if f.is_file())
+                    total = max(save_total, tmp_total)
 
                     now = time.time()
                     dt = now - last_time
@@ -1208,13 +1238,39 @@ async def _maybe_unzip_download(path: str, progress_msg=None, title="", job_id: 
             except Exception:
                 pass
         zf = zipfile.ZipFile(path)
+        media_members = [
+            zi for zi in zf.infolist()
+            if not zi.is_dir()
+            and zi.filename.lower().endswith((".mkv", ".mp4", ".webm", ".avi", ".mov", ".ts"))
+        ]
+
+        # Issue #35: season-pack ZIPs hold many episodes. The old code
+        # unpacked the FIRST member, so a request for one episode could be
+        # answered with a different one (or a whole-pack file). Prefer the
+        # member whose name carries the requested episode — the requested
+        # episode is present in the output filename.
         member = None
-        for zi in zf.infolist():
-            if zi.is_dir():
-                continue
-            if zi.filename.lower().endswith((".mkv", ".mp4", ".webm", ".avi", ".mov", ".ts")):
-                member = zi
-                break
+        _ep_m = re.search(r"S\d{1,2}\s*E(\d+)", os.path.basename(path), re.I) or re.search(
+            r"S\d{1,2}\s*E(\d+)", title or "", re.I)
+
+        def _member_episode_num(name: str):
+            mm = re.search(r"(?:S\d{1,2}\s*)?E(\d{1,4})\b", name, re.I)
+            if mm:
+                return int(mm.group(1))
+            mm = re.search(r"(?:EP|Episode)\s*0*(\d+)", name, re.I)
+            if mm:
+                return int(mm.group(1))
+            return None
+
+        if _ep_m and media_members:
+            _want_ep = int(_ep_m.group(1))
+            for zi in media_members:
+                if _member_episode_num(zi.filename) == _want_ep:
+                    member = zi
+                    log.info("ZIP: selected episode %d member '%s' from pack", _want_ep, zi.filename)
+                    break
+        if member is None and media_members:
+            member = media_members[0]
         if member is None:
             for zi in zf.infolist():
                 if not zi.is_dir():
@@ -1319,6 +1375,22 @@ async def download_media(
                         QUALITY_SIZE_BUDGET_MB.get(str(quality).strip().lower(), "?"),
                         current_url[:90],
                     )
+                    # Issue #36: warn in the progress UI instead of letting the
+                    # size meter silently climb into the GBs — users thought a
+                    # 480p episode was really 1.9 GB.
+                    if progress_msg:
+                        try:
+                            await progress_msg.edit_text(
+                                f"⚠️ <b>Large file notice</b>\n"
+                                f"┌ 📺 {title}\n"
+                                f"├ 🎬 {quality}\n"
+                                f"└ 📦 Source is sending ~{size_mb(pre['size'])} MB — larger than a typical {quality} episode.\n"
+                                f"<i>Downloading anyway… final file may be smaller after processing.</i>",
+                                parse_mode=enums.ParseMode.HTML,
+                                reply_markup=cancel_markup_for(job_id),
+                            )
+                        except Exception:
+                            pass
         except Exception:
             pass
 

@@ -185,16 +185,24 @@ async def probe_url_health(url: str, referer: str = "") -> dict:
                     note_host_throttled(url)
                     res["error"] = "http-429"
                 elif resp.status in (200, 206):
-                    # Issue #35: real object size, so a "480p" link that is
-                    # secretly 1.09 GB can be recognised before it is chosen.
-                    res["size"] = _total_size(resp)
-                    chunk = await resp.content.read(65536)
-                    res["bytes"] = len(chunk)
-                    res["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-                    # Must have received some bytes quickly.
-                    res["ok"] = res["bytes"] > 0
-                    if not res["ok"]:
-                        res["error"] = "empty-response"
+                    # Issue #35: an HTML page answering 200 is NOT a healthy
+                    # media link. Without this check the probe passed episode/
+                    # landing pages as streams and the downloader fetched a
+                    # web page and called it a download.
+                    ctype = str(resp.headers.get("Content-Type", "") or "").lower()
+                    if "text/html" in ctype or "application/json" in ctype:
+                        res["error"] = "html-not-media"
+                    else:
+                        # Issue #35: real object size, so a "480p" link that is
+                        # secretly 1.09 GB can be recognised before it is chosen.
+                        res["size"] = _total_size(resp)
+                        chunk = await resp.content.read(65536)
+                        res["bytes"] = len(chunk)
+                        res["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                        # Must have received some bytes quickly.
+                        res["ok"] = res["bytes"] > 0
+                        if not res["ok"]:
+                            res["error"] = "empty-response"
                 else:
                     res["error"] = f"http-{resp.status}"
     except asyncio.TimeoutError:
@@ -300,7 +308,7 @@ async def select_fastest_healthy(
             # Issue #35: a link whose real size blows its quality's budget
             # ranks behind every sane/unknown one, whatever its latency.
             rank = size_rank(cand.get("quality", ""), pr.get("size"))
-            scored.append((rank, pr["latency_ms"], cand))
+            scored.append((rank, pr["latency_ms"], cand, pr.get("size")))
             _mb = size_mb(pr.get("size"))
             if rank:
                 _budget = QUALITY_SIZE_BUDGET_MB.get(
@@ -347,18 +355,21 @@ async def select_fastest_healthy(
         return candidates[0], diags
     # Size sanity first (issue #35), then plain speed — V3 #16 otherwise.
     scored.sort(key=lambda x: (x[0], x[1]))
-    if scored[0][0] == 1:
+    _best_rank, _, _best_cand, _best_size = scored[0]
+    if _best_rank == 1:
+        # Issue #35: the probe size lives on the probe result, not the
+        # candidate dict — the old log read cand["size"] and always said 0 MB.
         log.warning(
-            "MultiSource: only oversized candidates for %s — using %d MB link anyway",
-            scored[0][2].get("quality", "?"),
-            size_mb(scored[0][2].get("size")) or 0,
+            "MultiSource: only oversized candidates for %s — using %s MB link anyway",
+            _best_cand.get("quality", "?"),
+            size_mb(_best_size) or "?",
         )
-    elif any(r for r, _, _ in scored):
+    elif any(r for r, _, _, _ in scored):
         log.info(
             "MultiSource: oversized link set aside (%s) — picking a sane candidate",
-            scored[0][2].get("source", "?"),
+            _best_cand.get("source", "?"),
         )
-    return scored[0][2], diags
+    return _best_cand, diags
 
 
 def infer_provider(url: str) -> str:

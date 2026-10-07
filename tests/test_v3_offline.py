@@ -1458,6 +1458,108 @@ def main() -> int:
         print(f"[FAIL] issue #34 dead-source cleanup: {_e39}")
         ok = False
 
+    # ── Issue #35: progress UI size meter must not lie ────────────────────
+    # The download progress "📦 size" line showed wildly wrong numbers:
+    # the N_m3u8DL-RE monitor summed the same payload twice (segments in
+    # tmp + merged output in save_dir) plus stale files from failed
+    # attempts, so a 200-400 MB 480p episode appeared as 1.9 GB.
+    try:
+        from bot.downloader import _download_progress_text, _format_size
+
+        # Known total (HTTP Content-Length) → "current / total" line.
+        _txt36a = _download_progress_text(
+            "Solo Leveling S1E01", "480p", 50.0,
+            100 * 1024 * 1024, 10.0, 10 * 1024 * 1024,
+            total_bytes=200 * 1024 * 1024)
+        ok &= check("i35 size meter shows current/total when total is known",
+                    "📦 100.0 MB / 200.0 MB" in _txt36a,
+                    _txt36a.replace("\n", " | ")[:160])
+
+        # Unknown total → bytes so far only, no bogus ratio.
+        _txt36b = _download_progress_text(
+            "Solo Leveling S1E01", "480p", 50.0,
+            100 * 1024 * 1024, 10.0, 10 * 1024 * 1024)
+        ok &= check("i35 size meter without total shows bytes so far only",
+                    "📦 100.0 MB" in _txt36b and "/ " not in _txt36b.split("📦")[1].split("\n")[0],
+                    _txt36b.replace("\n", " | ")[:160])
+
+        # A total smaller than what is already on disk is impossible —
+        # clamp so the meter never displays "downloaded > total".
+        _txt36c = _download_progress_text(
+            "Solo Leveling S1E01", "480p", 99.0,
+            100 * 1024 * 1024, 10.0, 10 * 1024 * 1024,
+            total_bytes=50 * 1024 * 1024)
+        ok &= check("i35 size meter clamps an impossible total",
+                    "📦 100.0 MB / 100.0 MB" in _txt36c,
+                    _txt36c.replace("\n", " | ")[:160])
+
+        # N_m3u8DL-RE monitor: each location counted separately, the larger
+        # one reported — never both summed (that produced the 1.9 GB ghost).
+        _dl36 = pathlib.Path("bot/downloader.py").read_text()
+        ok &= check("i35 N_m3u8DL-RE meter no longer double-counts merge copies",
+                    "total = max(save_total, tmp_total)" in _dl36
+                    and "total += sum(f.stat().st_size for f in job_temp_dir" not in _dl36)
+        # Direct HTTP meter passes the real Content-Length total through.
+        ok &= check("i35 direct HTTP meter shows the real total",
+                    "total_bytes=total_bytes" in _dl36)
+        # Oversized hand-overs warn in the UI before the meter climbs.
+        ok &= check("i35 oversized source object warns in the progress UI",
+                    "Large file notice" in _dl36)
+    except Exception as _e40:
+        import traceback as _tb40
+        _tb40.print_exc()
+        print(f"[FAIL] issue #35 progress size meter: {_e40}")
+        ok = False
+
+    # ── Issue #35: download-matrix findings (wrong file / HTML leaks) ─────
+    try:
+        import pathlib as _pl10
+        import os as _os10
+        import tempfile as _tf10
+        import zipfile as _zf10
+        import asyncio as _aio10
+
+        _ad10 = _pl10.Path("extractors/animedrive.py").read_text()
+        ok &= check("i35 AnimeDrive season match uses word boundaries",
+                    "matches_season(res[\"title\"], res[\"url\"], season)" in _ad10
+                    and 'f"season {season}" in t' not in _ad10)
+        ok &= check("i35 AnimeDrive refuses arbitrary /dl/ fallback when EP blocks exist",
+                    "ep_blocks_found" in _ad10 and "none for episode" in _ad10)
+        _dt10 = _pl10.Path("extractors/deadtoons.py").read_text()
+        ok &= check("i35 DeadToons verifies episode page before returning",
+                    "text/html" in _dt10 and "no extractable media link" in _dt10)
+        _hp10 = _pl10.Path("extractors/health_probe.py").read_text()
+        ok &= check("i35 probe rejects HTML pages as media",
+                    "html-not-media" in _hp10)
+        ok &= check("i35 oversized-selection log reads probe size, not candidate",
+                    "_best_size" in _hp10)
+
+        # ZIP season-pack: episode-aware member selection (issue #35)
+        from bot.downloader import _maybe_unzip_download
+        _td10 = _tf10.mkdtemp()
+        _pack = _os10.path.join(_td10, "Naruto S11E236 [480p].zip")
+        with _zf10.ZipFile(_pack, "w", _zf10.ZIP_DEFLATED) as _z10:
+            _z10.writestr("Naruto S11E222 [480p].mkv", b"A" * 4096)
+            _z10.writestr("Naruto S11E236 [480p].mkv", b"B" * 8192)
+            _z10.writestr("Naruto S11E242 [480p].mkv", b"C" * 4096)
+        _out10 = _aio10.run(_maybe_unzip_download(_pack))
+        ok &= check("i35 zip pack unpacks the requested episode, not the first",
+                    "S11E236" in _os10.path.basename(_out10)
+                    and _os10.path.getsize(_out10) == 8192,
+                    _os10.path.basename(_out10))
+
+        # Progress UI must show the real total, never double-count (issue #35)
+        _dl10 = _pl10.Path("bot/downloader.py").read_text()
+        ok &= check("i35 progress text carries known total size",
+                    "total_bytes" in _dl10 and "total_bytes=total_bytes" in _dl10)
+        ok &= check("i35 N_m3u8DL-RE progress no longer double-counts merge files",
+                    "max(save_total, tmp_total)" in _dl10)
+    except Exception as _e40:
+        import traceback as _tb10
+        _tb10.print_exc()
+        print(f"[FAIL] issue #35 download-matrix fixes: {_e40}")
+        ok = False
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 

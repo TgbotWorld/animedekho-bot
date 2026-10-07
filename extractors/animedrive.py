@@ -198,17 +198,17 @@ class AnimeDriveExtractor:
             "season", "series", "hindi", "dubbed", "episode", "episodes", "the", "a", "an", "of", "in", "and", "or"
         }
 
+        # Issue #35: word-boundary season matching. The old substring tests
+        # ("season 1" in "season 11", "s1" in "s11") picked the wrong series
+        # page — e.g. a Season-11 page whose buttons are season packs — and
+        # the bot delivered a multi-GB archive for a single-episode request.
+        from utils.anime_match import matches_season
         for res in search_results:
             t = res["title"].lower()
             res_words = set(re.findall(r'[a-zA-Z0-9]+', t))
             if query_words and len(query_words.intersection(res_words)) < min(len(query_words), 2):
                 continue
-            if (
-                f"season {season}" in t
-                or f"season {season:02d}" in t
-                or f"s{season}" in t
-                or f"s{season:02d}" in t
-            ):
+            if matches_season(res["title"], res["url"], season):
                 target_page_url = res["url"]
                 target_poster = res.get("poster")
                 break
@@ -259,14 +259,16 @@ class AnimeDriveExtractor:
 
         # Step 4: Locate episode block
         target_block = None
+        ep_blocks_found = 0
         for elem in target_soup.find_all(re.compile(r"^(h[1-6]|p|div)$")):
             txt = elem.get_text(" ", strip=True)
             m = re.search(r"(?:EP|Episode)\s*0*(\d+)", txt, re.I)
-            if m and int(m.group(1)) == episode and any(
+            if m and any(
                 q in txt.lower() for q in ["hubcloud", "filepress", "480p", "720p", "1080p", "4k", "▼", "download"]
             ):
-                target_block = elem
-                break
+                ep_blocks_found += 1
+                if int(m.group(1)) == episode and target_block is None:
+                    target_block = elem
 
         # Collect download buttons
         buttons = []
@@ -274,7 +276,17 @@ class AnimeDriveExtractor:
             buttons = target_block.find_all("a", href=True)
 
         if not buttons:
-            # Fallback: check all /dl/ buttons on page
+            if ep_blocks_found:
+                # Issue #35: episode blocks exist on this page, but none for
+                # the requested episode. Grabbing an arbitrary /dl/ button in
+                # that case delivered a 2.3 GB season pack when the user asked
+                # for one episode — refuse and let the next source try.
+                log.warning(
+                    "AnimeDrive: %d episode block(s) on page but none for episode %d — no fallback",
+                    ep_blocks_found, episode,
+                )
+                return None
+            # No episode structure at all (movie/OVA pages): any /dl/ button.
             all_dl = [a for a in target_soup.find_all("a", href=True) if "/dl/" in a["href"]]
             buttons = all_dl
 
