@@ -1234,6 +1234,230 @@ def main() -> int:
         print(f"[FAIL] issue #35 reliability/UI: {_e35}")
         ok = False
 
+    # ── Issue #35: 480p must not come back as a 1.09 GB file ──────────────
+    try:
+        import extractors.health_probe as _hp7
+
+        _gb = 1_090_000_000
+        _mb200 = 200 * 1024 * 1024
+        ok &= check("i35 a 1.09 GB '480p' is flagged oversized",
+                    _hp7.is_oversized("480p", _gb))
+        ok &= check("i35 a 200 MB 480p passes the budget",
+                    not _hp7.is_oversized("480p", _mb200))
+        ok &= check("i35 unknown size is never treated as oversized",
+                    not _hp7.is_oversized("480p", None)
+                    and not _hp7.is_oversized("480p", 0))
+        ok &= check("i35 unknown quality has no budget (4K safe)",
+                    not _hp7.is_oversized("2160p", _gb))
+        ok &= check("i35 480p budget is sane (150-250 MB target)",
+                    300 <= _hp7.QUALITY_SIZE_BUDGET_MB["480p"] <= 400,
+                    str(_hp7.QUALITY_SIZE_BUDGET_MB["480p"]))
+        ok &= check("i35 budgets shrink with quality",
+                    _hp7.QUALITY_SIZE_BUDGET_MB["240p"]
+                    < _hp7.QUALITY_SIZE_BUDGET_MB["480p"]
+                    < _hp7.QUALITY_SIZE_BUDGET_MB["720p"])
+
+        class _FakeResp:
+            def __init__(self, headers):
+                self.headers = headers
+
+        ok &= check("i35 probe reads the real size from Content-Range",
+                    _hp7._total_size(_FakeResp({"Content-Range": "bytes 0-65535/1090000000"}))
+                    == 1_090_000_000)
+        ok &= check("i35 probe falls back to Content-Length",
+                    _hp7._total_size(_FakeResp({"Content-Length": "219400000"})) == 219400000)
+        ok &= check("i35 sizeless headers stay unknown",
+                    _hp7._total_size(_FakeResp({})) is None)
+
+        # Functional: a fast-but-huge link must lose to a slower sane one.
+        _orig_probe7 = _hp7.probe_url_health
+        _sizes7 = {"https://big.example/480.mp4": 1_090_000_000,
+                   "https://sane.example/480.mp4": _mb200}
+
+        async def _fake_probe7(url, referer=""):
+            return {"ok": True,
+                    "latency_ms": 1.0 if "big" in url else 60.0,
+                    "bytes": 65536, "status": 206, "error": "",
+                    "size": _sizes7.get(url)}
+
+        _hp7.probe_url_health = _fake_probe7
+        try:
+            _best7, _diag7 = asyncio.run(_hp7.select_fastest_healthy([
+                {"url": "https://big.example/480.mp4", "quality": "480p",
+                 "source": "FastButHuge", "provider": "p"},
+                {"url": "https://sane.example/480.mp4", "quality": "480p",
+                 "source": "SaneOne", "provider": "p"},
+            ]))
+        finally:
+            _hp7.probe_url_health = _orig_probe7
+
+        ok &= check("i35 sane 480p beats the faster 1.09 GB link",
+                    _best7 is not None and _best7.get("source") == "SaneOne",
+                    str(_best7 and _best7.get("source")))
+        ok &= check("i35 oversized candidate is named in diagnostics",
+                    any("oversized" in str(d.get("status", "")) for d in _diag7),
+                    str([d.get("status") for d in _diag7]))
+        # same run must still work when every link is oversized
+        _hp7.probe_url_health = _fake_probe7
+        try:
+            _only7, _ = asyncio.run(_hp7.select_fastest_healthy([
+                {"url": "https://big.example/480.mp4", "quality": "480p",
+                 "source": "FastButHuge", "provider": "p"},
+            ]))
+        finally:
+            _hp7.probe_url_health = _orig_probe7
+        ok &= check("i35 oversized link still used when it is all there is",
+                    _only7 is not None and _only7.get("source") == "FastButHuge")
+        # downloader must shout about it too
+        import pathlib as _pl8
+        _dsrc7 = _pl8.Path("bot/downloader.py").read_text()
+        ok &= check("i35 preflight logs oversized downloads",
+                    "Oversized object for" in _dsrc7 and "is_oversized" in _dsrc7)
+    except Exception as _e36:
+        import traceback as _tb7
+        _tb7.print_exc()
+        print(f"[FAIL] issue #35 size budget: {_e36}")
+        ok = False
+
+    # ── Issue #34: probe cache + concurrent fallback search ───────────────
+    try:
+        import time as _t8mod
+        import extractors.health_probe as _hp8
+        import extractors.multisource as _ms8
+
+        _hp8._PROBE_CACHE.clear()
+        _hp8._PROBE_CACHE["https://cache.test/v.mp4|"] = (
+            _hp8.time.time() + 60,
+            {"ok": True, "latency_ms": 5.0, "bytes": 65536, "status": 206,
+             "error": "", "size": 123})
+        _r8 = asyncio.run(_hp8.probe_url_health("https://cache.test/v.mp4"))
+        ok &= check("i34 probe verdicts are reused instead of re-probed",
+                    _r8.get("cached") is True and _r8.get("ok") is True,
+                    str({k: _r8.get(k) for k in ("cached", "ok", "error")}))
+        _hp8._PROBE_CACHE.clear()
+
+        class _FakeSrc:
+            def __init__(self, delay, title):
+                self._d, self._t = delay, title
+
+            async def search(self, query):
+                await asyncio.sleep(self._d)
+                return [{"title": self._t, "url": f"https://x/{self._t}",
+                         "poster": ""}]
+
+        _mgr8 = _ms8.MultiSourceManager()
+        _mgr8.sources = [(f"S{i}", _FakeSrc(0.8, f"title-{i}")) for i in range(6)]
+        _t08 = _t8mod.time()
+        _res8 = asyncio.run(_mgr8.search_fallback("some query"))
+        _dt8 = _t8mod.time() - _t08
+        ok &= check("i34 fallback search runs concurrently",
+                    _dt8 < 3.0, f"{_dt8:.1f}s (serial would be 4.8s)")
+        ok &= check("i34 fallback search keeps source priority order",
+                    [r.source for r in _res8] == [f"S{i}" for i in range(6)],
+                    str([r.source for r in _res8]))
+    except Exception as _e37:
+        import traceback as _tb8
+        _tb8.print_exc()
+        print(f"[FAIL] issue #34 speed: {_e37}")
+        ok = False
+
+    # ── Issue #34: dead sources stop costing time ─────────────────────────
+    try:
+        import time as _t9mod
+        import threading as _threading9
+        import importlib as _il9
+        # NB: extractors/__init__ exports a *instance* named ``toonanime`` which
+        # shadows the submodule attribute, so pull the module from sys.modules.
+        _ta9 = _il9.import_module("extractors.toonanime")
+        import extractors.reliability as _rel9
+        from extractors.toonanime import ToonAnimeExtractor
+
+        _rel9.reset()
+
+        class _ParkedResp:
+            def __init__(self, url):
+                # long enough to clear the extractor's 1000-byte guard, and it
+                # trips the parking-hint detector
+                self.text = ("<html><title>domain is parked</title>"
+                             + "x" * 1400 + "</html>")
+                self.url = url
+                self.status_code = 200
+
+        class _CountingScraper:
+            def __init__(self):
+                self.calls = 0
+                self._lock = _threading9.Lock()
+
+            def get(self, url, **kw):
+                with self._lock:
+                    self.calls += 1
+                return _ParkedResp(url)
+
+        _fake9 = _CountingScraper()
+        _orig_get9 = _ta9._get_scraper
+        _ta9._get_scraper = lambda: _fake9
+        try:
+            _ex9 = ToonAnimeExtractor()
+            _t09 = _t9mod.time()
+            _r9a = _ex9._sync_search("solo leveling")
+            _first9 = _fake9.calls
+            _r9b = _ex9._sync_search("solo leveling")
+            _second9 = _fake9.calls - _first9
+            _ex9._sync_search("one piece")     # round 2 → failure #1
+            _ex9._sync_search("one piece")     # round 3 → failure #2
+            _ex9._sync_search("one piece")     # round 4 → failure #3 → benched
+            ok &= check("i34 parked ToonAnime mirrors are probed once", _first9 == 4,
+                        f"{_first9} calls")
+            ok &= check("i34 dead mirrors are skipped on the next search",
+                        _r9b == [] and _second9 == 0, f"{_second9} extra calls")
+            ok &= check("i34 parked-mirror search returns no junk",
+                        _r9a == [], str(_r9a)[:80])
+            ok &= check("i34 ToonAnime is benched after repeated dead mirrors",
+                        _rel9.is_source_benched("ToonAnime"),
+                        str(_rel9.source_snapshot().get("ToonAnime")))
+        finally:
+            _ta9._get_scraper = _orig_get9
+
+        # benched sources must not even be queried by the fallback search
+        class _ShouldNotRun:
+            def __init__(self):
+                self.calls = 0
+
+            async def search(self, query):
+                self.calls += 1
+                return [{"title": "should not appear", "url": "https://x/e"}]
+
+        _never9 = _ShouldNotRun()
+        _mgr9 = _il9.import_module("extractors.multisource").MultiSourceManager()
+        _mgr9.sources = [("ToonAnime", _never9), ("LiveSrc", _ShouldNotRun())]
+        _res9 = asyncio.run(_mgr9.search_fallback("some query"))
+        ok &= check("i34 benched source is skipped by fallback search",
+                    _never9.calls == 0, f"{_never9.calls} call(s)")
+        ok &= check("i34 live sources still searched alongside it",
+                    any(r.source == "LiveSrc" for r in _res9),
+                    str([r.source for r in _res9]))
+        _rel9.reset()
+
+        # title chips must not survive as search results
+        import pathlib as _pl9
+        _dt9 = _pl9.Path("extractors/deadtoons.py").read_text()
+        _ad9 = _pl9.Path("extractors/animedubhindi.py").read_text()
+        ok &= check("i34 DeadToons prefers heading anchors over card chips",
+                    'soup.select("h2 a[href], h3 a[href]")' in _dt9)
+        ok &= check("i34 DeadToons drops rating/status chips",
+                    "status/rating chip" in _dt9 and r"\d+\.\d{1,2}" in _dt9)
+        ok &= check("i34 AnimeDubHindi prefers heading anchors",
+                    "article h2 a[href]" in _ad9)
+        _ta_src9 = _pl9.Path("extractors/toonanime.py").read_text()
+        ok &= check("i34 ToonAnime probes its mirrors in parallel",
+                    "ThreadPoolExecutor" in _ta_src9
+                    and "_mirror_dead" in _ta_src9)
+    except Exception as _e39:
+        import traceback as _tb9
+        _tb9.print_exc()
+        print(f"[FAIL] issue #34 dead-source cleanup: {_e39}")
+        ok = False
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 

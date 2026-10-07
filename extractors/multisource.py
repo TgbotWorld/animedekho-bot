@@ -70,16 +70,76 @@ class MultiSourceManager:
         return None
 
     async def search_fallback(self, query: str) -> list[SearchResult]:
-        """Search fallback sources when primary AnimeDekho returns 0 results."""
+        """Search fallback sources when primary AnimeDekho returns 0 results.
+
+        Issue #34: the sources are queried *concurrently* (bounded to 4 in
+        flight, 25s each, 30s round cap) instead of one after another — a
+        serial pass over 8 scrapers was costing the user tens of seconds on
+        every miss. Results are still emitted in source-priority order and the
+        round stops as soon as enough raw hits exist.
+        """
         results: list[SearchResult] = []
         seen_slugs = set()
 
-        for name, extractor in self.sources:
-            try:
-                raw_items = await extractor.search(query)
-                if not raw_items:
-                    continue
+        _sem = asyncio.Semaphore(4)
 
+        async def _search_one(item):
+            name, extractor = item
+            # Issue #34: a source sitting out its bench window is not worth a
+            # round-trip — benched sources are skipped silently.
+            try:
+                from extractors import reliability as _rel
+                if _rel.is_source_benched(name):
+                    return name, None, None
+            except Exception:
+                pass
+            async with _sem:
+                try:
+                    return name, await asyncio.wait_for(extractor.search(query), timeout=25), None
+                except asyncio.TimeoutError:
+                    return name, None, "timeout"
+                except Exception as e:
+                    return name, None, e
+
+        _loop = asyncio.get_running_loop()
+        _deadline = _loop.time() + 30.0
+        _tasks = [asyncio.ensure_future(_search_one(it)) for it in self.sources]
+        _pending = set(_tasks)
+        _raw: dict[str, list] = {}
+        try:
+            while _pending:
+                _budget = max(0.05, _deadline - _loop.time())
+                _done, _pending = await asyncio.wait(
+                    _pending, timeout=_budget, return_when=asyncio.FIRST_COMPLETED)
+                for _t in _done:
+                    try:
+                        _name, _items, _err = _t.result()
+                    except Exception as _te:
+                        log.warning("Fallback search task failed for '%s': %s", query, _te)
+                        continue
+                    if _err is not None:
+                        log.warning("Fallback search on %s failed for '%s': %s", _name, query, _err)
+                        continue
+                    if _items:
+                        _raw[_name] = _items
+                if not _done:
+                    log.info("Fallback search: 30s cap reached (%d source(s) answered)", len(_raw))
+                    break
+                if sum(len(v) for v in _raw.values()) >= 10:
+                    log.info("Fallback search: enough hits in hand from %d source(s)", len(_raw))
+                    break
+        finally:
+            for _t in _pending:
+                _t.cancel()
+            if _pending:
+                await asyncio.gather(*_pending, return_exceptions=True)
+
+        # Emit in source-priority order regardless of who answered first.
+        for name, _ in self.sources:
+            raw_items = _raw.get(name)
+            if not raw_items:
+                continue
+            try:
                 for item in raw_items:
                     raw_title = item.get("title", "")
                     title = clean_title(raw_title) or raw_title

@@ -59,15 +59,22 @@ class AnimeDubHindiExtractor:
             results = []
             seen_urls = set()
 
+            # Issue #34: read the *headings* first. Walking every anchor on
+            # the page used to return nav/footer junk ("Watch online", …) as
+            # the top hit, which made this source look broken to users.
+            anchors = soup.select("article h2 a[href], article h3 a[href], h2 a[href], h3 a[href]")
+            if not anchors:
+                anchors = soup.find_all("a", href=True)
+
             # Inspect post entries
-            for a in soup.find_all("a", href=True):
+            for a in anchors:
                 href = a["href"].strip()
                 if not href or href in seen_urls:
                     continue
                 if not href.startswith("http") or href.rstrip("/") == self.base_url.rstrip("/"):
                     continue
 
-                title = a.get_text(strip=True) or (a.get("title") or "").strip()
+                title = a.get_text(" ", strip=True) or (a.get("title") or "").strip()
                 # Skip navigation links
                 if not title or len(title) < 4:
                     continue

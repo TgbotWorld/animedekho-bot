@@ -33,6 +33,26 @@ _PROBE_HEADERS = {
 _HOST_COOLDOWN_UNTIL: dict[str, float] = {}
 _HOST_COOLDOWN_SECS = 120.0
 
+# Issue #34: one probe costs up to 8s and the same URL is probed again on the
+# next resolution attempt *and* again by the downloader preflight. Cache the
+# verdict briefly — successes for 45s, failures for 15s (a failure is usually
+# already TTL'd by the reliability layer, this only collapses repeats inside
+# one round).
+_PROBE_CACHE: dict[str, tuple[float, dict]] = {}
+_PROBE_OK_TTL = 45.0
+_PROBE_FAIL_TTL = 15.0
+_PROBE_CACHE_MAX = 1024
+
+
+def _probe_cache_prune(now: float) -> None:
+    try:
+        for k in [k for k, v in _PROBE_CACHE.items() if v[0] <= now]:
+            _PROBE_CACHE.pop(k, None)
+        if len(_PROBE_CACHE) > _PROBE_CACHE_MAX:
+            _PROBE_CACHE.clear()
+    except Exception:
+        pass
+
 
 def _cooldown_active(host: str) -> bool:
     try:
@@ -51,6 +71,70 @@ def note_host_throttled(url: str) -> None:
             log.info("Host %s throttled — probing paused for %ds", host, _HOST_COOLDOWN_SECS)
     except Exception:
         pass
+
+
+# ── Issue #35: per-quality size budget ──────────────────────────────────
+#
+# A single 480p episode should land around 150–250 MB. The failure report had
+# a "480p" link that was really 1.09 GB — almost certainly a season pack, a
+# multi-audio mux or a mislabelled higher quality. Probes now read the real
+# object size and candidates that blow the budget lose to sane ones (they are
+# still used when nothing else exists: a big file beats no file).
+
+#: Max sane size of a *single episode* at each quality.
+QUALITY_SIZE_BUDGET_MB: dict[str, int] = {
+    "240p": 180,
+    "360p": 250,
+    "480p": 350,
+    "720p": 900,
+    "1080p": 3000,
+}
+
+
+def size_mb(size_bytes) -> int | None:
+    """Bytes → whole MiB, or None when unknown/invalid."""
+    try:
+        n = int(size_bytes)
+        return n // (1024 * 1024) if n > 0 else None
+    except Exception:
+        return None
+
+
+def is_oversized(quality: str, size_bytes) -> bool:
+    """True only when the size is *known* and exceeds that quality's budget.
+
+    Unknown size is never treated as oversized — an unmeasured link must not
+    lose to a measured one it may well beat.
+    """
+    try:
+        budget = QUALITY_SIZE_BUDGET_MB.get(str(quality or "").strip().lower())
+        if not budget:
+            return False
+        n = int(size_bytes)
+        return n > 0 and n > budget * 1024 * 1024
+    except Exception:
+        return False
+
+
+def size_rank(quality: str, size_bytes) -> int:
+    """Selection rank: 0 = normal, 1 = proven oversized for its quality."""
+    return 1 if is_oversized(quality, size_bytes) else 0
+
+
+def _total_size(resp) -> int | None:
+    """Total object size in bytes when the server advertises it."""
+    try:
+        crange = str(resp.headers.get("Content-Range", "") or "")
+        if "/" in crange:
+            tail = crange.rsplit("/", 1)[-1].strip()
+            if tail.isdigit() and int(tail) > 0:
+                return int(tail)
+        clen = str(resp.headers.get("Content-Length", "") or "")
+        if clen.strip().isdigit() and int(clen) > 0:
+            return int(clen)
+    except Exception:
+        return None
+    return None
 
 
 async def probe_url_health(url: str, referer: str = "") -> dict:
@@ -79,6 +163,16 @@ async def probe_url_health(url: str, referer: str = "") -> dict:
             return res
     except Exception:
         pass
+    # Issue #34: recent verdict for this exact URL → reuse it, no round-trip.
+    _ckey = f"{url}|{referer or ''}"
+    try:
+        _hit = _PROBE_CACHE.get(_ckey)
+        if _hit and _hit[0] > time.time():
+            _cached = dict(_hit[1])
+            _cached["cached"] = True
+            return _cached
+    except Exception:
+        pass
     headers = dict(_PROBE_HEADERS)
     if referer:
         headers["Referer"] = referer
@@ -91,6 +185,9 @@ async def probe_url_health(url: str, referer: str = "") -> dict:
                     note_host_throttled(url)
                     res["error"] = "http-429"
                 elif resp.status in (200, 206):
+                    # Issue #35: real object size, so a "480p" link that is
+                    # secretly 1.09 GB can be recognised before it is chosen.
+                    res["size"] = _total_size(resp)
                     chunk = await resp.content.read(65536)
                     res["bytes"] = len(chunk)
                     res["latency_ms"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -117,6 +214,14 @@ async def probe_url_health(url: str, referer: str = "") -> dict:
             _rel.record_failure(url, res["error"])
         elif res["error"] and _is_conn_error(res["error"]):
             _rel.record_host_dead(url, res["error"])
+    except Exception:
+        pass
+    # Issue #34: remember the verdict so the next attempt costs nothing.
+    try:
+        now = time.time()
+        _probe_cache_prune(now)
+        _ttl = _PROBE_OK_TTL if res.get("ok") else _PROBE_FAIL_TTL
+        _PROBE_CACHE[_ckey] = (now + _ttl, dict(res))
     except Exception:
         pass
     return res
@@ -192,13 +297,24 @@ async def select_fastest_healthy(
     diags = list(diags_pre)
     for cand, pr in zip(subset, results):
         if pr["ok"]:
-            scored.append((pr["latency_ms"], cand))
+            # Issue #35: a link whose real size blows its quality's budget
+            # ranks behind every sane/unknown one, whatever its latency.
+            rank = size_rank(cand.get("quality", ""), pr.get("size"))
+            scored.append((rank, pr["latency_ms"], cand))
+            _mb = size_mb(pr.get("size"))
+            if rank:
+                _budget = QUALITY_SIZE_BUDGET_MB.get(
+                    str(cand.get("quality", "")).strip().lower(), "?")
+                _status = f"Fast/Healthy — oversized {_mb} MB (budget {_budget} MB)"
+            else:
+                _status = "Fast/Healthy" + (f" · {_mb} MB" if _mb is not None else "")
             diags.append({
                 "source": cand.get("source", "?"),
                 "provider": cand.get("provider", "?"),
                 "quality": cand.get("quality", "?"),
-                "status": "Fast/Healthy",
+                "status": _status,
                 "latency_ms": pr["latency_ms"],
+                "size_mb": _mb,
                 "error": "",
             })
         else:
@@ -229,8 +345,20 @@ async def select_fastest_healthy(
         # diagnostics. Diagnostics keep the Dead statuses for the admin card.
         log.info("MultiSource: all %d probed candidates unhealthy — attempting first anyway", len(candidates))
         return candidates[0], diags
-    scored.sort(key=lambda x: x[0])
-    return scored[0][1], diags
+    # Size sanity first (issue #35), then plain speed — V3 #16 otherwise.
+    scored.sort(key=lambda x: (x[0], x[1]))
+    if scored[0][0] == 1:
+        log.warning(
+            "MultiSource: only oversized candidates for %s — using %d MB link anyway",
+            scored[0][2].get("quality", "?"),
+            size_mb(scored[0][2].get("size")) or 0,
+        )
+    elif any(r for r, _, _ in scored):
+        log.info(
+            "MultiSource: oversized link set aside (%s) — picking a sane candidate",
+            scored[0][2].get("source", "?"),
+        )
+    return scored[0][2], diags
 
 
 def infer_provider(url: str) -> str:

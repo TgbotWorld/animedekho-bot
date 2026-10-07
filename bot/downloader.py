@@ -1305,6 +1305,23 @@ async def download_media(
             log.debug("Preflight check skipped: %s", pe)
             pre = {"ok": True}
 
+        # Issue #35: make a wrong-object delivery visible in the log — e.g. a
+        # 1.09 GB file handed out as a "480p" episode (budget 350 MB).
+        try:
+            if pre.get("ok") and pre.get("size"):
+                from extractors.health_probe import (
+                    QUALITY_SIZE_BUDGET_MB, is_oversized, size_mb,
+                )
+                if is_oversized(quality, pre["size"]):
+                    log.warning(
+                        "Oversized object for [%s]: %s MB (budget %s MB) — wrong file from source: %s",
+                        quality, size_mb(pre["size"]),
+                        QUALITY_SIZE_BUDGET_MB.get(str(quality).strip().lower(), "?"),
+                        current_url[:90],
+                    )
+        except Exception:
+            pass
+
         if not pre.get("ok") and attempt < attempts:
             fresh = await _next_fresh_url(pending, refresh_url, current_url)
             if fresh:

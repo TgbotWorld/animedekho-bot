@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 import cloudscraper
@@ -24,6 +25,12 @@ def _get_scraper() -> cloudscraper.CloudScraper:
 class ToonAnimeExtractor:
     """Extracts Multi-Audio & Hindi anime series from ToonAnime."""
 
+    # Issue #34: every mirror currently answers with a domain-parking JS
+    # challenge, and each probe cost 10s (challenge follow included) — 22s of
+    # dead weight on every search. Remember a dead mirror for 10 minutes so
+    # the *next* round skips it outright.
+    _MIRROR_DEAD_TTL = 600.0
+
     def __init__(self):
         self._base_urls = [
             "https://toonanime.cc",
@@ -32,6 +39,14 @@ class ToonAnimeExtractor:
             "https://toonanimes.com",
         ]
         self._base_url = self._base_urls[0]
+        self._mirror_dead: dict[str, float] = {}
+
+    def _mark_mirror_dead(self, base: str) -> None:
+        try:
+            self._mirror_dead[base] = time.time() + self._MIRROR_DEAD_TTL
+            log.info("ToonAnime %s marked dead for %d min", base, int(self._MIRROR_DEAD_TTL // 60))
+        except Exception:
+            pass
 
     async def search(self, query: str) -> list[dict]:
         """Search ToonAnime for anime series or movies."""
@@ -54,7 +69,6 @@ class ToonAnimeExtractor:
         return False
 
     def _sync_search(self, query: str) -> list[dict]:
-        s = _get_scraper()
         clean = re.sub(
             r"(?i)\s*(season\s*\d+|s\d+|hindi|dubbed|multi-audio|tamil|telugu).*$",
             "",
@@ -62,24 +76,30 @@ class ToonAnimeExtractor:
         ).strip()
         search_query = clean or query
 
-        for base in self._base_urls:
+        now = time.time()
+
+        def _probe(base: str) -> list[dict]:
+            """One mirror → its results, or [] when it is parked/unreachable."""
             url = f"{base}/?s={quote_plus(search_query)}"
             try:
-                r = s.get(url, timeout=10)
+                ms = _get_scraper()
+                r = ms.get(url, timeout=10)
                 # Check for JS challenge redirect
                 m = re.search(r"window\.location\.replace\('([^']+)'\)", r.text)
                 if m:
                     try:
-                        r = s.get(m.group(1), headers={"Referer": url}, timeout=10)
+                        r = ms.get(m.group(1), headers={"Referer": url}, timeout=10)
                     except Exception as ce:
                         log.debug("ToonAnime challenge follow failed on %s: %s", base, ce)
-                        continue
+                        self._mark_mirror_dead(base)
+                        return []
 
                 if r.status_code != 200 or len(r.text) < 1000:
-                    continue
+                    return []
                 if self._is_dead_challenge_page(r.text, str(getattr(r, "url", ""))):
                     log.info("ToonAnime %s is parked/challenged — skipping mirror", base)
-                    continue
+                    self._mark_mirror_dead(base)
+                    return []
 
                 soup = BeautifulSoup(r.text, "html.parser")
                 results = []
@@ -115,12 +135,33 @@ class ToonAnimeExtractor:
                         "source": "ToonAnime",
                     })
 
-                if results:
-                    self._base_url = base
-                    return results
+                return results
 
             except Exception as e:
                 log.debug("ToonAnime search attempt on %s failed: %s", base, e)
+                return []
+
+        live = [b for b in self._base_urls if self._mirror_dead.get(b, 0.0) <= now]
+        if not live:
+            # Every mirror is inside its dead window — record it so the source
+            # bench can take this extractor out of the rotation completely
+            # instead of re-probing a parked domain on every request.
+            try:
+                from extractors import reliability as _rel
+                _rel.note_source_failure("ToonAnime", "all mirrors parked")
+            except Exception:
+                pass
+            return []
+
+        # Issue #34: probe the mirrors *together*. Taken one after another the
+        # parked mirrors cost ~17s on the first round.
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(4, len(live))) as pool:
+            found = list(pool.map(_probe, live))
+        for base, results in zip(live, found):
+            if results:
+                self._base_url = base
+                return results
 
         return []
 

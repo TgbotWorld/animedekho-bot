@@ -48,14 +48,27 @@ class DeadToonsExtractor:
             results = []
             seen = set()
 
-            for a in soup.find_all("a", href=True):
+            # Issue #34: prefer the headings. The raw anchor walk returned card
+            # chips ("Movie7.90", "Completed") as titles, so every result from
+            # this source looked like junk.
+            heading_anchors = soup.select("h2 a[href], h3 a[href]")
+            anchors = heading_anchors or soup.find_all("a", href=True)
+
+            for a in anchors:
                 href = a["href"]
                 if "/posts/" not in href or href in seen:
                     continue
                 seen.add(href)
                 full_url = href if href.startswith("http") else f"{self._base_url}{href}"
-                title = a.get_text(strip=True)
+                title = a.get_text(" ", strip=True)
                 if not title or len(title) < 3 or title.lower() in ("completed", "ongoing", "movie"):
+                    continue
+                if not heading_anchors and (
+                    len(title) < 12
+                    or re.match(r"(?i)^(completed|ongoing|movie|episode|sub|dub|hd|4k)\b", title)
+                    or re.search(r"\d+\.\d{1,2}\b", title)
+                ):
+                    # status/rating chip on a card, not a title
                     continue
 
                 poster = ""
