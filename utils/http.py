@@ -68,6 +68,36 @@ _CLOUDFLARE_DOMAINS = (
 # ── Cache entry ────────────────────────────────────────────────────────
 
 
+def _is_tls_cert_error(exc: BaseException) -> bool:
+    """True for "certificate has expired / verify failed" style failures.
+
+    These are permanent for the lifetime of the certificate: retrying the same
+    URL costs 1s+2s+4s of backoff per attempt and still fails, which is what
+    made source resolution crawl (issue #35).
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return (
+        "certificate_verify_failed" in text
+        or "sslcertverificationerror" in text
+        or "certificate has expired" in text
+        or ("certificate" in text and "verify" in text)
+        or "ssl: " in text and "cert" in text
+    )
+
+
+def _note_dead_host(url: str, reason: str) -> None:
+    """Bench a host whose TLS is broken so later resolutions skip it fast.
+
+    Degrades to a no-op when the reliability layer is unavailable — HTTP must
+    never fail because bookkeeping did.
+    """
+    try:
+        from extractors import reliability as _rel
+        _rel.record_host_dead(url, reason)
+    except Exception as e:
+        log.debug("dead-host note failed for %s: %s", url[:80], e)
+
+
 @dataclass
 class _CacheEntry:
     data: Any
@@ -239,6 +269,11 @@ class HTTPClient:
             except Exception as e:
                 last_error = e
                 status = getattr(getattr(e, 'response', None), 'status_code', 0)
+                if _is_tls_cert_error(e):
+                    log.warning("Cloudscraper TLS certificate error (not retrying): %s — %s",
+                                type(e).__name__, url)
+                    _note_dead_host(url, str(e) or type(e).__name__)
+                    break
                 log.warning(
                     "Cloudscraper request failed (attempt %d/3): %s %s — %s (status=%s)",
                     attempt + 1, method, url, e, status,
@@ -315,6 +350,14 @@ class HTTPClient:
                     raise
             except aiohttp.ClientError as e:
                 last_error = e
+                if _is_tls_cert_error(e):
+                    # An expired/invalid certificate never heals on retry — the
+                    # 1s+2s+4s backoff just stalls source resolution, and the
+                    # whole host is worthless until it renews (issue #35).
+                    log.warning("TLS certificate error (not retrying): %s — %s",
+                                type(e).__name__, url)
+                    _note_dead_host(url, str(e) or type(e).__name__)
+                    raise
                 wait = 2 ** attempt
                 log.warning(
                     "Network error (attempt %d/%d), retrying in %ds: %s — %s",

@@ -996,6 +996,244 @@ def main() -> int:
         print(f"[FAIL] i33 channel flow: {_ce}")
         ok = False
 
+    # ── Issue #34: source bench + bounded resolution round ────────────────
+    try:
+        import pathlib as _pl5
+        from extractors import reliability as _rel5
+
+        _rel5.reset()
+        for _ in range(_rel5.SOURCE_FAIL_LIMIT - 1):
+            _rel5.note_source_failure("RareAnimes", "timeout")
+        ok &= check("i34 source not benched below the limit",
+                    not _rel5.is_source_benched("RareAnimes"))
+        _rel5.note_source_failure("RareAnimes", "timeout")
+        ok &= check("i34 source benched at the limit",
+                    _rel5.is_source_benched("RareAnimes"))
+        ok &= check("i34 bench visible in snapshot",
+                    "RareAnimes" in (_rel5.snapshot().get("benched_sources") or {}))
+        ok &= check("i34 a healthy source is untouched by another's bench",
+                    not _rel5.is_source_benched("AnimeDrive"))
+        _rel5.note_source_success("RareAnimes")
+        ok &= check("i34 success clears the bench",
+                    not _rel5.is_source_benched("RareAnimes"))
+
+        _msrc = _pl5.Path("extractors/multisource.py").read_text()
+        ok &= check("i34 multisource sits out benched sources",
+                    "is_source_benched" in _msrc and "note_source_failure" in _msrc)
+        ok &= check("i34 resolution round has a hard cap",
+                    "_RESOLVE_HARD_CAP" in _msrc and "asyncio.wait(" in _msrc)
+        ok &= check("i34 first exact candidate releases the stragglers",
+                    "_RESOLVE_GRACE" in _msrc and "FIRST_COMPLETED" in _msrc)
+        # a plain miss must never count as a source failure
+        ok &= check("i34 misses do not bench a source",
+                    "note_source_success" in _msrc
+                    and "normal miss" in _msrc)
+        # the first semaphore wave must be the sources that actually resolve
+        from extractors.multisource import multi_source_manager as _msmgr
+        _first3 = [n for n, _ in _msmgr.sources[:3]]
+        ok &= check("i34 proven sources lead the first wave",
+                    _first3 == ["AnimeDrive", "ToonFlix", "AnimeDubHindi"],
+                    str(_first3))
+        ok &= check("i34 no source was dropped",
+                    len(_msmgr.sources) == 8, str(len(_msmgr.sources)))
+
+        # ── functional: a good candidate must not wait for the stragglers ──
+        import time as _time5
+        import extractors.multisource as _ms5
+        import extractors.health_probe as _hp5
+
+        class _FakeMgr(_ms5.MultiSourceManager):
+            async def _resolve_one_source(self, name, extractor, *a, **kw):
+                if name == "FastSource":
+                    await asyncio.sleep(0.2)
+                    return ({"source": name, "quality": "720p", "provider": "probe",
+                             "url": "https://ok.example/v.mp4",
+                             "detected_quality": "720p"},
+                            f"{name}: ok", "exact")
+                await asyncio.sleep(30)
+                return None, f"{name}: slow", "skip"
+
+        _fake_mgr = _FakeMgr()
+        _fake_mgr.sources = [("FastSource", object()),
+                             ("SlowA", object()), ("SlowB", object())]
+
+        async def _fake_select(pool):
+            return pool[0], [{"quality": "720p", "source": "FastSource",
+                              "provider": "probe", "status": "Fast/Healthy"}]
+
+        _orig_grace = _ms5._RESOLVE_GRACE
+        _orig_cap = _ms5._RESOLVE_HARD_CAP
+        _orig_select = _hp5.select_fastest_healthy
+        _ms5._RESOLVE_GRACE = 0.5
+        _hp5.select_fastest_healthy = _fake_select
+        try:
+            _t0 = _time5.monotonic()
+            _res5 = asyncio.run(_fake_mgr.resolve_episode_stream(
+                "Solo Leveling", season=1, episode=1, quality_pref="720p"))
+            _fast_dt = _time5.monotonic() - _t0
+
+            # every source dead → the round stops at the cap, not at N×75s
+            _ms5._RESOLVE_HARD_CAP = 1.5
+            _ms5._RESOLVE_GRACE = 1.5
+
+            class _AllSlow(_ms5.MultiSourceManager):
+                async def _resolve_one_source(self, name, extractor, *a, **kw):
+                    await asyncio.sleep(30)
+                    return None, f"{name}: slow", "skip"
+
+            _slow_mgr = _AllSlow()
+            _slow_mgr.sources = [("DeadA", object()), ("DeadB", object())]
+            _t1 = _time5.monotonic()
+            _res6 = asyncio.run(_slow_mgr.resolve_episode_stream(
+                "Solo Leveling", season=1, episode=1, quality_pref="720p"))
+            _cap_dt = _time5.monotonic() - _t1
+        finally:
+            _ms5._RESOLVE_GRACE = _orig_grace
+            _ms5._RESOLVE_HARD_CAP = _orig_cap
+            _hp5.select_fastest_healthy = _orig_select
+
+        ok &= check("i34 good candidate not held up by slow sources",
+                    _res5 is not None and _fast_dt < 6.0,
+                    f"dt={_fast_dt:.1f}s res={bool(_res5)}")
+        ok &= check("i34 all-dead round stops at the cap",
+                    _res6 is None and _cap_dt < 8.0, f"dt={_cap_dt:.1f}s")
+
+        _rel5.reset()
+    except Exception as _e34:
+        import traceback as _tb5
+        _tb5.print_exc()
+        print(f"[FAIL] issue #34 source health: {_e34}")
+        ok = False
+
+    # ── Issue #35: ffmpeg audio codec, TLS fail-fast, config messages ─────
+    try:
+        import pathlib as _pl6
+        import tempfile as _tf6
+        from bot.downloader import _bsf_failed
+        from utils.http import _is_tls_cert_error
+        from utils.helpers import resolve_photo_source
+
+        # Vorbis/Opus streams cannot pass aac_adtstoasc → must trigger a retry.
+        ok &= check("i35 non-AAC bitstream failure is detected",
+                    _bsf_failed(["Codec 'vorbis' (86021) is not supported by the bitstream "
+                                 "filter 'aac_adtstoasc'"]))
+        ok &= check("i35 unrelated ffmpeg errors do not trigger a retry",
+                    not _bsf_failed(["HTTP error 403 Forbidden"])
+                    and not _bsf_failed([]))
+        _dsrc = _pl6.Path("bot/downloader.py").read_text()
+        ok &= check("i35 ffmpeg retries as a plain copy",
+                    "retrying as a plain copy" in _dsrc and "_bsf_failed(" in _dsrc)
+
+        # Expired certificates never heal on retry.
+        ok &= check("i35 certificate errors are recognised",
+                    _is_tls_cert_error(Exception("SSLCertVerificationError: certificate has expired")))
+        ok &= check("i35 ordinary network errors still retry",
+                    not _is_tls_cert_error(Exception("Cannot connect to host x:443")))
+        _hsrc = _pl6.Path("utils/http.py").read_text()
+        ok &= check("i35 http fails fast on broken TLS",
+                    "not retrying" in _hsrc and "_note_dead_host" in _hsrc)
+
+        # Owner-authored /start text (config START_MSG / DB start_msg).
+        from bot.handlers.commands import _welcome_caption
+
+        class _StartDb:
+            async def get_start_msg(self):
+                return "Hi {mention} — custom welcome"
+
+        class _EmptyDb:
+            async def get_start_msg(self):
+                return None
+
+        _cap = asyncio.run(_welcome_caption(_StartDb(), "<a>A</a>"))
+        ok &= check("i35 configured START_MSG is used",
+                    _cap == "Hi <a>A</a> — custom welcome", _cap)
+        _cap2 = asyncio.run(_welcome_caption(_EmptyDb(), "X"))
+        ok &= check("i35 default welcome when nothing is configured",
+                    "on demand" in _cap2, _cap2[:60])
+
+        # Owner-authored FSub prompt + banner (FSUB_MSG / FSUB_PIC).
+        from bot.fsub import _custom_prompt, send_fsub_prompt
+
+        class _FsubDb:
+            async def get_fsub_msg(self):
+                return "Join to continue, {mention}"
+
+        _txt = asyncio.run(_custom_prompt(_FsubDb(), "DEFAULT PROMPT", None, 42))
+        ok &= check("i35 configured FSUB_MSG is used",
+                    _txt.startswith("Join to continue") and "tg://user?id=42" in _txt, _txt)
+
+        class _PlainDb:
+            async def get_fsub_msg(self):
+                return ""
+
+        ok &= check("i35 default FSub prompt when nothing is configured",
+                    asyncio.run(_custom_prompt(_PlainDb(), "DEFAULT PROMPT", None, 42))
+                    == "DEFAULT PROMPT")
+
+        class _Msg:
+            def __init__(self, fail_photo: bool = False):
+                self.photo = None
+                self.text = None
+                self._fail = fail_photo
+
+            async def reply_photo(self, *a, **kw):
+                if self._fail:
+                    raise RuntimeError("FILE_REFERENCE_INVALID")
+                self.photo = {"args": a, **kw}
+
+            async def reply_text(self, *a, **kw):
+                self.text = {"args": a, **kw}
+
+        import bot.database as _dbmod
+
+        class _PicDb:
+            async def get_fsub_pic(self):
+                return "https://example.test/banner.jpg"
+
+        _orig_db = _dbmod.db
+        _dbmod.db = _PicDb()
+        try:
+            _m1 = _Msg()
+            asyncio.run(send_fsub_prompt(_m1, "join please", None))
+            ok &= check("i35 configured FSUB_PIC banner is sent",
+                        _m1.photo is not None and _m1.photo.get("caption") == "join please"
+                        and _m1.text is None)
+            _m2 = _Msg(fail_photo=True)
+            asyncio.run(send_fsub_prompt(_m2, "join please", None))
+            ok &= check("i35 broken banner degrades to text",
+                        _m2.photo is None and _m2.text is not None)
+        finally:
+            _dbmod.db = _orig_db
+
+        # Local banner paths must be uploaded, not passed as a URL.
+        _pic_path = os.path.join(_tf6.gettempdir(), "adk_banner_test.png")
+        with open(_pic_path, "wb") as _fh:
+            _fh.write(b"\x89PNG\r\n\x1a\n")
+        _opened = resolve_photo_source(_pic_path)
+        ok &= check("i35 local banner path is opened for upload",
+                    hasattr(_opened, "read"))
+        try:
+            _opened.close()
+        except Exception:
+            pass
+        ok &= check("i35 banner URL passes through unchanged",
+                    resolve_photo_source("https://example.test/b.jpg")
+                    == "https://example.test/b.jpg")
+        os.remove(_pic_path)
+
+        # Every FSub call site goes through the banner-aware sender.
+        _fsub_calls = 0
+        for _p in ("bot/handlers/commands.py", "bot/child_bots.py", "bot/auth.py"):
+            _src6 = _pl6.Path(_p).read_text()
+            _fsub_calls += _src6.count("send_fsub_prompt(")
+        ok &= check("i35 all FSub prompts honour FSUB_PIC",
+                    _fsub_calls >= 6, f"call sites={_fsub_calls}")
+    except Exception as _e35:
+        import traceback as _tb6
+        _tb6.print_exc()
+        print(f"[FAIL] issue #35 reliability/UI: {_e35}")
+        ok = False
+
     print("\nALL PASS" if ok else "\nSOME FAILURES")
     return 0 if ok else 1
 

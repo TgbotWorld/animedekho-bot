@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import html as htmlmod
+import os
 import re
 
 from config.settings import settings
@@ -9,6 +10,23 @@ from config.settings import settings
 
 def esc(text: str) -> str:
     return htmlmod.escape(text)
+
+
+def resolve_photo_source(pic: str):
+    """Turn a configured picture into something Telegram accepts.
+
+    ``START_PIC`` / ``FSUB_PIC`` may be a ``file_id``, an http(s) URL *or* a
+    local path in ``config.py`` — only the first two are accepted by Telegram,
+    so a local path is opened for upload (issue #35).
+    """
+    if not pic:
+        return pic
+    try:
+        if os.path.isfile(pic):
+            return open(pic, "rb")
+    except Exception:
+        pass
+    return pic
 
 
 def truncate(text: str, maxlen: int = 400) -> str:

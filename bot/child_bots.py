@@ -259,12 +259,12 @@ class ChildBotManager:
                     if db:
                         mapping = await db.get_channel_mapping(slug)
                         if mapping and mapping.get("channel_id"):
-                            from bot.fsub import check_fsub, create_timer_invite_link
+                            from bot.fsub import check_fsub, create_timer_invite_link, send_fsub_prompt
                             from utils.helpers import encode_file_param
                             sec_retry = encode_file_param(f"join_{slug}")
                             is_sub, f_text, f_markup = await check_fsub(c, user_id, retry_param=sec_retry)
                             if not is_sub:
-                                await m.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
+                                await send_fsub_prompt(m, f_text, f_markup)
                                 return
 
                             retry_url = f"https://t.me/{username}?start={sec_retry}"
@@ -402,10 +402,10 @@ class ChildBotManager:
         user_id = user.id if user else 0
 
         # Force Subscribe verification (supports timer links when fsub_mod is on)
-        from bot.fsub import check_fsub
+        from bot.fsub import check_fsub, send_fsub_prompt
         is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=param)
         if not is_sub:
-            await message.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
+            await send_fsub_prompt(message, f_text, f_markup)
             return
 
         # Parse deep link: get_<slug>_<quality>_<episode_key>

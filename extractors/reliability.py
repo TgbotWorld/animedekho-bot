@@ -73,6 +73,8 @@ def reset() -> None:
     _url_failures.clear()
     _host_bench.clear()
     _host_dead_urls.clear()
+    _source_failures.clear()
+    _source_bench.clear()
 
 
 def _prune(now: float | None = None) -> None:
@@ -203,6 +205,79 @@ def first_available(urls, exclude: str = "") -> str:
     return ""
 
 
+# ───────────────────────────── source bench ────────────────────────────────
+# Issue #34/#35: a source that keeps timing out (or throwing) still burns its
+# full slot in every resolution round. After SOURCE_FAIL_LIMIT hard failures
+# inside the window it sits out SOURCE_BENCH_SECS so healthy sources get the
+# round to themselves. "No result for this title" is a normal miss and never
+# counts — only timeouts and exceptions do.
+
+#: Distinct hard failures inside the window that bench a source.
+SOURCE_FAIL_LIMIT = 3
+
+#: Window in which those failures must happen.
+SOURCE_FAIL_WINDOW = 300.0
+
+#: Seconds a source sits out after tripping the limit.
+SOURCE_BENCH_SECS = 300.0
+
+# source name -> recent hard-failure timestamps
+_source_failures: dict[str, list[float]] = {}
+# source name -> benched_until
+_source_bench: dict[str, float] = {}
+
+
+def note_source_failure(name: str, reason: str = "") -> None:
+    """Count a hard failure (timeout/exception) for *name*; bench when tripped."""
+    if not name:
+        return
+    try:
+        now = time.time()
+        recent = [t for t in _source_failures.get(name, []) if now - t < SOURCE_FAIL_WINDOW]
+        recent.append(now)
+        _source_failures[name] = recent
+        if len(recent) >= SOURCE_FAIL_LIMIT:
+            _source_bench[name] = now + SOURCE_BENCH_SECS
+            log.warning("Source '%s' benched for %.0fs after %d failures (last: %s)",
+                        name, SOURCE_BENCH_SECS, len(recent), str(reason)[:90])
+        else:
+            log.debug("Source '%s' failure %d/%d: %s",
+                      name, len(recent), SOURCE_FAIL_LIMIT, reason or "-")
+    except Exception as e:
+        log.debug("note_source_failure failed: %s", e)
+
+
+def note_source_success(name: str) -> None:
+    """A source that produced a usable entry is healthy again."""
+    if not name:
+        return
+    _source_failures.pop(name, None)
+    _source_bench.pop(name, None)
+
+
+def is_source_benched(name: str) -> bool:
+    """True while *name* is sitting out after repeated hard failures."""
+    try:
+        left = _source_bench.get(name, 0.0) - time.time()
+        if left <= 0:
+            _source_bench.pop(name, None)
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def source_snapshot() -> dict:
+    """Diagnostics for tests / admin inspection."""
+    now = time.time()
+    return {
+        "benched": {n: round(u - now) for n, u in _source_bench.items() if u > now},
+        "failing": {n: len(v) for n, v in _source_failures.items() if v},
+        "fail_limit": SOURCE_FAIL_LIMIT,
+        "bench_secs": SOURCE_BENCH_SECS,
+    }
+
+
 # ───────────────────────────── retry budget ────────────────────────────────
 
 def attempts_for(limit: int | None = None) -> int:
@@ -228,6 +303,8 @@ def snapshot() -> dict:
         "parked_urls": len(_url_failures),
         "benched_hosts": {h: round(until - time.time()) for h, until in _host_bench.items()
                           if until > time.time()},
+        "benched_sources": {n: round(until - time.time()) for n, until in _source_bench.items()
+                            if until > time.time()},
         "failure_ttl": FAILURE_TTL,
         "bench_secs": BENCH_SECS,
         "max_attempts": MAX_DOWNLOAD_ATTEMPTS,

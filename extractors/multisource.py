@@ -21,21 +21,34 @@ from extractors.shortener import is_shortener, detect_and_bypass, is_valid_media
 
 log = logging.getLogger(__name__)
 
+# Issue #34/#35: resolution must not block on the slowest source.
+#: Total seconds one resolution round may take (was unbounded: 8 sources ×
+#: 75s each, 3 at a time ≈ 225s of waiting before any download could start).
+_RESOLVE_HARD_CAP = 90.0
+#: Extra seconds granted to the remaining sources after the first verified
+#: exact-quality candidate lands.
+_RESOLVE_GRACE = 8.0
+
 
 class MultiSourceManager:
     """Manages primary, secondary, and fallback download/streaming sources."""
 
     def __init__(self):
-        # Direct download/video sources prioritized first (Issue #22 & #23)
+        # Direct download/video sources prioritized first (Issue #22 & #23).
+        # Issue #34: the concurrency semaphore grants slots in this order, so
+        # the sources that actually resolve (AnimeDrive, ToonFlix,
+        # AnimeDubHindi) must occupy the first wave instead of queueing behind
+        # ones that routinely time out. Nothing is removed — a source that
+        # still has the episode stays eligible.
         self.sources = [
+            ("AnimeDrive", animedrive),
+            ("ToonFlix", toonflix),
             ("AnimeDubHindi", animedubhindi),
             ("ToonWorld4All", toonworld4all),
+            ("ToonAnime", toonanime),
             ("RareAnimes", rareanimes),
             ("DeadToons", deadtoons),
             ("TOONo", toono),
-            ("ToonAnime", toonanime),
-            ("AnimeDrive", animedrive),
-            ("ToonFlix", toonflix),
         ]
         self._slug_registry: dict[str, dict] = {}
 
@@ -352,13 +365,23 @@ class MultiSourceManager:
         # sequentially. Time-limited signed URLs (HubCloud googleapis,
         # worker proxies) expire while a sequential loop burns 60-90s;
         # concurrency keeps every candidate fresh for the download step.
+        #
+        # Issue #34/#35: two guards on top of that — a source that keeps
+        # timing out sits the round out (source bench), and once a verified
+        # exact candidate is in hand the stragglers only get a short grace
+        # window instead of holding the whole resolution hostage.
+        from extractors import reliability as _rel
+
         _sem = asyncio.Semaphore(3)
 
         async def _one(item):
             name, extractor = item
+            if _rel.is_source_benched(name):
+                log.info("Source '%s' benched after repeated failures — skipping this round", name)
+                return None, f"{name}: benched after repeated failures", "skip"
             async with _sem:
                 try:
-                    return await asyncio.wait_for(
+                    res = await asyncio.wait_for(
                         self._resolve_one_source(
                             name, extractor, search_title, season, episode,
                             quality_pref, want_norm,
@@ -367,17 +390,63 @@ class MultiSourceManager:
                     )
                 except asyncio.TimeoutError:
                     log.warning("Fallback source '%s' timed out (75s); skipping", name)
+                    _rel.note_source_failure(name, "timeout after 75s")
                     return None, f"{name}: timeout", "skip"
                 except Exception as e:
                     log.warning("Fallback resolver '%s' failed for '%s' S%dE%d: %s", name, search_title, season, episode, e)
+                    _rel.note_source_failure(name, str(e))
                     return None, f"{name}: error {e}", "skip"
+                # Producing an entry proves the source alive; "no result for
+                # this title" is a normal miss and must not count against it.
+                if res and res[0]:
+                    _rel.note_source_success(name)
+                return res
 
-        for entry, diag, kind in await asyncio.gather(*[_one(it) for it in ordered]):
-            diag_trail.append(diag)
-            if kind == "exact" and entry:
-                exact_candidates.append(entry)
-            elif kind == "unknown" and entry:
-                unknown_candidates.append(entry)
+        _loop = asyncio.get_running_loop()
+        _hard_deadline = _loop.time() + _RESOLVE_HARD_CAP
+        _grace_deadline: float | None = None
+        _tasks = [asyncio.ensure_future(_one(it)) for it in ordered]
+        _pending = set(_tasks)
+        try:
+            while _pending:
+                _budget = max(0.05, _hard_deadline - _loop.time())
+                if _grace_deadline is not None:
+                    _budget = min(_budget, max(0.05, _grace_deadline - _loop.time()))
+                _done, _pending = await asyncio.wait(
+                    _pending, timeout=_budget, return_when=asyncio.FIRST_COMPLETED,
+                )
+                for _task in _done:
+                    try:
+                        _res = _task.result()
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception as _te:
+                        _res = (None, f"source task error: {_te}", "skip")
+                    if not _res:
+                        continue
+                    entry, diag, kind = _res
+                    diag_trail.append(diag)
+                    if kind == "exact" and entry:
+                        exact_candidates.append(entry)
+                    elif kind == "unknown" and entry:
+                        unknown_candidates.append(entry)
+                if not _done:
+                    log.info(
+                        "MultiSource: stopped waiting after %.0fs — %d exact / %d unknown candidate(s)",
+                        _RESOLVE_HARD_CAP, len(exact_candidates), len(unknown_candidates),
+                    )
+                    break
+                if _grace_deadline is None and exact_candidates:
+                    # First verified exact candidate: let the others finish
+                    # quickly, then cut them loose.
+                    _grace_deadline = min(_loop.time() + _RESOLVE_GRACE, _hard_deadline)
+                    log.info("MultiSource: exact candidate in hand — %.0fs grace for the rest",
+                             _RESOLVE_GRACE)
+        finally:
+            for _task in _pending:
+                _task.cancel()
+            if _pending:
+                await asyncio.gather(*_pending, return_exceptions=True)
 
         # V3 #16: fastest healthy exact-quality link wins; Unknown only when
         # no exact candidate exists (post-download ffprobe still enforces).

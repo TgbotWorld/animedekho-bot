@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import logging
+import re
 from functools import wraps
 
 from bot.telegram import Client
@@ -79,15 +80,17 @@ def require_approved(func):
 
         # Force sub check (owner bypasses)
         if not is_owner(user_id):
-            from bot.fsub import check_fsub
+            from bot.fsub import check_fsub, send_fsub_prompt
             is_sub, fsub_text, fsub_markup = await check_fsub(client, user_id)
             if not is_sub:
                 if isinstance(update, CallbackQuery):
-                    await update.answer(fsub_text or "📢 Please join our channel to use this bot!", show_alert=True)
-                    if update.message and fsub_markup:
-                        await update.message.reply_text(fsub_text, reply_markup=fsub_markup)
+                    # Alerts are plain text — strip the HTML the prompt uses.
+                    plain = re.sub(r"<[^>]+>", "", fsub_text or "") or "📢 Please join our channel to use this bot!"
+                    await update.answer(plain[:180], show_alert=True)
+                    if update.message:
+                        await send_fsub_prompt(update.message, fsub_text, fsub_markup)
                 elif isinstance(update, Message):
-                    await update.reply_text(fsub_text, reply_markup=fsub_markup)
+                    await send_fsub_prompt(update, fsub_text, fsub_markup)
                 return
 
         return await func(client, update)

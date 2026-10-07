@@ -52,6 +52,22 @@ async def _home_channel(db) -> str:
     return main_link or invite_link or "https://t.me/animedekho"
 
 
+async def _welcome_caption(db, user_mention: str) -> str:
+    """Owner-authored /start text (config ``START_MSG`` / DB ``start_msg``).
+
+    config.py documents the ``{mention}`` placeholder; when nothing is set the
+    default streaming welcome is used (issue #35: custom text never showed).
+    """
+    try:
+        custom = await db.get_start_msg() if db else None
+    except Exception as e:
+        log.debug("start message lookup failed: %s", e)
+        custom = None
+    if custom and custom.strip():
+        return custom.replace("{mention}", user_mention)
+    return _start_caption(user_mention)
+
+
 async def cmd_start(client: Client, message: Message):
     user = message.from_user
     user_id = user.id if user else 0
@@ -96,28 +112,43 @@ async def cmd_start(client: Client, message: Message):
 
         main_chan = await _home_channel(db)
         modern_markup = _start_markup(main_chan)
-        caption = _start_caption(user_mention)
+        caption = await _welcome_caption(db, user_mention)
 
         start_pic = await db.get_start_pic() if db else None
         # Default stylish banner fallback if user has not set a custom start picture
-        pic_to_send = start_pic or "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000&auto=format&fit=crop"
+        default_pic = "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000&auto=format&fit=crop"
+        from utils.helpers import resolve_photo_source
 
-        try:
-            await message.reply_photo(
-                photo=pic_to_send,
-                caption=caption,
-                parse_mode=enums.ParseMode.HTML,
-                reply_markup=modern_markup,
-            )
-            return
-        except Exception as pe:
-            log.debug("Photo send failed for /start modern, falling back to text: %s", pe)
+        sent = False
+        for pic in dict.fromkeys(p for p in (start_pic, default_pic) if p):
+            src = resolve_photo_source(pic)
+            try:
+                await message.reply_photo(
+                    photo=src,
+                    caption=caption,
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=modern_markup,
+                )
+                sent = True
+                break
+            except Exception as pe:
+                # Issue #35: a START_PIC Telegram refuses (bad file_id, dead
+                # URL, missing file) must degrade — never swallow /start.
+                log.warning("Start banner %s failed (%s) — trying the next one", str(pic)[:80], pe)
+            finally:
+                if hasattr(src, "close"):
+                    try:
+                        src.close()
+                    except Exception:
+                        pass
+
+        if not sent:
             await message.reply_text(
                 caption,
                 parse_mode=enums.ParseMode.HTML,
                 reply_markup=modern_markup,
             )
-            return
+        return
 
     from bot.emojis import get_emoji
     tv_emoji = get_emoji("tv", "📺")
@@ -190,7 +221,7 @@ async def start_callback(client: Client, query):
         first_name = user.first_name if user else "Friend"
         user_mention = f"<a href='tg://user?id={user_id}'>{re.sub(r'[<>&]', '', first_name)}</a>" if user_id else (first_name or "Friend")
         markup = _start_markup(await _home_channel(db))
-        text = _start_caption(user_mention)
+        text = await _welcome_caption(db, user_mention)
 
     try:
         if query.message.photo:
@@ -327,11 +358,11 @@ async def _handle_gated_download(client: Client, message: Message, param: str):
 
     # 1. Force-subscribe (existing behaviour, unchanged). `retry_param` must be
     #    the *encoded* form — that's what lands in the ?start= URL.
-    from bot.fsub import check_fsub
+    from bot.fsub import check_fsub, send_fsub_prompt
     from utils.helpers import encode_file_param
     is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=encode_file_param(param))
     if not is_sub:
-        await message.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
+        await send_fsub_prompt(message, f_text, f_markup)
         return
 
     # 2. Link gate (issue #33) — returns None once the user is through.
@@ -393,12 +424,12 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
     user = message.from_user
     user_id = user.id if user else 0
 
-    from bot.fsub import check_fsub, create_timer_invite_link
+    from bot.fsub import check_fsub, create_timer_invite_link, send_fsub_prompt
     from utils.helpers import encode_file_param
     sec_retry_param = encode_file_param(f"join_{series_slug}")
     is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=sec_retry_param)
     if not is_sub:
-        await message.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
+        await send_fsub_prompt(message, f_text, f_markup)
         return
 
     mapping = await db.get_channel_mapping(series_slug)
@@ -486,10 +517,10 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     user_id = user.id if user else 0
 
     # FSub verification (with timer link support)
-    from bot.fsub import check_fsub
+    from bot.fsub import check_fsub, send_fsub_prompt
     is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=param)
     if not is_sub:
-        await message.reply_text(f_text, parse_mode=enums.ParseMode.HTML, reply_markup=f_markup)
+        await send_fsub_prompt(message, f_text, f_markup)
         return
 
     # Parse: get_<slug>_<quality>_<ep_key>

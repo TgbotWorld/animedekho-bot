@@ -705,28 +705,28 @@ async def n_m3u8dl_re_download(
 # ── Engine 3: FFmpeg Fallback (M3U8 / Media Streams) ───────────────────
 
 
-async def ffmpeg_download(
+def _bsf_failed(stderr_tail) -> bool:
+    """True when ffmpeg died because of ``-bsf:a aac_adtstoasc`` (issue #35).
+
+    That bitstream filter only accepts AAC — a Vorbis/Opus stream aborts with
+    ``Codec 'vorbis' (86021) is not supported by the bitstream filter
+    'aac_adtstoasc'`` and leaves no output file behind.
+    """
+    blob = " ".join(str(ln) for ln in list(stderr_tail or [])).lower()
+    return "aac_adtstoasc" in blob or "bitstream filter" in blob
+
+
+async def _run_ffmpeg(
+    cmd: list[str],
+    *,
     stream_url: str,
     output_path: str,
     progress_msg: Message | None = None,
     title: str = "video",
     quality: str = "auto",
-    referer: str = "",
     job_id: str | None = None,
-) -> bool:
-    """Download stream using FFmpeg as a reliable universal fallback."""
-    if not shutil.which("ffmpeg"):
-        log.error("FFmpeg not found in PATH!")
-        return False
-
-    log.info("FFmpeg fallback download: url=%s quality=%s", stream_url[:120], quality)
-    origin = referer or _get_origin(stream_url)
-
-    cmd = ["ffmpeg", "-y"]
-    headers = f"Referer: {origin}/\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
-    cmd.extend(["-headers", headers])
-    cmd.extend(["-i", stream_url, "-map", "0:v:0", "-map", "0:a?", "-c", "copy", "-bsf:a", "aac_adtstoasc", output_path])
-
+):
+    """Run one ffmpeg attempt; returns ``(produced_output, stderr_tail)``."""
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.DEVNULL,
@@ -797,7 +797,7 @@ async def ffmpeg_download(
     except asyncio.TimeoutError:
         proc.kill()
         log.error("FFmpeg timed out for %s", stream_url[:60])
-        return False
+        return False, stderr_tail
     finally:
         monitor_task.cancel()
         try:
@@ -810,17 +810,64 @@ async def ffmpeg_download(
             drain_task.cancel()
 
     success = os.path.exists(output_path) and os.path.getsize(output_path) > 0
-    if success:
+    return success, stderr_tail
+
+
+async def ffmpeg_download(
+    stream_url: str,
+    output_path: str,
+    progress_msg: Message | None = None,
+    title: str = "video",
+    quality: str = "auto",
+    referer: str = "",
+    job_id: str | None = None,
+) -> bool:
+    """Download stream using FFmpeg as a reliable universal fallback."""
+    if not shutil.which("ffmpeg"):
+        log.error("FFmpeg not found in PATH!")
+        return False
+
+    log.info("FFmpeg fallback download: url=%s quality=%s", stream_url[:120], quality)
+    origin = referer or _get_origin(stream_url)
+    headers = f"Referer: {origin}/\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n"
+    remux = ["-i", stream_url, "-map", "0:v:0", "-map", "0:a?", "-c", "copy"]
+
+    # Attempt 1: HLS/TS carries AAC, which needs `aac_adtstoasc` to be
+    # stream-copied into a progressive MP4.
+    ok, tail = await _run_ffmpeg(
+        ["ffmpeg", "-y", "-headers", headers, *remux, "-bsf:a", "aac_adtstoasc", output_path],
+        stream_url=stream_url, output_path=output_path, progress_msg=progress_msg,
+        title=title, quality=quality, job_id=job_id,
+    )
+
+    # Attempt 2 (issue #35): audio that is not AAC (Vorbis/Opus in WebM/DASH)
+    # cannot pass through that filter — plain stream-copy works instead of
+    # failing the whole download after the source already took a minute.
+    if not ok and _bsf_failed(tail):
+        log.warning("FFmpeg bitstream filter rejected this audio — retrying as a plain copy: %s",
+                    stream_url[:100])
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except OSError:
+            pass
+        ok, tail = await _run_ffmpeg(
+            ["ffmpeg", "-y", "-headers", headers, *remux, output_path],
+            stream_url=stream_url, output_path=output_path, progress_msg=progress_msg,
+            title=title, quality=quality, job_id=job_id,
+        )
+
+    if ok:
         log.info("FFmpeg download complete: %s (%s)", output_path, _format_size(os.path.getsize(output_path)))
     else:
         # V3 #10: never fail silently — the final DM block shows diagnostics,
         # but the file log must carry the exact failing URL/quality too.
         log.warning("FFmpeg download failed (no output file): url=%s quality=%s", stream_url[:120], quality)
-        if stderr_tail:
+        if tail:
             log.warning("FFmpeg stderr tail: %s", " | ".join(
-                ln for ln in list(stderr_tail)[-6:] if ln and "frame=" not in ln
+                ln for ln in list(tail)[-6:] if ln and "frame=" not in ln
             )[:600])
-    return success
+    return ok
 
 
 # ── Video Validation & M3U8 Variant Helpers ───────────────────────────

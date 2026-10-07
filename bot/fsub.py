@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -59,13 +60,73 @@ async def create_timer_invite_link(
         return None
 
 
+async def _mention(client: Client, user_id: int) -> str:
+    """``{mention}`` replacement for owner-authored prompts (issue #35)."""
+    try:
+        user = await client.get_users(user_id)
+        name = (user.first_name or "there")
+        name = re.sub(r"[<>&]", "", name)
+    except Exception:
+        name = "there"
+    return f'<a href="tg://user?id={user_id}">{name}</a>'
+
+
+async def _custom_prompt(db, default_text: str, client: Client, user_id: int) -> str:
+    """Owner-supplied FSub text (config ``FSUB_MSG`` / DB ``fsub_msg``).
+
+    config.py documents the ``{mention}`` placeholder; when the owner has not
+    set one, the built-in prompt is returned unchanged.
+    """
+    try:
+        custom = await db.get_fsub_msg()
+    except Exception as e:
+        log.debug("fsub_msg lookup failed: %s", e)
+        return default_text
+    if not custom or not custom.strip():
+        return default_text
+    return custom.replace("{mention}", await _mention(client, user_id))
+
+
+async def send_fsub_prompt(
+    message: Message,
+    text: str,
+    markup: InlineKeyboardMarkup | None = None,
+) -> None:
+    """Send the FSub prompt with the owner's ``FSUB_PIC`` banner when set.
+
+    Falls back to a plain text message (never a hard failure) when the picture
+    cannot be sent — issue #35: config.py pictures were silently ignored.
+    """
+    pic = None
+    try:
+        from bot.database import db
+        if db:
+            pic = await db.get_fsub_pic()
+    except Exception as e:
+        log.debug("fsub_pic lookup failed: %s", e)
+
+    if pic:
+        try:
+            from utils.helpers import resolve_photo_source
+            await message.reply_photo(
+                photo=resolve_photo_source(pic),
+                caption=text,
+                parse_mode=enums.ParseMode.HTML,
+                reply_markup=markup,
+            )
+            return
+        except Exception as e:
+            log.warning("FSub banner could not be sent (%s) — falling back to text", e)
+
+    await message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
+
+
 async def check_fsub(
     client: Client,
     user_id: int,
     retry_param: str = "",
 ) -> tuple[bool, str | None, InlineKeyboardMarkup | None]:
-    """
-    Check if a user is subscribed to the FSub channel.
+    """Check if a user is subscribed to the FSub channel.
     Returns: (is_subscribed, alert_text, reply_markup)
     """
     if is_owner(user_id):
@@ -130,7 +191,7 @@ async def check_fsub(
             "⏳ <i>Note: This invite link is temporary and will automatically expire in <b>2 minutes</b>!</i>\n\n"
             "After joining, click the <b>Try Again</b> button below!"
         )
-        return False, text, InlineKeyboardMarkup(buttons)
+        return False, await _custom_prompt(db, text, client, user_id), InlineKeyboardMarkup(buttons)
 
     # Standard link mode (Timer Mode OFF)
     invite_url = None
@@ -150,4 +211,4 @@ async def check_fsub(
         "After joining, click the <b>Try Again</b> button below!"
     )
 
-    return False, text, InlineKeyboardMarkup(buttons)
+    return False, await _custom_prompt(db, text, client, user_id), InlineKeyboardMarkup(buttons)
