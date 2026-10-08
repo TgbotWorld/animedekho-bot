@@ -431,8 +431,11 @@ async def direct_http_download(
 
     try:
         timeout = aiohttp.ClientTimeout(total=2400, connect=30, sock_read=60)
-        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(url) as resp:
+        connector = aiohttp.TCPConnector(limit=16, limit_per_host=8, enable_cleanup_closed=True)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout, connector=connector) as session:
+            # Step 1: Probe Range support with initial chunk (1 MB)
+            probe_headers = {"Range": "bytes=0-1048575"}
+            async with session.get(url, headers=probe_headers, read_bufsize=2 * 1024 * 1024) as resp:
                 if resp.status not in (200, 206):
                     log.warning("Direct HTTP download failed with status %d", resp.status)
                     return False
@@ -442,35 +445,162 @@ async def direct_http_download(
                     log.warning("Direct HTTP download rejected: URL returned non-media Content-Type '%s'", ctype)
                     return False
 
-                total_bytes = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                last_bytes = 0
-                last_time = time.time()
+                range_ok = False
+                if resp.status == 206:
+                    cr = resp.headers.get("Content-Range", "")
+                    m_cr = re.search(r"/(\d+)$", cr)
+                    total_bytes = int(m_cr.group(1)) if m_cr else 0
+                    first_chunk = await resp.content.read()
+                    first_chunk_len = len(first_chunk)
 
-                with open(output_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):  # 1MB chunks
-                        if download_job_manager.is_job_cancelled(job_id):
-                            log.info("Direct HTTP download cancelled for %s", title)
+                    if total_bytes > 0:
+                        if total_bytes <= first_chunk_len:
+                            with open(output_path, "wb") as f:
+                                f.write(first_chunk)
+                            range_ok = True
+                        else:
+                            try:
+                                with open(output_path, "wb") as f:
+                                    f.seek(total_bytes - 1)
+                                    f.write(b"\0")
+
+                                fd = os.open(output_path, os.O_RDWR)
+                                try:
+                                    if hasattr(os, "pwrite"):
+                                        os.pwrite(fd, first_chunk, 0)
+                                    else:
+                                        os.lseek(fd, 0, os.SEEK_SET)
+                                        os.write(fd, first_chunk)
+
+                                    downloaded = first_chunk_len
+                                    last_bytes = downloaded
+                                    last_time = time.time()
+
+                                    CHUNK_SIZE = 2 * 1024 * 1024
+                                    chunks: list[tuple[int, int]] = []
+                                    curr = first_chunk_len
+                                    while curr < total_bytes:
+                                        end = min(curr + CHUNK_SIZE - 1, total_bytes - 1)
+                                        chunks.append((curr, end))
+                                        curr = end + 1
+
+                                    queue: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+                                    for c in chunks:
+                                        queue.put_nowait(c)
+
+                                    file_lock = asyncio.Lock()
+                                    write_lock = asyncio.Lock()
+
+                                    async def _worker():
+                                        nonlocal downloaded, last_bytes, last_time
+                                        while not queue.empty():
+                                            if download_job_manager.is_job_cancelled(job_id):
+                                                return
+                                            try:
+                                                start_b, end_b = queue.get_nowait()
+                                            except asyncio.QueueEmpty:
+                                                break
+
+                                            expected_len = end_b - start_b + 1
+                                            retries = 3
+                                            success = False
+                                            while retries > 0 and not download_job_manager.is_job_cancelled(job_id):
+                                                try:
+                                                    c_hdrs = {"Range": f"bytes={start_b}-{end_b}"}
+                                                    async with session.get(url, headers=c_hdrs, read_bufsize=2 * 1024 * 1024) as c_resp:
+                                                        if c_resp.status != 206:
+                                                            retries -= 1
+                                                            await asyncio.sleep(0.5)
+                                                            continue
+                                                        data = await c_resp.content.read()
+                                                        if len(data) != expected_len:
+                                                            retries -= 1
+                                                            await asyncio.sleep(0.5)
+                                                            continue
+
+                                                        if hasattr(os, "pwrite"):
+                                                            os.pwrite(fd, data, start_b)
+                                                        else:
+                                                            async with file_lock:
+                                                                os.lseek(fd, start_b, os.SEEK_SET)
+                                                                os.write(fd, data)
+
+                                                        async with write_lock:
+                                                            downloaded += len(data)
+                                                            now = time.time()
+                                                            dt = now - last_time
+                                                            if dt >= 1.0:
+                                                                speed = (downloaded - last_bytes) / dt
+                                                                last_bytes = downloaded
+                                                                last_time = now
+                                                                elapsed = now - start_time
+                                                                pct = (downloaded / total_bytes * 100) if total_bytes > 0 else 0
+                                                                if progress_msg and downloaded > 50_000:
+                                                                    await _update_progress(
+                                                                        progress_msg,
+                                                                        _download_progress_text(title, quality, pct, downloaded, elapsed, speed, total_bytes=total_bytes),
+                                                                        last_edit,
+                                                                        interval=3.0,
+                                                                        job_id=job_id,
+                                                                    )
+                                                        success = True
+                                                        break
+                                                except Exception:
+                                                    retries -= 1
+                                                    await asyncio.sleep(0.5)
+
+                                            if not success and not download_job_manager.is_job_cancelled(job_id):
+                                                raise RuntimeError(f"Failed to download byte range {start_b}-{end_b}")
+                                            queue.task_done()
+
+                                    concurrency = min(4, len(chunks))
+                                    workers = [asyncio.create_task(_worker()) for _ in range(concurrency)]
+                                    await asyncio.gather(*workers)
+                                    range_ok = True
+                                finally:
+                                    os.close(fd)
+                            except Exception as e_seg:
+                                if download_job_manager.is_job_cancelled(job_id):
+                                    log.info("Direct HTTP download cancelled for %s", title)
+                                    return False
+                                log.warning("Segmented download error (%s), falling back to sequential stream", e_seg)
+                                range_ok = False
+
+                if not range_ok:
+                    # Sequential stream fallback (used if server returns 200, lacks range, or range errored)
+                    async with session.get(url, read_bufsize=2 * 1024 * 1024) as seq_resp:
+                        if seq_resp.status not in (200, 206):
+                            log.warning("Sequential HTTP download fallback failed with status %d", seq_resp.status)
                             return False
-                        f.write(chunk)
-                        downloaded += len(chunk)
+                        total_bytes = int(seq_resp.headers.get("Content-Length", 0))
+                        downloaded = 0
+                        last_bytes = 0
+                        last_time = time.time()
 
-                        now = time.time()
-                        dt = now - last_time
-                        if dt >= 1.0:
-                            speed = (downloaded - last_bytes) / dt
-                            last_bytes = downloaded
-                            last_time = now
-                            elapsed = now - start_time
-                            pct = (downloaded / total_bytes * 100) if total_bytes > 0 else 0
-                            if progress_msg and downloaded > 50_000:
-                                await _update_progress(
-                                    progress_msg,
-                                    _download_progress_text(title, quality, pct, downloaded, elapsed, speed, total_bytes=total_bytes),
-                                    last_edit,
-                                    interval=3.0,
-                                    job_id=job_id,
-                                )
+                        with open(output_path, "wb") as f:
+                            async for chunk in seq_resp.content.iter_chunked(1024 * 1024):
+                                if download_job_manager.is_job_cancelled(job_id):
+                                    log.info("Direct HTTP download cancelled for %s", title)
+                                    return False
+                                f.write(chunk)
+                                downloaded += len(chunk)
+
+                                now = time.time()
+                                dt = now - last_time
+                                if dt >= 1.0:
+                                    speed = (downloaded - last_bytes) / dt
+                                    last_bytes = downloaded
+                                    last_time = now
+                                    elapsed = now - start_time
+                                    pct = (downloaded / total_bytes * 100) if total_bytes > 0 else 0
+                                    if progress_msg and downloaded > 50_000:
+                                        await _update_progress(
+                                            progress_msg,
+                                            _download_progress_text(title, quality, pct, downloaded, elapsed, speed, total_bytes=total_bytes),
+                                            last_edit,
+                                            interval=3.0,
+                                            job_id=job_id,
+                                        )
 
         success = os.path.exists(output_path) and os.path.getsize(output_path) > 50_000
         if success:

@@ -112,6 +112,31 @@ async def callback_router(client: Client, query: CallbackQuery):
             parts = data.split(":")
             await _handle_category(query, cat_slug=parts[1], page=int(parts[2]))
 
+        elif data == "mq_empty":
+            await query.answer("⚠️ Please select at least one quality!", show_alert=True)
+
+        elif data.startswith("mq_o:"):
+            # mq_o:prefix:slug_payload
+            parts = data.split(":", 2)
+            prefix = parts[1]
+            slug_payload = parts[2]
+            text = "✨ <b>Multi-Quality Download</b>\n\nSelect all qualities you want to download:"
+            markup = kb.multi_quality_picker(prefix, slug_payload, mask="471")
+            await _safe_edit(query, text, markup)
+
+        elif data.startswith("mq_t:"):
+            # mq_t:prefix:mask:slug_payload
+            parts = data.split(":", 3)
+            prefix = parts[1]
+            mask = "" if parts[2] == "none" else parts[2]
+            slug_payload = parts[3]
+            text = "✨ <b>Multi-Quality Download</b>\n\nSelect all qualities you want to download:"
+            markup = kb.multi_quality_picker(prefix, slug_payload, mask=mask)
+            try:
+                await query.edit_message_reply_markup(reply_markup=markup)
+            except Exception:
+                await _safe_edit(query, text, markup)
+
     except Exception as e:
         log.exception("Callback error for %s", data)
         if bot.logger.bot_logger:
@@ -447,6 +472,21 @@ async def _real_series_title(series_slug: str, fallback: str = "") -> str:
 
 async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str):
     """Handle single episode download — resolves servers and falls back across multi-source chain if needed."""
+    # Multi-quality expansion
+    if quality_pref == "all" or "+" in quality_pref:
+        if quality_pref == "all":
+            qualities = ["480p", "720p", "1080p"]
+        else:
+            qualities = [x.strip() for x in quality_pref.split("+") if x.strip()]
+        try:
+            await q.answer(f"🚀 Starting download for {len(qualities)} qualities...", show_alert=False)
+        except Exception:
+            pass
+        for single_q in qualities:
+            asyncio.create_task(_handle_download(client, q, single_q, ep_slug))
+            await asyncio.sleep(0.3)
+        return
+
     chat_id = q.message.chat.id
     user = q.from_user
     user_id = user.id if user else 0
@@ -791,6 +831,21 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
 
 async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref: str, movie_slug: str):
     """Handle movie download — resolves servers with multi-server fallback."""
+    # Multi-quality expansion
+    if quality_pref == "all" or "+" in quality_pref:
+        if quality_pref == "all":
+            qualities = ["480p", "720p", "1080p"]
+        else:
+            qualities = [x.strip() for x in quality_pref.split("+") if x.strip()]
+        try:
+            await q.answer(f"🚀 Starting download for {len(qualities)} qualities...", show_alert=False)
+        except Exception:
+            pass
+        for single_q in qualities:
+            asyncio.create_task(_handle_movie_download(client, q, single_q, movie_slug))
+            await asyncio.sleep(0.3)
+        return
+
     chat_id = q.message.chat.id
     user = q.from_user
 
@@ -1053,6 +1108,21 @@ async def _handle_batch_picker(q: CallbackQuery, slug: str, season: int):
 
 async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, season: int, quality_pref: str):
     """Execute batch download for an entire season (V3 #6 batch lifecycle)."""
+    # Multi-quality expansion
+    if quality_pref == "all" or "+" in quality_pref:
+        if quality_pref == "all":
+            qualities = ["480p", "720p", "1080p"]
+        else:
+            qualities = [x.strip() for x in quality_pref.split("+") if x.strip()]
+        try:
+            await q.answer(f"🚀 Starting batch download for {len(qualities)} qualities...", show_alert=False)
+        except Exception:
+            pass
+        for single_q in qualities:
+            await _handle_batch_download(client, q, slug, season, single_q)
+            await asyncio.sleep(0.5)
+        return
+
     from bot.telegram.types import InlineKeyboardButton, InlineKeyboardMarkup
     chat_id = q.message.chat.id
     user = q.from_user

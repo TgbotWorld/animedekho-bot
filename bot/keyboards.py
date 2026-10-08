@@ -125,13 +125,32 @@ def episode_picker(
     return InlineKeyboardMarkup(buttons)
 
 
+QUALITY_CODE_MAP = {
+    "4": ("480p", "480p (SD)"),
+    "7": ("720p", "720p (HD)"),
+    "1": ("1080p", "1080p (FHD)"),
+    "k": ("4K", "4K (UHD)"),
+}
+
+
 def batch_quality_picker(series_slug: str, season: int) -> InlineKeyboardMarkup:
-    """Quality selection for batch download — uses default 3 qualities."""
+    """Quality selection for batch download — supports single, all, and multi-select."""
     buttons = []
     ss = short_slug(series_slug, 28)
+    row: list[InlineKeyboardButton] = []
     for q in settings.site.default_qualities:  # ["480p", "720p", "1080p"]
         cb = _safe_cb(f"bq:{ss}:{season}:{q}")
-        buttons.append([InlineKeyboardButton(f"📥 {q}", callback_data=cb)])
+        row.append(InlineKeyboardButton(f"📥 {q}", callback_data=cb))
+        if len(row) >= 2:
+            buttons.append(row)
+            row = []
+    if row:
+        row.append(InlineKeyboardButton("📦 All Qualities", callback_data=_safe_cb(f"bq:{ss}:{season}:all")))
+        buttons.append(row)
+    else:
+        buttons.append([InlineKeyboardButton("📦 All Qualities", callback_data=_safe_cb(f"bq:{ss}:{season}:all"))])
+
+    buttons.append([InlineKeyboardButton("✨ Multi-Select Qualities", callback_data=_safe_cb(f"mq_o:bq:{season}:{ss}"))])
     buttons.append([
         InlineKeyboardButton("🔙 Cancel", callback_data=_safe_cb(f"se:{short_slug(series_slug, 30)}:{season}")),
         _menu_btn(),
@@ -174,8 +193,65 @@ def quality_picker(
             buttons.append(row)
             row = []
     if row:
+        row.append(InlineKeyboardButton("📦 All Qualities", callback_data=_safe_cb(f"{prefix}:all:{ss}")))
+        buttons.append(row)
+    else:
+        buttons.append([InlineKeyboardButton("📦 All Qualities", callback_data=_safe_cb(f"{prefix}:all:{ss}"))])
+
+    buttons.append([InlineKeyboardButton("✨ Multi-Select Qualities", callback_data=_safe_cb(f"mq_o:{prefix}:{ss}"))])
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data=_safe_cb(back_cb)), _menu_btn()])
+    return InlineKeyboardMarkup(buttons)
+
+
+def multi_quality_picker(
+    prefix: str,
+    slug_payload: str,
+    mask: str = "471",
+    back_cb: str = "",
+) -> InlineKeyboardMarkup:
+    """Build multi-select quality toggle keyboard."""
+    buttons = []
+    row: list[InlineKeyboardButton] = []
+    for code, (q_val, label) in QUALITY_CODE_MAP.items():
+        is_sel = code in mask
+        icon = "✅" if is_sel else "◻️"
+        if is_sel:
+            new_m = "".join(c for c in mask if c != code) or "none"
+        else:
+            new_m = "".join(c for c in "471k" if c in (mask + code))
+        cb = _safe_cb(f"mq_t:{prefix}:{new_m}:{slug_payload}")
+        row.append(InlineKeyboardButton(f"{icon} {label}", callback_data=cb))
+        if len(row) >= 2:
+            buttons.append(row)
+            row = []
+    if row:
         buttons.append(row)
 
+    selected_codes = [c for c in "471k" if c in mask]
+    if selected_codes:
+        selected_qualities = [QUALITY_CODE_MAP[c][0] for c in selected_codes]
+        q_str = "+".join(selected_qualities)
+        if prefix == "bq":
+            parts = slug_payload.split(":", 1)
+            season_str = parts[0]
+            s_slug = parts[1] if len(parts) > 1 else ""
+            submit_cb = _safe_cb(f"bq:{s_slug}:{season_str}:{q_str}")
+        else:
+            submit_cb = _safe_cb(f"{prefix}:{q_str}:{slug_payload}")
+        buttons.append([InlineKeyboardButton(f"🚀 Download Selected ({len(selected_codes)})", callback_data=submit_cb)])
+    else:
+        buttons.append([InlineKeyboardButton("⚠️ Select at least 1 quality", callback_data="mq_empty")])
+
+    if not back_cb:
+        if prefix == "bq":
+            parts = slug_payload.split(":", 1)
+            season_str = parts[0]
+            s_slug = parts[1] if len(parts) > 1 else ""
+            back_cb = f"bat:{s_slug}:{season_str}"
+        elif prefix == "mdl":
+            back_cb = f"mr:{slug_payload}"
+        else:
+            back_cb = f"ep:{slug_payload}"
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data=_safe_cb(back_cb)), _menu_btn()])
     return InlineKeyboardMarkup(buttons)
 
