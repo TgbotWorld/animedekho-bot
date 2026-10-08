@@ -188,30 +188,38 @@ class ToonflixExtractor:
                 return "480p"
             return "auto"
 
-        def _score_toonflix_card(q_detected: str) -> tuple[int, str]:
+        def _detect_toonflix_card_size(card) -> float | None:
+            """Extract file size in MB from card text."""
+            from utils.anime_match import parse_size_mb
+            return parse_size_mb(card.get_text(" ", strip=True))
+
+        def _score_toonflix_card(q_detected: str, size_mb: float | None = None) -> tuple[int, str]:
             # V3 #2: exact requested quality only — no closest fallback.
-            from utils.anime_match import normalize_quality, qualities_match
-            if qualities_match(quality_pref, q_detected):
+            # 1080p HQ x265 and enhanced tiers satisfy 4K only when size is around 1 to 2 GB.
+            from utils.anime_match import qualities_match
+            if qualities_match(quality_pref, q_detected, size=size_mb):
                 return (1000, q_detected)
             return (-1, q_detected)
 
-        card_candidates: list[tuple[int, str, str]] = []
+        card_candidates: list[tuple[int, str, str, float | None]] = []
         cards = soup_drive.find_all(class_=re.compile(r"quality-card|card"))
         for card in cards:
             m = re.search(r"handleLinkClick\('([^']+)',\s*'download'\)", str(card))
             if m:
                 q_detected = _detect_toonflix_card_res(card)
-                sc, q_name = _score_toonflix_card(q_detected)
+                c_size = _detect_toonflix_card_size(card)
+                sc, q_name = _score_toonflix_card(q_detected, size_mb=c_size)
                 if sc < 0:
                     continue  # V3 #2: non-exact card discarded
-                card_candidates.append((sc, m.group(1), q_name))
+                card_candidates.append((sc, m.group(1), q_name, c_size))
 
         card_candidates.sort(key=lambda x: -x[0])
 
         chosen_rel_go = None
         matched_quality = quality_pref
+        chosen_size = None
         if card_candidates:
-            _, chosen_rel_go, matched_quality = card_candidates[0]
+            _, chosen_rel_go, matched_quality, chosen_size = card_candidates[0]
         else:
             # V3 #2: no exact-quality card on this page → next source.
             log.info("ToonFlix: no exact %s card on drive page — rejecting", quality_pref)
@@ -249,6 +257,7 @@ class ToonflixExtractor:
                 "requested_quality": quality_pref,
                 "detected_quality": matched_quality,
                 "verified_quality": matched_quality,
+                "size_mb": chosen_size,
                 "server": "ToonFlix",
                 "referer": "https://drive.toonflix.in/",
                 "poster": target_poster,

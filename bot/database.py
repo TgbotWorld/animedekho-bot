@@ -166,12 +166,13 @@ class Database:
         if quality and quality.lower() not in ("auto", "any", ""):
             q_clean = quality.strip()
             if q_clean.lower() in ("4k", "2160p", "2160"):
-                # V2 #19: strict 4K — only true UHD satisfies a 4K request.
-                # 1080p HQ tiers must NOT satisfy 4K; they trigger fallback instead.
+                # 4K request: true 4K or enhanced 1080p tier (if size is ~1-2GB)
                 q_condition = {
                     "$in": [
                         "4K", "4k", "2160p", "2160P", "2160", "UHD",
                         "4K UHD", "2160p UHD",
+                        "1080p HQ", "1080p HQ x265", "1080p 10-Bit", "1080p 10bit",
+                        "1080p x265", "1080p HEVC",
                     ]
                 }
             elif q_clean.lower() in ("1080p", "1080"):
@@ -184,6 +185,20 @@ class Database:
                 }
             else:
                 q_condition = {"$regex": f"^{re.escape(q_clean)}$", "$options": "i"}
+
+        def _doc_satisfies_quality(d: dict | None) -> bool:
+            if not d:
+                return False
+            if quality and quality.lower() in ("4k", "2160p", "2160"):
+                from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb
+                dq = d.get("quality", "")
+                if is_native_4k(dq):
+                    return True
+                if is_enhanced_1080p(dq):
+                    # 1080p HQ x265 only counts as 4K when size is around 1 to 2 GB
+                    return is_around_1_to_2_gb(d.get("file_size"))
+                return False
+            return True
 
         # Build series matching criteria
         slug_candidate = re.sub(r'[^a-zA-Z0-9]+', '-', clean_id).strip('-').lower()
@@ -208,9 +223,10 @@ class Database:
             query["quality"] = q_condition
 
         # 1. Try matching with exact criteria
-        doc = await self.files.find_one(query)
-        if doc:
-            return doc
+        cursor = self.files.find(query)
+        async for doc in cursor:
+            if _doc_satisfies_quality(doc):
+                return doc
 
         # 2. Try direct series_slug match if not matched above
         direct_query = {"series_slug": clean_id}
@@ -218,9 +234,10 @@ class Database:
             direct_query["episode_key"] = ep_condition
         if q_condition:
             direct_query["quality"] = q_condition
-        doc = await self.files.find_one(direct_query)
-        if doc:
-            return doc
+        cursor = self.files.find(direct_query)
+        async for doc in cursor:
+            if _doc_satisfies_quality(doc):
+                return doc
 
         return None
 
@@ -244,6 +261,7 @@ class Database:
         file_unique_id: str,
         storage_channel_id: int | None = None,
         storage_message_id: int | None = None,
+        file_size: int | None = None,
     ):
         """Save a downloaded file reference for future cache lookups."""
         try:
@@ -253,6 +271,8 @@ class Database:
                 "file_unique_id": file_unique_id,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
+            if file_size:
+                update_data["file_size"] = file_size
             if storage_channel_id:
                 update_data["storage_channel_id"] = storage_channel_id
             if storage_message_id:

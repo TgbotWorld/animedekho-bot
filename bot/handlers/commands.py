@@ -583,6 +583,10 @@ async def _handle_file_request(client: Client, message: Message, param: str):
         if not all_files:
             all_files = await db.files.find({"series_title": {"$regex": f"^{re.escape(title)}$", "$options": "i"}}).to_list(length=None)
 
+        if quality.lower() in ("4k", "2160p", "2160") and all_files:
+            from utils.anime_match import is_4k_satisfying
+            all_files = [f for f in all_files if is_4k_satisfying(f.get("quality", ""), size=f.get("file_size"))]
+
         if not all_files:
             await message.reply_text("❌ No files found for this series.")
             return

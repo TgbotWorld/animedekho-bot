@@ -1041,9 +1041,9 @@ async def tool_download_anime_episode(
 
         is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
-        def _is_4k_satisfying(q_str: str) -> bool:
-            q = q_str.lower()
-            return any(k in q for k in ("4k", "2160", "uhd"))
+        def _is_4k_satisfying(q_str: str, size: str | int | float | None = None) -> bool:
+            from utils.anime_match import is_4k_satisfying
+            return is_4k_satisfying(q_str, size=size)
 
         # V2 #3: direct-file sources FIRST, AnimeDekho LAST.
         # Order: MultiSource (AnimeDubHindi/ToonWorld4All/...) → AnimeDrive
@@ -1066,7 +1066,8 @@ async def tool_download_anime_episode(
                     anime_title, season=season, episode=episode, quality_pref=quality_pref
                 )
                 if ms_res and ms_res.get("url"):
-                    if is_4k and not _is_4k_satisfying(ms_res.get("quality", "")):
+                    ms_sz = ms_res.get("size_mb") or ms_res.get("size")
+                    if is_4k and not _is_4k_satisfying(ms_res.get("quality", ""), size=ms_sz):
                         notes.append(f"MultiSource {ms_res.get('quality')} is not 4K — continuing cascade")
                     else:
                         stream_url = ms_res["url"]
@@ -1249,6 +1250,7 @@ async def tool_download_anime_episode(
                 from bot.database import db
                 if db:
                     try:
+                        sent_bytes = (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else None)) if sent_msg else None
                         await db.save_file(
                             series_slug=series_slug,
                             series_title=display_series_title,
@@ -1258,6 +1260,7 @@ async def tool_download_anime_episode(
                             file_unique_id=file_unique_id,
                             storage_channel_id=sent_msg.chat.id,
                             storage_message_id=sent_msg.id,
+                            file_size=sent_bytes,
                         )
                     except Exception as de:
                         log.warning("DB save failed for AI download: %s", de)
@@ -1386,6 +1389,7 @@ async def tool_download_and_send_anime(stream_url: str, title: str, quality: str
                 from bot.database import db
                 if db:
                     try:
+                        sent_bytes = (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else None)) if sent_msg else None
                         await db.save_file(
                             series_slug=slug,
                             series_title=title.title(),
@@ -1393,6 +1397,7 @@ async def tool_download_and_send_anime(stream_url: str, title: str, quality: str
                             episode_key="movie",
                             file_id=file_id,
                             file_unique_id=file_unique_id,
+                            file_size=sent_bytes,
                         )
                     except Exception as de:
                         log.warning("DB save failed in tool_download_and_send_anime: %s", de)

@@ -344,16 +344,32 @@ class AnimeDriveExtractor:
                 return "480p"
             return "auto"
 
-        def _score_candidate(q_detected: str, dest_url: str) -> tuple[int, str]:
+        def _detect_btn_size(b_elem) -> float | None:
+            """Extract file size in MB from button text or parent container text."""
+            from utils.anime_match import parse_size_mb
+            btn_txt = b_elem.get_text(" ", strip=True)
+            sz = parse_size_mb(btn_txt)
+            if sz is not None:
+                return sz
+            parent = b_elem.find_parent(["p", "div", "li", "tr", "h4", "h3", "h2"])
+            if parent:
+                parent_txt = parent.get_text(" ", strip=True)
+                sz = parse_size_mb(parent_txt)
+                if sz is not None:
+                    return sz
+            return None
+
+        def _score_candidate(q_detected: str, dest_url: str, size_mb: float | None = None) -> tuple[int, str]:
             # V3 #2: exact requested quality only — no closest fallback.
+            # 1080p HQ x265 and enhanced tiers satisfy 4K only when size is around 1 to 2 GB.
             from utils.anime_match import qualities_match
             is_hub = "hubcloud" in dest_url.lower()
             h_bonus = 20 if is_hub else 0
-            if qualities_match(quality_pref, q_detected):
+            if qualities_match(quality_pref, q_detected, size=size_mb):
                 return (1000 + h_bonus, q_detected)
             return (-1, q_detected)
 
-        candidates: list[tuple[int, str, str]] = []
+        candidates: list[tuple[int, str, str, float | None]] = []
         for b in buttons:
             href = b["href"]
             if "/dl/" not in href:
@@ -364,17 +380,18 @@ class AnimeDriveExtractor:
                 continue
 
             q_detected = _detect_btn_resolution(b, href)
-            sc, q_match = _score_candidate(q_detected, dest)
+            size_mb = _detect_btn_size(b)
+            sc, q_match = _score_candidate(q_detected, dest, size_mb=size_mb)
             if sc < 0:
                 continue  # V3 #2: non-exact quality discarded
-            candidates.append((sc, dest, q_match))
+            candidates.append((sc, dest, q_match, size_mb))
 
         # Sort candidates descending by quality score
         candidates.sort(key=lambda x: -x[0])
 
         # Step 6: Resolve candidates to direct playable stream
         # V3 #4: explicit detected/requested/verified quality fields.
-        for sc, dest, q_label in candidates:
+        for sc, dest, q_label, cand_size in candidates:
             if "hubcloud" in dest:
                 stream_url = self._resolve_hubcloud(s, dest)
                 if stream_url and is_playable_media_url(stream_url):
@@ -385,6 +402,7 @@ class AnimeDriveExtractor:
                         "requested_quality": quality_pref,
                         "detected_quality": q_label,
                         "verified_quality": q_label,
+                        "size_mb": cand_size,
                         "server": "AnimeDrive (HubCloud)",
                         "referer": "https://hubcloud.ist/",
                         "poster": target_poster,
@@ -397,6 +415,7 @@ class AnimeDriveExtractor:
                     "requested_quality": quality_pref,
                     "detected_quality": q_label,
                     "verified_quality": q_label,
+                    "size_mb": cand_size,
                     "server": "AnimeDrive",
                     "referer": "https://link.animedrive.me/",
                     "poster": target_poster,

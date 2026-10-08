@@ -257,6 +257,7 @@ class EpisodeMonitorService:
                 # Cache file
                 fid = sent_msg.video.file_id if sent_msg.video else (sent_msg.document.file_id if sent_msg.document else "")
                 f_uid = sent_msg.video.file_unique_id if sent_msg.video else (sent_msg.document.file_unique_id if sent_msg.document else "")
+                f_size = (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else None)) if sent_msg else None
                 ep_key = f"S{season_num:01d}E{ep.number:02d}"
                 await db.save_file(
                     series_slug=series.slug,
@@ -267,6 +268,7 @@ class EpisodeMonitorService:
                     file_unique_id=f_uid,
                     storage_channel_id=dest_chan,
                     storage_message_id=sent_msg.id,
+                    file_size=f_size,
                 )
 
                 # Update main channel album

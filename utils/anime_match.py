@@ -69,6 +69,64 @@ def matches_season(title: str, url: str, season: int) -> bool:
     return season in m_candidates
 
 
+def is_native_4k(quality_str: str) -> bool:
+    """Check if quality represents native 4K/2160p/UHD."""
+    q = (quality_str or "").strip().lower()
+    return any(k in q for k in ("4k", "2160", "uhd"))
+
+
+def is_enhanced_1080p(quality_str: str) -> bool:
+    """Check if quality is an enhanced 1080p tier (HQ, x265, HEVC, 10-bit)."""
+    q = (quality_str or "").strip().lower()
+    if "1080" in q:
+        return any(k in q for k in ("hq", "x265", "hevc", "10bit", "10-bit", "10 bit"))
+    return False
+
+
+def parse_size_mb(val: str | int | float | None) -> float | None:
+    """Parse size in megabytes (MB) from bytes, number, or string like '1.45 GB', '850 MB'."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        # If value is large (> 100,000), assume it is bytes; otherwise assume MB
+        return (val / (1024 * 1024)) if val > 100_000 else float(val)
+    s = str(val).strip()
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(gb|mb|gib|mib)\b", s, re.I)
+    if m:
+        num = float(m.group(1))
+        unit = m.group(2).lower()
+        return num * 1024.0 if "g" in unit else num
+    m_num = re.search(r"^\d+(?:\.\d+)?$", s)
+    if m_num:
+        num = float(m_num.group(0))
+        return (num / (1024 * 1024)) if num > 100_000 else num
+    return None
+
+
+def is_around_1_to_2_gb(val: str | int | float | None) -> bool:
+    """True only when the size is around 1 to 2 GB (~850 MB to ~2600 MB)."""
+    mb = parse_size_mb(val)
+    return mb is not None and (850.0 <= mb <= 2600.0)
+
+
+def is_4k_satisfying(quality_str: str, size: str | int | float | None = None) -> bool:
+    """Check if quality satisfies a 4K request.
+    
+    - Native 4K (2160p / UHD) always satisfies 4K.
+    - Enhanced 1080p (1080p HQ x265, 10-bit, HEVC) satisfies 4K ONLY when its
+      size is around 1 to 2 GB (approx 850 MB to 2600 MB).
+    """
+    if is_native_4k(quality_str):
+        return True
+    if is_enhanced_1080p(quality_str):
+        if size is not None:
+            return is_around_1_to_2_gb(size)
+        sz = parse_size_mb(quality_str)
+        if sz is not None:
+            return is_around_1_to_2_gb(sz)
+    return False
+
+
 def normalize_quality(q: str) -> str:
     """Canonical quality label; unknown/empty → 'Unknown' (V3 #4)."""
     s = (q or "").strip().lower()
@@ -92,8 +150,19 @@ def normalize_quality(q: str) -> str:
     return "Unknown"
 
 
-def qualities_match(requested: str, detected: str) -> bool:
-    """V3 #2 strict equality on canonical labels (4K≡2160p≡UHD)."""
-    if (requested or "").strip().lower() == "auto":
+def qualities_match(requested: str, detected: str, size: str | int | float | None = None) -> bool:
+    """V3 #2 strict equality on canonical labels (4K≡2160p≡UHD).
+    
+    When requested quality is 4K:
+    - Native 4K matches.
+    - Enhanced 1080p (1080p HQ x265, 10-bit, etc.) matches ONLY if its size is
+      around 1 to 2 GB.
+    """
+    req_clean = (requested or "").strip().lower()
+    if req_clean == "auto":
         return True
+
+    if req_clean in ("4k", "2160p", "2160", "uhd"):
+        return is_4k_satisfying(detected, size=size)
+
     return normalize_quality(requested) == normalize_quality(detected) and normalize_quality(detected) != "Unknown"

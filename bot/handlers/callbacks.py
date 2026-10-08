@@ -570,9 +570,30 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     ad_is_default = is_source(default_src, "AnimeDekho")
     diag_steps.append(f"Default source: {default_src}")
 
-    def _is_4k_satisfying(q_str: str) -> bool:
-        q = q_str.lower()
-        return any(k in q for k in ("4k", "2160", "uhd"))
+    async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
+        from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb
+        if is_native_4k(q_str):
+            return True
+        if not is_enhanced_1080p(q_str):
+            return False
+        if size is not None:
+            return is_around_1_to_2_gb(size)
+        sz = parse_size_mb(q_str)
+        if sz is not None:
+            return is_around_1_to_2_gb(sz)
+        if url:
+            try:
+                from extractors.health_probe import probe_url_health
+                pr = await probe_url_health(url)
+                if pr.get("ok") and pr.get("size"):
+                    return is_around_1_to_2_gb(pr["size"])
+            except Exception:
+                pass
+        return False
+
+    def _is_4k_satisfying(q_str: str, size: str | int | float | None = None) -> bool:
+        from utils.anime_match import is_4k_satisfying
+        return is_4k_satisfying(q_str, size=size)
 
     async def _step_multisource() -> None:
         """Tier: direct-file extractors via the Multi-Source manager."""
@@ -604,7 +625,9 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     res_p = await resolve_best_poster(series_title, ms_res.get("poster"))
                     if res_p:
                         _poster_cache[series_slug] = res_p
-                if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
+                ms_sz = ms_res.get("size_mb") or ms_res.get("size")
+                ms_is_4k = await _is_4k_stream_ok(ms_q, size=ms_sz, url=ms_res.get("url", "")) if is_4k else False
+                if (is_4k and ms_is_4k) or (not is_4k and ms_q == quality_pref.lower()):
                     candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
                     has_exact = True
                     found_match = True
@@ -680,9 +703,9 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 if series_slug and not _poster_cache.get(series_slug):
                     from utils.anilist import resolve_best_poster
                     res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
-                    if res_p:
-                        _poster_cache[series_slug] = res_p
-                if ((is_4k and _is_4k_satisfying(ad_q)) or (not is_4k and ad_q == quality_pref.lower())) and not has_exact:
+                ad_sz = ad_res.get("size_mb") or ad_res.get("size")
+                ad_is_4k = await _is_4k_stream_ok(ad_q, size=ad_sz, url=ad_res.get("url", "")) if is_4k else False
+                if ((is_4k and ad_is_4k) or (not is_4k and ad_q == quality_pref.lower())) and not has_exact:
                     candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
                     has_exact = True
                     found_match = True
@@ -718,7 +741,9 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     player_url=tf_res["url"],
                     qualities=[Quality(resolution=tf_res["quality"], url=tf_res["url"])],
                 )
-                if ((is_4k and _is_4k_satisfying(tf_q)) or (not is_4k and tf_q == quality_pref.lower())) and not has_exact:
+                tf_sz = tf_res.get("size_mb") or tf_res.get("size")
+                tf_is_4k = await _is_4k_stream_ok(tf_q, size=tf_sz, url=tf_res.get("url", "")) if is_4k else False
+                if ((is_4k and tf_is_4k) or (not is_4k and tf_q == quality_pref.lower())) and not has_exact:
                     candidates.insert(0, (tf_srv, tf_srv.qualities[0]))
                     has_exact = True
                     found_match = True
@@ -913,9 +938,30 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     from bot.source_config import get_default_source, is_source
     ad_default = is_source(await get_default_source(), "AnimeDekho")
 
-    def _is_4k_satisfying(q_str: str) -> bool:
-        q = q_str.lower()
-        return any(k in q for k in ("4k", "2160", "uhd"))
+    async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
+        from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb
+        if is_native_4k(q_str):
+            return True
+        if not is_enhanced_1080p(q_str):
+            return False
+        if size is not None:
+            return is_around_1_to_2_gb(size)
+        sz = parse_size_mb(q_str)
+        if sz is not None:
+            return is_around_1_to_2_gb(sz)
+        if url:
+            try:
+                from extractors.health_probe import probe_url_health
+                pr = await probe_url_health(url)
+                if pr.get("ok") and pr.get("size"):
+                    return is_around_1_to_2_gb(pr["size"])
+            except Exception:
+                pass
+        return False
+
+    def _is_4k_satisfying(q_str: str, size: str | int | float | None = None) -> bool:
+        from utils.anime_match import is_4k_satisfying
+        return is_4k_satisfying(q_str, size=size)
 
     # Step 0 FIRST (movies had no direct-source step at all): MultiSource.
     try:
@@ -942,7 +988,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                 if res_p:
                     poster_url = res_p
                     _poster_cache[movie_slug] = poster_url
-            if (is_4k and _is_4k_satisfying(ms_q)) or (not is_4k and ms_q == quality_pref.lower()):
+            ms_sz = ms_res.get("size_mb") or ms_res.get("size")
+            ms_is_4k = await _is_4k_stream_ok(ms_q, size=ms_sz, url=ms_res.get("url", "")) if is_4k else False
+            if (is_4k and ms_is_4k) or (not is_4k and ms_q == quality_pref.lower()):
                 if ad_default and has_exact:
                     # /source default (AnimeDekho) already leads candidates —
                     # the direct stream joins as fallback tier.
@@ -980,7 +1028,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                     player_url=ad_res["url"],
                     qualities=[Quality(resolution=ad_res["quality"], url=ad_res["url"])],
                 )
-                if is_4k and _is_4k_satisfying(ad_q):
+                ad_sz = ad_res.get("size_mb") or ad_res.get("size")
+                ad_is_4k = await _is_4k_stream_ok(ad_q, size=ad_sz, url=ad_res.get("url", "")) if is_4k else False
+                if is_4k and ad_is_4k:
                     # Exact 4K or enhanced 1080p HQ tier found on AnimeDrive! AnimeDrive is default for 4K
                     candidates.insert(0, (ad_srv, ad_srv.qualities[0]))
                     has_exact = True
@@ -1015,7 +1065,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                         player_url=tf_res["url"],
                         qualities=[Quality(resolution=tf_res["quality"], url=tf_res["url"])],
                     )
-                    if (is_4k and _is_4k_satisfying(tf_q)) or (not is_4k and tf_q == quality_pref.lower()):
+                    tf_sz = tf_res.get("size_mb") or tf_res.get("size")
+                    tf_is_4k = await _is_4k_stream_ok(tf_q, size=tf_sz, url=tf_res.get("url", "")) if is_4k else False
+                    if (is_4k and tf_is_4k) or (not is_4k and tf_q == quality_pref.lower()):
                         candidates.insert(0, (tf_srv, tf_srv.qualities[0]))
                         has_exact = True
                         found_4k = True
@@ -1564,6 +1616,10 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                             except Exception as le:
                                 log.warning("Library save failed in batch: %s", le)
 
+                        _fsize = (
+                            (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else None))
+                            if sent_msg else None
+                        )
                         from bot.database import db
                         if db:
                             try:
@@ -1576,6 +1632,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                     file_unique_id=file_unique_id,
                                     storage_channel_id=sent_msg.chat.id,
                                     storage_message_id=sent_msg.id,
+                                    file_size=_fsize,
                                 )
                                 await db.log_download(
                                     user_id=user.id,
@@ -1899,6 +1956,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 from bot.database import db
                 if db:
                     try:
+                        sent_bytes = (sent_msg.video.file_size if sent_msg.video else (sent_msg.document.file_size if sent_msg.document else None)) if sent_msg else None
                         await db.save_file(
                             series_slug=series_slug,
                             series_title=await _real_series_title(series_slug, title),
@@ -1908,6 +1966,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                             file_unique_id=file_unique_id,
                             storage_channel_id=sent_msg.chat.id,
                             storage_message_id=sent_msg.id,
+                            file_size=sent_bytes,
                         )
                         await db.log_download(
                             user_id=user.id,

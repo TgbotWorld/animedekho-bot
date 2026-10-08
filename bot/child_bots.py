@@ -457,6 +457,10 @@ class ChildBotManager:
             if not all_files:
                 all_files = await db.files.find({"series_title": {"$regex": f"^{re.escape(title)}$", "$options": "i"}}).to_list(length=None)
 
+            if is_4k and all_files:
+                from utils.anime_match import is_4k_satisfying
+                all_files = [f for f in all_files if is_4k_satisfying(f.get("quality", ""), size=f.get("file_size"))]
+
             if not all_files:
                 await message.reply_text("❌ No downloaded files found in the library for this quality tier.")
                 return
