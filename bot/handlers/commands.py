@@ -115,8 +115,11 @@ async def cmd_start(client: Client, message: Message):
         caption = await _welcome_caption(db, user_mention)
 
         start_pic = await db.get_start_pic() if db else None
-        # Default stylish banner fallback if user has not set a custom start picture
-        default_pic = "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000&auto=format&fit=crop"
+        # Default stylish welcome banner fallback if user has not set a custom start picture
+        from pathlib import Path
+        import os
+        welcome_asset = str(Path(__file__).resolve().parent.parent.parent / "assets" / "welcome.png")
+        default_pic = welcome_asset if os.path.isfile(welcome_asset) else "https://images.unsplash.com/photo-1578632767115-351597cf2477?w=1000&auto=format&fit=crop"
         from utils.helpers import resolve_photo_source
 
         sent = False
