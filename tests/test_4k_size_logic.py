@@ -132,6 +132,40 @@ class Test4KSizeLogic(unittest.TestCase):
 
         asyncio.run(_run_test())
 
+    def test_animedrive_and_toonflix_are_4k_only(self):
+        from extractors.animedrive import animedrive
+        from extractors.toonflix import toonflix
+        from extractors.multisource import MultiSourceManager
+
+        async def _run_test():
+            # 1. animedrive.resolve_episode returns None for non-4k
+            res_ad_1080 = await animedrive.resolve_episode("Solo Leveling", quality_pref="1080p")
+            self.assertIsNone(res_ad_1080)
+            res_ad_720 = await animedrive.resolve_episode("Solo Leveling", quality_pref="720p")
+            self.assertIsNone(res_ad_720)
+
+            # 2. toonflix.resolve_episode returns None for non-4k
+            res_tf_1080 = await toonflix.resolve_episode("Solo Leveling", quality_pref="1080p")
+            self.assertIsNone(res_tf_1080)
+            res_tf_720 = await toonflix.resolve_episode("Solo Leveling", quality_pref="720p")
+            self.assertIsNone(res_tf_720)
+
+            # 3. MultiSourceManager skips AnimeDrive and ToonFlix when non-4K requested
+            msm = MultiSourceManager()
+            diag_ad, _, kind_ad = await msm._resolve_one_source(
+                "AnimeDrive", animedrive, "Solo Leveling", 1, 1, "1080p", "1080p"
+            )
+            self.assertIsNone(diag_ad)
+            self.assertEqual(kind_ad, "skip")
+
+            diag_tf, _, kind_tf = await msm._resolve_one_source(
+                "ToonFlix", toonflix, "Solo Leveling", 1, 1, "720p", "720p"
+            )
+            self.assertIsNone(diag_tf)
+            self.assertEqual(kind_tf, "skip")
+
+        asyncio.run(_run_test())
+
 
 if __name__ == "__main__":
     unittest.main()

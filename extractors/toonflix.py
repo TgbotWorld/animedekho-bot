@@ -61,9 +61,13 @@ class ToonflixExtractor:
         anime_title: str,
         season: int = 1,
         episode: int = 1,
-        quality_pref: str = "1080p",
+        quality_pref: str = "4K",
     ) -> dict | None:
-        """Resolve an episode stream from ToonFlix matching quality_pref (including 4K)."""
+        """Resolve an episode stream from ToonFlix matching quality_pref (4K only)."""
+        is_4k = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")
+        if quality_pref and not is_4k:
+            log.info("ToonFlix is designated as 4K-only — skipping for non-4K request '%s'", quality_pref)
+            return None
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._sync_resolve, anime_title, season, episode, quality_pref
@@ -196,6 +200,9 @@ class ToonflixExtractor:
         def _score_toonflix_card(q_detected: str, size_mb: float | None = None) -> tuple[int, str]:
             # V3 #2: exact requested quality only — no closest fallback.
             # 1080p HQ x265 and enhanced tiers satisfy 4K only when size is around 1 to 2 GB.
+            # ToonFlix is designated as 4K-only to keep quality accurate.
+            if not is_4k:
+                return (-1, q_detected)
             from utils.anime_match import qualities_match
             if qualities_match(quality_pref, q_detected, size=size_mb):
                 return (1000, q_detected)

@@ -890,7 +890,7 @@ async def tool_check_source_status(source: str = "all") -> str:
     return json.dumps(results, indent=2)
 
 
-async def tool_resolve_animedrive_stream(anime_title: str, season: int = 1, episode: int = 1, quality_pref: str = "1080p") -> str:
+async def tool_resolve_animedrive_stream(anime_title: str, season: int = 1, episode: int = 1, quality_pref: str = "4K") -> str:
     try:
         from extractors.animedrive import animedrive
         res = await animedrive.resolve_episode(anime_title, season=season, episode=episode, quality_pref=quality_pref)
@@ -1079,11 +1079,11 @@ async def tool_download_anime_episode(
             except Exception as e:
                 notes.append(f"MultiSource error: {e}")
 
-        # Step 2: AnimeDrive (DEFAULT for 4K).
-        if not stream_url and source.lower() in ("animedrive", "auto"):
+        # Step 2: AnimeDrive (4K ONLY, unless explicitly forced via source="animedrive").
+        if not stream_url and (source.lower() == "animedrive" or (is_4k and source.lower() == "auto")):
             try:
                 await status_msg.edit_text(
-                    f"🤖 <b>{name}</b>: Trying AnimeDrive (Secondary) for <b>{display_title}</b> [{quality_pref}]...",
+                    f"🤖 <b>{name}</b>: Trying AnimeDrive (4K) for <b>{display_title}</b> [{quality_pref}]...",
                     parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:
@@ -1102,11 +1102,11 @@ async def tool_download_anime_episode(
             except Exception as e:
                 notes.append(f"AnimeDrive error: {e}")
 
-        # Step 4: Tertiary fallback to ToonFlix
-        if not stream_url and source.lower() in ("toonflix", "auto"):
+        # Step 3: ToonFlix (4K ONLY, unless explicitly forced via source="toonflix").
+        if not stream_url and (source.lower() == "toonflix" or (is_4k and source.lower() == "auto")):
             try:
                 await status_msg.edit_text(
-                    f"🤖 <b>{name}</b>: Trying ToonFlix (Tertiary) for <b>{display_title}</b> [{quality_pref}]...",
+                    f"🤖 <b>{name}</b>: Trying ToonFlix (4K) for <b>{display_title}</b> [{quality_pref}]...",
                     parse_mode=enums.ParseMode.HTML,
                 )
             except Exception:
@@ -1418,7 +1418,7 @@ async def tool_search_toonflix(query: str) -> str:
         return f"ToonFlix search error: {e}"
 
 
-async def tool_resolve_toonflix_stream(anime_title: str, season: int = 1, episode: int = 1, quality_pref: str = "1080p") -> str:
+async def tool_resolve_toonflix_stream(anime_title: str, season: int = 1, episode: int = 1, quality_pref: str = "4K") -> str:
     try:
         from extractors.toonflix import toonflix
         res = await toonflix.resolve_episode(anime_title, season=season, episode=episode, quality_pref=quality_pref)

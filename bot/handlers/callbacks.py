@@ -684,8 +684,8 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
         if _needs_next_tier():
             await _step_animedekho()
 
-    # Step 3: AnimeDrive — skip when MultiSource already delivered that provider.
-    if (not candidates or not has_exact or (is_4k and not found_match)) and not any(
+    # Step 3: AnimeDrive — 4K only.
+    if is_4k and (not candidates or not found_match) and not any(
         "animedrive" in (s.name or "").lower() for s, _ in candidates
     ):
         try:
@@ -720,8 +720,8 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             log.warning("AnimeDrive resolution error: %s", e)
             diag_steps.append(f"AnimeDrive: error {str(e)[:80]}")
 
-    # Step 4: ToonFlix — same direct-first respect.
-    if (not candidates or not has_exact or (is_4k and not found_match)) and not any(
+    # Step 4: ToonFlix — 4K only.
+    if is_4k and (not candidates or not found_match) and not any(
         "toonflix" in (s.name or "").lower() for s, _ in candidates
     ):
         try:
@@ -1004,12 +1004,12 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     except Exception as e:
         log.warning("MultiSource movie resolution error: %s", e)
 
-    if not has_exact or is_4k:
-        found_4k = any(
-            _is_4k_satisfying(q.resolution) for _, q in candidates
-        ) if is_4k else False
+    found_4k = any(
+        _is_4k_satisfying(q.resolution) for _, q in candidates
+    ) if is_4k else False
 
-        # Step 1: Secondary - AnimeDrive (DEFAULT for 4K)
+    if is_4k and not found_4k:
+        # Step 1: Secondary - AnimeDrive (4K ONLY)
         try:
             from extractors.animedrive import animedrive
             log.info("Checking AnimeDrive for movie '%s' [%s]", title, quality_pref)
@@ -1045,8 +1045,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         except Exception as e:
             log.warning("AnimeDrive movie resolution error: %s", e)
 
-        # Step 2: Tertiary - ToonFlix (if exact quality or 4K not found on AnimeDrive)
-        if not has_exact or (is_4k and not found_4k):
+        # Step 2: Tertiary - ToonFlix (4K ONLY)
+        if is_4k and not found_4k:
             try:
                 from extractors.toonflix import toonflix
                 log.info("Checking ToonFlix fallback for movie '%s' [%s]", title, quality_pref)
@@ -1505,8 +1505,8 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                     if not success:
                         await _batch_animedekho()
 
-                # Fallback 2: Secondary - AnimeDrive
-                if not success:
+                # Fallback 2: AnimeDrive (4K only)
+                if is_4k and not success:
                     try:
                         from extractors.animedrive import animedrive
                         ad_res = await animedrive.resolve_episode(series.title, season=season, episode=ep.number, quality_pref=quality_pref)
@@ -1518,7 +1518,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 filename,
                                 f"{series.title} S{season}E{ep.number}",
                                 ep_msg, client,
-                                                            refresh_url=_extractor_refresh("animedrive", series.title, season, ep.number, chosen_q.resolution),
+                                refresh_url=_extractor_refresh("animedrive", series.title, season, ep.number, chosen_q.resolution),
                                 referer=ad_res.get("referer", "https://hubcloud.ist/"),
                                 poster_url=series.poster or ad_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
@@ -1526,8 +1526,8 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                     except Exception as e:
                         log.warning("Batch AnimeDrive fallback failed for ep %s: %s", ep.slug, e)
 
-                # Fallback 2: Tertiary - ToonFlix
-                if not success:
+                # Fallback 3: ToonFlix (4K only)
+                if is_4k and not success:
                     try:
                         from extractors.toonflix import toonflix
                         tf_res = await toonflix.resolve_episode(series.title, season=season, episode=ep.number, quality_pref=quality_pref)
@@ -1539,7 +1539,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                                 filename,
                                 f"{series.title} S{season}E{ep.number}",
                                 ep_msg, client,
-                                                            refresh_url=_extractor_refresh("toonflix", series.title, season, ep.number, chosen_q.resolution),
+                                refresh_url=_extractor_refresh("toonflix", series.title, season, ep.number, chosen_q.resolution),
                                 referer=tf_res.get("referer", "https://drive.toonflix.in/"),
                                 poster_url=series.poster or tf_res.get("poster", ""),
                                 destination_channel_id=dest_channel_id,
@@ -1548,7 +1548,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                     except Exception as e:
                         log.warning("Batch ToonFlix fallback failed for ep %s: %s", ep.slug, e)
 
-                # Fallback 3: Multi-Source Manager (AnimeDubHindi, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+                # Fallback 4: Multi-Source Manager (AnimeDubHindi, ToonWorld4All, RareAnimes, DeadToons, TOONo)
                 if not success:
                     try:
                         from extractors.multisource import multi_source_manager
@@ -1842,8 +1842,9 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 except Exception as e:
                     log.warning("Multi-source fallback in _do_download failed: %s", e)
 
-            # Step 2: Fallback to AnimeDrive (if not already tried)
-            if not success and not download_job_manager.is_job_cancelled(job_id) and not any("AnimeDrive" in s.name for s, _ in candidates):
+            # Step 2: Fallback to AnimeDrive (4K only)
+            is_chosen_4k = (chosen_quality.resolution or "").lower() in ("4k", "2160p", "2160", "uhd")
+            if is_chosen_4k and not success and not download_job_manager.is_job_cancelled(job_id) and not any("AnimeDrive" in s.name for s, _ in candidates):
                 try:
                     from extractors.animedrive import animedrive
                     attempted_sources.append("AnimeDrive")
@@ -1878,8 +1879,8 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 except Exception as e:
                     log.warning("AnimeDrive fallback in _do_download failed: %s", e)
 
-            # Step 3: Fallback to ToonFlix (if not already tried)
-            if not success and not download_job_manager.is_job_cancelled(job_id) and not any("ToonFlix" in s.name for s, _ in candidates):
+            # Step 3: Fallback to ToonFlix (4K only)
+            if is_chosen_4k and not success and not download_job_manager.is_job_cancelled(job_id) and not any("ToonFlix" in s.name for s, _ in candidates):
                 try:
                     from extractors.toonflix import toonflix
                     attempted_sources.append("ToonFlix")

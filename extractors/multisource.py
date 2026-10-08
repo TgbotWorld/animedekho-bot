@@ -266,6 +266,12 @@ class MultiSourceManager:
                     return None, f"{name}: source benched", "skip"
             except Exception:
                 pass
+            # AnimeDrive and ToonFlix are 4K-only sources to keep quality accurate
+            is_4k_req = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")
+            if name in ("AnimeDrive", "ToonFlix") and not is_4k_req:
+                log.info("Source '%s' is 4K-only — skipping for %s request", name, quality_pref)
+                return None, f"{name}: 4K-only source (skipped for {quality_pref})", "skip"
+
             log.info("Trying fallback source '%s' for '%s' S%dE%d [%s]...", name, search_title, season, episode, quality_pref)
             res = await extractor.resolve_episode(
                 anime_title=search_title,
@@ -406,7 +412,10 @@ class MultiSourceManager:
         search_title = re.sub(r"\s+", " ", search_title)
         want_norm = normalize_quality(quality_pref)
 
+        is_4k = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")
         ordered = list(self.sources)
+        if not is_4k:
+            ordered = [(n, e) for n, e in ordered if n not in ("AnimeDrive", "ToonFlix")]
         if preferred_source:
             pref = preferred_source.strip().lower()
             ordered.sort(key=lambda kv: 0 if kv[0].lower() == pref else 1)

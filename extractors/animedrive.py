@@ -160,9 +160,15 @@ class AnimeDriveExtractor:
         anime_title: str,
         season: int = 1,
         episode: int = 1,
-        quality_pref: str = "1080p",
+        quality_pref: str = "4K",
     ) -> dict | None:
-        """Resolve direct stream/download link for an anime episode matching quality preference."""
+        """Resolve direct stream/download link for an anime episode matching quality preference.
+        AnimeDrive is designated as a 4K-only provider to preserve strict quality accuracy.
+        """
+        is_4k = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")
+        if quality_pref and not is_4k:
+            log.info("AnimeDrive is 4K-only — skipping for non-4K request '%s'", quality_pref)
+            return None
         loop = asyncio.get_running_loop()
         res = await loop.run_in_executor(
             None, self._sync_resolve, anime_title, season, episode, quality_pref
@@ -362,6 +368,9 @@ class AnimeDriveExtractor:
         def _score_candidate(q_detected: str, dest_url: str, size_mb: float | None = None) -> tuple[int, str]:
             # V3 #2: exact requested quality only — no closest fallback.
             # 1080p HQ x265 and enhanced tiers satisfy 4K only when size is around 1 to 2 GB.
+            # AnimeDrive is designated as 4K-only to keep quality accurate.
+            if not is_4k:
+                return (-1, q_detected)
             from utils.anime_match import qualities_match
             is_hub = "hubcloud" in dest_url.lower()
             h_bonus = 20 if is_hub else 0
