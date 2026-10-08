@@ -45,10 +45,10 @@ class MultiSourceManager:
             ("ToonFlix", toonflix),
             ("AnimeDubHindi", animedubhindi),
             ("ToonWorld4All", toonworld4all),
-            ("ToonAnime", toonanime),
             ("RareAnimes", rareanimes),
             ("DeadToons", deadtoons),
             ("TOONo", toono),
+            ("ToonAnime", toonanime),
         ]
         self._slug_registry: dict[str, dict] = {}
 
@@ -260,6 +260,12 @@ class MultiSourceManager:
         from utils.anime_match import normalize_quality
         from extractors.health_probe import infer_provider
         try:
+            try:
+                from extractors import reliability as _rel
+                if _rel.is_source_benched(name):
+                    return None, f"{name}: source benched", "skip"
+            except Exception:
+                pass
             log.info("Trying fallback source '%s' for '%s' S%dE%d [%s]...", name, search_title, season, episode, quality_pref)
             res = await extractor.resolve_episode(
                 anime_title=search_title,

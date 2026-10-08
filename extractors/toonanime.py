@@ -54,14 +54,20 @@ class ToonAnimeExtractor:
         return await loop.run_in_executor(None, self._sync_search, query)
 
     def _is_dead_challenge_page(self, text: str, final_url: str = "") -> bool:
-        """Issue #27: all known ToonAnime mirrors currently return a JS
-        challenge → domain-parking page (ww*.toonanime.*). Detect it fast so
-        MultiSource moves on to live providers instead of hanging."""
+        """Issue #27, #35: all known ToonAnime mirrors currently return a JS
+        challenge → domain-parking page (ww*.toonanime.*) or redirect off-site.
+        Detect it fast so MultiSource moves on to live providers instead of hanging."""
         t = (text or "").lower()
         if "window.location.replace" in t and len(text or "") < 2000:
             return True
-        parking_hints = ("ww547.", "ww80.", "?tkn=", "parking", "domain is parked")
+        parking_hints = (
+            "ww547.", "ww80.", "?tkn=", "parking", "domain is parked",
+            "/lander", "sedo", "bodis", "/?subid1=", "1rka4.buzz",
+            "fornosicilianoastoria",
+        )
         if any(h in (text or "") + final_url for h in parking_hints):
+            return True
+        if re.search(r"https?://ww\d+\.", final_url or ""):
             return True
         # Parking template: dark 600px centered page titled exactly "Toonanime"
         if len(text or "") < 40000 and "<title>Toonanime</title>" in (text or "") and "max-width: 600px" in t:
@@ -83,18 +89,19 @@ class ToonAnimeExtractor:
             url = f"{base}/?s={quote_plus(search_query)}"
             try:
                 ms = _get_scraper()
-                r = ms.get(url, timeout=10)
+                r = ms.get(url, timeout=4)
                 # Check for JS challenge redirect
                 m = re.search(r"window\.location\.replace\('([^']+)'\)", r.text)
                 if m:
                     try:
-                        r = ms.get(m.group(1), headers={"Referer": url}, timeout=10)
+                        r = ms.get(m.group(1), headers={"Referer": url}, timeout=4)
                     except Exception as ce:
                         log.debug("ToonAnime challenge follow failed on %s: %s", base, ce)
                         self._mark_mirror_dead(base)
                         return []
 
                 if r.status_code != 200 or len(r.text) < 1000:
+                    self._mark_mirror_dead(base)
                     return []
                 if self._is_dead_challenge_page(r.text, str(getattr(r, "url", ""))):
                     log.info("ToonAnime %s is parked/challenged — skipping mirror", base)
@@ -139,6 +146,7 @@ class ToonAnimeExtractor:
 
             except Exception as e:
                 log.debug("ToonAnime search attempt on %s failed: %s", base, e)
+                self._mark_mirror_dead(base)
                 return []
 
         live = [b for b in self._base_urls if self._mirror_dead.get(b, 0.0) <= now]
@@ -185,10 +193,21 @@ class ToonAnimeExtractor:
         episode: int,
         quality_pref: str,
     ) -> dict | None:
-        s = _get_scraper()
+        now = time.time()
+        live = [b for b in self._base_urls if self._mirror_dead.get(b, 0.0) <= now]
+        if not live:
+            try:
+                from extractors import reliability as _rel
+                _rel.note_source_failure("ToonAnime", "all mirrors parked")
+            except Exception:
+                pass
+            return None
+
         search_results = self._sync_search(anime_title)
         if not search_results:
             return None
+
+        s = _get_scraper()
 
         # V3 #5: confident match only — rank + require confident overlap
         # and strict season agreement (no first-result guess).
@@ -219,12 +238,12 @@ class ToonAnimeExtractor:
         series_url = target_series["url"]
 
         try:
-            r = s.get(series_url, timeout=12)
+            r = s.get(series_url, timeout=5)
             m = re.search(r"window\.location\.replace\('([^']+)'\)", r.text)
             if m:
-                r = s.get(m.group(1), headers={"Referer": series_url}, timeout=10)
+                r = s.get(m.group(1), headers={"Referer": series_url}, timeout=5)
 
-            if r.status_code != 200:
+            if r.status_code != 200 or len(r.text) < 1000 or self._is_dead_challenge_page(r.text, str(getattr(r, "url", ""))):
                 return None
             soup = BeautifulSoup(r.text, "html.parser")
 
@@ -244,10 +263,8 @@ class ToonAnimeExtractor:
                 else:
                     return None
 
-            r_ep = s.get(ep_url, timeout=12)
-            if r_ep.status_code != 200:
-                return None
-            if self._is_dead_challenge_page(r_ep.text, str(getattr(r_ep, "url", ""))):
+            r_ep = s.get(ep_url, timeout=5)
+            if r_ep.status_code != 200 or len(r_ep.text) < 1000 or self._is_dead_challenge_page(r_ep.text, str(getattr(r_ep, "url", ""))):
                 log.info("ToonAnime episode page is parked/challenged — skipping")
                 return None
             soup_ep = BeautifulSoup(r_ep.text, "html.parser")
