@@ -6,18 +6,24 @@ services:
     container_name: animedekho-bot
     restart: unless-stopped
     env_file: .env
+    # Codespaces/Codespace Docker bridge networking blocks all outbound
+    # traffic (Telegram DCs, DNS). Host networking restores connectivity.
+    network_mode: host
     volumes:
       - bot-data:/app/data
       - bot-tmp:/tmp/animedekho_dl
     depends_on:
       - vidstream-api
     environment:
-      - VIDSTREAM_API_URL=http://vidstream-api:4030
+      - VIDSTREAM_API_URL=http://127.0.0.1:4030
 
   vidstream-api:
     build: ./vidstream-api
     container_name: animedekho-vidstream
     restart: unless-stopped
+    # Host network so the bot reaches it via 127.0.0.1:4030 (no Docker DNS
+    # in host mode) and so it can fetch upstream streams.
+    network_mode: host
     expose:
       - "4030"
 
