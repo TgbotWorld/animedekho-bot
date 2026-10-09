@@ -177,6 +177,7 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 |--------------------|-------------------------------------------|
 | <kbd>/start</kbd>   | Main menu + welcome banner                |
 | <kbd>/search</kbd>  | Search anime across the entire database   |
+| <kbd>/browser_source</kbd> | Browse recent releases by source   |
 | <kbd>/schedule</kbd>| Upcoming episodes & release cards         |
 | <kbd>/commands</kbd>| Interactive visual command guide          |
 | <kbd>/settings</kbd>| Real-time admin control panel *(admins)*  |
@@ -191,10 +192,12 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 |---------------|----------------------------------------------|
 | `/start`      | Main menu                                    |
 | `/search`     | Search anime & movies                        |
+| `/browser_source` | Browse recent anime across sources       |
 | `/schedule`   | Anime airing schedule                        |
 | `/commands`   | Interactive command navigator                |
 | `/help`       | Usage manual                                 |
 | `/tutorial`   | Bot network guide & tutorials                |
+
 
 **🎛️ Admin Core**
 
