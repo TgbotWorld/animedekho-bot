@@ -107,6 +107,52 @@ class AnimeDriveExtractor:
                 continue
         return []
 
+    async def get_recent(self, page: int = 1) -> list[dict]:
+        """Fetch recently released anime from AnimeDrive."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._sync_get_recent, page)
+
+    def _sync_get_recent(self, page: int = 1) -> list[dict]:
+        s = self._get_scraper()
+        for base in [self._base_url, self._fallback_url]:
+            url = f"{base}/page/{page}/" if page > 1 else base
+            try:
+                r = s.get(url, timeout=15)
+                if r.status_code != 200:
+                    continue
+                soup = BeautifulSoup(r.text, "html.parser")
+                results = []
+                seen = set()
+                for art in soup.find_all("article"):
+                    a = art.find("a", href=True)
+                    title_el = art.find(["h1", "h2", "h3", "h4"])
+                    img = art.find("img")
+                    if a and title_el:
+                        href = a["href"]
+                        if href in seen:
+                            continue
+                        seen.add(href)
+                        title_text = title_el.get_text(strip=True)
+                        raw_p = ""
+                        if img:
+                            raw_p = img.get("data-src") or img.get("src", "")
+                            if raw_p.startswith("data:"):
+                                raw_p = img.get("data-src", "")
+                        from utils.anilist import is_valid_poster_url
+                        results.append({
+                            "title": title_text,
+                            "url": href,
+                            "poster": raw_p if is_valid_poster_url(raw_p) else "",
+                            "source": "AnimeDrive",
+                        })
+                if results:
+                    return results
+            except Exception as e:
+                log.warning("AnimeDrive get_recent failed on %s (page %d): %s", base, page, e)
+                continue
+        return []
+
+
     async def get_series_episodes(self, page_url: str) -> list[dict]:
         """Fetch an AnimeDrive series page and extract available episodes."""
         loop = asyncio.get_running_loop()

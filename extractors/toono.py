@@ -106,6 +106,51 @@ class ToonoExtractor:
             log.warning("TOONo search failed for '%s': %s", query, e)
             return []
 
+    async def get_recent(self, page: int = 1) -> list[dict]:
+        """Fetch recently released anime from TOONo."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._sync_get_recent, page)
+
+    def _sync_get_recent(self, page: int = 1) -> list[dict]:
+        s = _get_scraper()
+        url = f"{self._base_url}/series/page/{page}/" if page > 1 else f"{self._base_url}/series/"
+        try:
+            r = s.get(url, timeout=12)
+            if r.status_code != 200:
+                return []
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            seen = set()
+            for art in soup.find_all("article"):
+                a = art.find("a", href=True)
+                if not a:
+                    continue
+                href = a["href"]
+                if ("/series/" not in href and "/movies/" not in href and "/movie/" not in href) or href in seen:
+                    continue
+                seen.add(href)
+                title_el = art.find(["h1", "h2", "h3", "h4", "h5", "header"])
+                title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+                if not title:
+                    continue
+                img = art.find("img")
+                poster = ""
+                if img:
+                    p_url = img.get("src") or img.get("data-src", "")
+                    if is_valid_poster_url(p_url):
+                        poster = p_url
+                results.append({
+                    "title": title,
+                    "url": href,
+                    "poster": poster,
+                    "source": "TOONo",
+                })
+            return results
+        except Exception as e:
+            log.warning("TOONo get_recent failed (page %d): %s", page, e)
+            return []
+
+
     async def resolve_episode(
         self,
         anime_title: str,

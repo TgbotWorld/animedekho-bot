@@ -34,6 +34,18 @@ SOURCE_CATALOG: list[tuple[str, str]] = [
     ("ToonFlix", "ToonFlix seasons → GDrive worker proxy"),
 ]
 
+# Sources supported for live recent releases browsing (/browser_source)
+BROWSE_SOURCES: list[tuple[str, str, str]] = [
+    ("AnimeDekho", "Official Catalog & API", "🍿"),
+    ("DeadToons", "Hindi & Multi-Audio Direct Streams", "💀"),
+    ("ToonFlix", "High Speed & 4K Streams", "⚡"),
+    ("AnimeDrive", "Direct & HubCloud Streams", "🚗"),
+    ("AnimeDubHindi", "Multi-Audio Dubs & DDL", "🎙️"),
+    ("ToonWorld4All", "TW4All Catalog Releases", "🌍"),
+    ("TOONo", "Anime Series Collection", "🎭"),
+]
+
+
 # Loose input → canonical name (case/spacing/symbol tolerant + aliases).
 _ALIASES = {
     "animedekho": "AnimeDekho",

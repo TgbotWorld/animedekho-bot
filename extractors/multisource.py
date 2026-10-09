@@ -179,6 +179,86 @@ class MultiSourceManager:
 
         return results
 
+    async def get_recent_by_source(self, source_name: str, page: int = 1) -> list[SearchResult]:
+        """Fetch recently released anime from a specific source."""
+        from bot.source_config import normalize_source
+        canonical = normalize_source(source_name) or source_name
+
+        if canonical == "AnimeDekho":
+            try:
+                from api.client import api
+                res = await api.get_recent_series(page=page)
+                if res and res.items:
+                    for it in res.items:
+                        self._slug_registry[it.slug] = {
+                            "source": "AnimeDekho",
+                            "title": it.title,
+                            "url": it.url,
+                            "poster": it.poster,
+                            "content_type": it.content_type,
+                        }
+                        from utils.helpers import short_slug
+                        self._slug_registry[short_slug(it.slug)] = self._slug_registry[it.slug]
+                    return res.items
+            except Exception as e:
+                log.warning("AnimeDekho get_recent_series failed for page %d: %s", page, e)
+                return []
+            return []
+
+        # Find extractor in self.sources
+        extractor = None
+        for name, ext in self.sources:
+            if name.lower() == canonical.lower():
+                extractor = ext
+                canonical = name
+                break
+
+        if not extractor or not hasattr(extractor, "get_recent"):
+            log.warning("No recent releases extractor found for source '%s'", source_name)
+            return []
+
+        try:
+            raw_items = await extractor.get_recent(page=page)
+            if not raw_items:
+                return []
+
+            results: list[SearchResult] = []
+            seen_slugs = set()
+            for item in raw_items:
+                raw_title = item.get("title", "")
+                title = clean_title(raw_title) or raw_title
+                url = item.get("url", "")
+                poster = item.get("poster", "")
+
+                slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
+                if not slug or slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+
+                is_movie = "movie" in title.lower() or "film" in title.lower()
+                self._slug_registry[slug] = {
+                    "source": canonical,
+                    "title": title,
+                    "url": url,
+                    "poster": poster,
+                    "content_type": "movie" if is_movie else "series",
+                }
+                from utils.helpers import short_slug
+                self._slug_registry[short_slug(slug)] = self._slug_registry[slug]
+
+                results.append(SearchResult(
+                    title=f"{title} [{canonical}]",
+                    slug=slug,
+                    url=url,
+                    content_type="movie" if is_movie else "series",
+                    poster=poster,
+                    source=canonical,
+                ))
+            return results
+        except Exception as e:
+            log.warning("get_recent_by_source on %s failed (page %d): %s", canonical, page, e)
+            return []
+
     async def get_fallback_series(self, slug: str):
         """Build a Series model for fallback sources.
 
@@ -213,6 +293,11 @@ class MultiSourceManager:
             pass
 
         if not total_eps:
+            m_eps = re.search(r"(\d+)\s*(?:eps?|episodes?)\b", title, re.IGNORECASE)
+            if m_eps:
+                total_eps = min(int(m_eps.group(1)), 48)
+
+        if not total_eps:
             # No verified count — return shell with no fake episodes.
             return Series(
                 title=title,
@@ -228,17 +313,25 @@ class MultiSourceManager:
                 source=source,
             )
 
+        season_num = 1
+        m_s = re.search(r"(?i)\bseason\s*(\d+)\b", title)
+        if m_s:
+            try:
+                season_num = int(m_s.group(1))
+            except Exception:
+                season_num = 1
+
         episodes = [
             Episode(
                 number=i,
-                slug=f"{slug}-1x{i}",
-                season=1,
-                title=f"{title} S1E{i:02d}",
+                slug=f"{slug}-{season_num}x{i}",
+                season=season_num,
+                title=f"{title} S{season_num}E{i:02d}",
                 servers=[],
             )
             for i in range(1, total_eps + 1)
         ]
-        season = Season(number=1, episodes=episodes)
+        season = Season(number=season_num, episodes=episodes)
 
         return Series(
             title=title,
@@ -247,9 +340,10 @@ class MultiSourceManager:
             description=f"Available via {source} network. (~{total_eps} eps estimated via AniList)",
             poster=poster or None,
             genres=genres,
-            seasons={1: season},
+            seasons={season_num: season},
             source=source,
         )
+
 
     async def _resolve_one_source(
         self, name: str, extractor, search_title: str, season: int,

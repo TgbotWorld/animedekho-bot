@@ -94,6 +94,51 @@ class DeadToonsExtractor:
             log.warning("DeadToons search failed for '%s': %s", query, e)
             return []
 
+    async def get_recent(self, page: int = 1) -> list[dict]:
+        """Fetch recently released anime from DeadToons."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._sync_get_recent, page)
+
+    def _sync_get_recent(self, page: int = 1) -> list[dict]:
+        s = _get_scraper()
+        url = f"{self._base_url}/?page={page}" if page > 1 else self._base_url
+        try:
+            r = s.get(url, timeout=12)
+            if r.status_code != 200:
+                return []
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            seen = set()
+            for li in soup.select("li"):
+                h = li.select_one("h2 a[href], h3 a[href]")
+                if not h:
+                    continue
+                href = h.get("href", "")
+                if "/posts/" not in href or href in seen:
+                    continue
+                seen.add(href)
+                title = h.get_text(" ", strip=True)
+                if not title or len(title) < 3:
+                    continue
+                img = li.find("img")
+                poster = ""
+                if img:
+                    p_url = img.get("src") or img.get("data-src", "")
+                    if is_valid_poster_url(p_url):
+                        poster = p_url
+                full_url = href if href.startswith("http") else f"{self._base_url}{href}"
+                results.append({
+                    "title": title,
+                    "url": full_url,
+                    "poster": poster,
+                    "source": "DeadToons",
+                })
+            return results
+        except Exception as e:
+            log.warning("DeadToons get_recent failed (page %d): %s", page, e)
+            return []
+
+
     async def resolve_episode(
         self,
         anime_title: str,

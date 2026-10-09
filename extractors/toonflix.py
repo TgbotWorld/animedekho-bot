@@ -56,6 +56,44 @@ class ToonflixExtractor:
             log.warning("ToonFlix search failed for '%s': %s", query, e)
             return []
 
+    async def get_recent(self, page: int = 1) -> list[dict]:
+        """Fetch recently released anime from ToonFlix."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._sync_get_recent, page)
+
+    def _sync_get_recent(self, page: int = 1) -> list[dict]:
+        s = _get_scraper()
+        url = f"{self._base_url}/page/{page}/" if page > 1 else self._base_url
+        try:
+            r = s.get(url, timeout=15)
+            if r.status_code != 200:
+                return []
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            seen = set()
+            for a in soup.find_all("article"):
+                link = a.find("a", href=True)
+                title_el = a.find(["h2", "h3", "h4", "h1"])
+                img = a.find("img")
+                if link and title_el:
+                    href = link["href"]
+                    if href in seen:
+                        continue
+                    seen.add(href)
+                    raw_p = img.get("src") or img.get("data-src", "") if img else ""
+                    from utils.anilist import is_valid_poster_url
+                    results.append({
+                        "title": title_el.get_text(strip=True),
+                        "url": href,
+                        "poster": raw_p if is_valid_poster_url(raw_p) else "",
+                        "source": "ToonFlix",
+                    })
+            return results
+        except Exception as e:
+            log.warning("ToonFlix get_recent failed (page %d): %s", page, e)
+            return []
+
+
     async def resolve_episode(
         self,
         anime_title: str,

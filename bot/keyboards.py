@@ -30,12 +30,76 @@ def _safe_url_btn(label: str, url: str) -> InlineKeyboardButton | None:
 
 def main_menu(invite_link: str | None = None) -> InlineKeyboardMarkup:
     buttons = [
-        [InlineKeyboardButton("📺 Recent Series", callback_data="rp:1")],
+        [
+            InlineKeyboardButton("📺 Recent Series", callback_data="rp:1"),
+            InlineKeyboardButton("🌐 Browse Sources", callback_data="bs:menu"),
+        ],
         [InlineKeyboardButton("📂 Browse Genres", callback_data="m:genres")],
     ]
     if invite_link:
         buttons.append([InlineKeyboardButton("📢 Join the Channel ↗", url=invite_link)])
     return InlineKeyboardMarkup(buttons)
+
+
+def browse_source_menu(sources: list[str] | list[tuple[str, str, str]]) -> InlineKeyboardMarkup:
+    """Keyboard for selecting a source to browse recent releases."""
+    buttons = []
+    source_emojis = {
+        "AnimeDekho": "🍿",
+        "DeadToons": "💀",
+        "ToonFlix": "⚡",
+        "AnimeDrive": "🚗",
+        "AnimeDubHindi": "🎙️",
+        "ToonWorld4All": "🌍",
+        "RareAnimes": "💎",
+        "TOONo": "🎭",
+        "ToonAnime": "📺",
+    }
+    row = []
+    for item in sources:
+        name = item[0] if isinstance(item, (tuple, list)) else item
+        emoji = item[2] if isinstance(item, (tuple, list)) and len(item) > 2 else source_emojis.get(name, "🎬")
+        cb = _safe_cb(f"bs:{name}:1")
+        row.append(InlineKeyboardButton(f"{emoji} {name}", callback_data=cb))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([_menu_btn()])
+    return InlineKeyboardMarkup(buttons)
+
+
+def browse_source_page(
+    items: list[SearchResult],
+    source_name: str,
+    page: int,
+    has_next: bool = True,
+) -> InlineKeyboardMarkup:
+    """Paginated listing of recent releases from a specific source."""
+    buttons = []
+    for it in items[: S.items_per_page]:
+        cb = _safe_cb(f"sr:{short_slug(it.slug)}")
+        title = it.title
+        tag = f" [{source_name}]"
+        if title.endswith(tag):
+            title = title[:-len(tag)]
+        buttons.append([InlineKeyboardButton(f"📺 {title[:45]}", callback_data=cb)])
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=_safe_cb(f"bs:{source_name}:{page - 1}")))
+    if has_next:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=_safe_cb(f"bs:{source_name}:{page + 1}")))
+    if nav:
+        buttons.append(nav)
+
+    buttons.append([
+        InlineKeyboardButton("🌐 Switch Source", callback_data="bs:menu"),
+        _menu_btn(),
+    ])
+    return InlineKeyboardMarkup(buttons)
+
 
 
 def search_results(results: list[SearchResult]) -> InlineKeyboardMarkup:

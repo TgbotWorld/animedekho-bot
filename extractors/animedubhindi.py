@@ -105,6 +105,47 @@ class AnimeDubHindiExtractor:
             log.warning("AnimeDubHindi search failed for '%s': %s", query, e)
             return []
 
+    async def get_recent(self, page: int = 1) -> list[dict]:
+        """Fetch recently released anime from AnimeDubHindi."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._sync_get_recent, page)
+
+    def _sync_get_recent(self, page: int = 1) -> list[dict]:
+        s = _get_scraper()
+        url = f"{self.base_url}/page/{page}/" if page > 1 else self.base_url
+        try:
+            r = s.get(url, timeout=12)
+            if r.status_code != 200:
+                return []
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            seen = set()
+            for art in soup.find_all("article"):
+                a = art.find("a", href=True)
+                title_el = art.find(["h1", "h2", "h3", "h4"])
+                img = art.find("img")
+                if a and title_el:
+                    href = a["href"]
+                    if href in seen:
+                        continue
+                    seen.add(href)
+                    title = title_el.get_text(strip=True)
+                    raw_p = ""
+                    if img:
+                        raw_p = img.get("src") or img.get("data-src", "")
+                    from utils.anilist import is_valid_poster_url
+                    results.append({
+                        "title": title,
+                        "url": href,
+                        "poster": raw_p if is_valid_poster_url(raw_p) else "",
+                        "source": "AnimeDubHindi",
+                    })
+            return results
+        except Exception as e:
+            log.warning("AnimeDubHindi get_recent failed (page %d): %s", page, e)
+            return []
+
+
     async def resolve_episode(
         self,
         anime_title: str,

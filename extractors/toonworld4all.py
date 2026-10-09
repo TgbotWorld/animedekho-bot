@@ -78,6 +78,49 @@ class ToonWorld4AllExtractor:
             log.warning("ToonWorld4All search failed for '%s': %s", query, e)
             return []
 
+    async def get_recent(self, page: int = 1) -> list[dict]:
+        """Fetch recently released anime from ToonWorld4All."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._sync_get_recent, page)
+
+    def _sync_get_recent(self, page: int = 1) -> list[dict]:
+        s = _get_scraper()
+        url = f"{self._base_url}/page/{page}/" if page > 1 else self._base_url
+        try:
+            r = s.get(url, timeout=12)
+            if r.status_code != 200:
+                return []
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            seen = set()
+            for art in soup.find_all("article"):
+                a = art.find("a", href=True)
+                title_el = art.find(["h2", "h3", "h4", "h1"])
+                if not a or not title_el:
+                    continue
+                href = a["href"]
+                if href in seen or "how-to-download" in href or "anime-shows-list" in href:
+                    continue
+                seen.add(href)
+                title = title_el.get_text(strip=True)
+                img = art.find("img")
+                poster = ""
+                if img:
+                    p_url = img.get("src") or img.get("data-src", "")
+                    if is_valid_poster_url(p_url):
+                        poster = p_url
+                results.append({
+                    "title": title,
+                    "url": href,
+                    "poster": poster,
+                    "source": "ToonWorld4All",
+                })
+            return results
+        except Exception as e:
+            log.warning("ToonWorld4All get_recent failed (page %d): %s", page, e)
+            return []
+
+
     async def resolve_episode(
         self,
         anime_title: str,

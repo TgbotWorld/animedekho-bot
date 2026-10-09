@@ -26,7 +26,9 @@ from .worker_admin import (
 )
 from .schedule import cmd_schedule, schedule_callback
 from .settings import cmd_commands, commands_callback, cmd_settings, settings_callback
+from .browser_source import cmd_browser_source, browser_source_callback
 from bot.auto_delete import handle_close_dlt_notice
+
 
 __all__ = [
     "cmd_start", "cmd_help", "cmd_search", "cmd_autosearch", "callback_router", "handle_text",
@@ -46,6 +48,7 @@ __all__ = [
     "cmd_thumbuser", "cmd_thumblogo", "cmd_linkgate", "cmd_endsticker",
     "cmd_startstyle", "cmd_startpic", "cmd_epstyle", "cmd_schedstyle", "start_callback",
     "cmd_setaudio", "map_audio_callback", "cmd_postsched",
+    "cmd_browser_source", "browser_source_callback",
     "register_handlers",
 ]
 
@@ -57,6 +60,8 @@ def register_handlers(app: Client):
     app.add_handler(MessageHandler(cmd_help, filters.command("help") & filters.private))
     app.add_handler(MessageHandler(cmd_search, filters.command("search") & filters.private))
     app.add_handler(MessageHandler(cmd_autosearch, filters.command("autosearch") & filters.private))
+    app.add_handler(MessageHandler(cmd_browser_source, filters.command(["browser_source", "browse_source", "browsesource", "browsersource", "browse"]) & filters.private))
+
 
     # Owner AI commands
     app.add_handler(MessageHandler(cmd_setai, filters.command("setai") & filters.private))
@@ -145,9 +150,11 @@ def register_handlers(app: Client):
     app.add_handler(CallbackQueryHandler(tutorial_callback, filters.regex(r"^tutorial:")))
     app.add_handler(CallbackQueryHandler(handle_close_dlt_notice, filters.regex(r"^close_dlt_notice$")))
     app.add_handler(CallbackQueryHandler(schedule_callback, filters.regex(r"^sch:")))
+    app.add_handler(CallbackQueryHandler(browser_source_callback, filters.regex(r"^bs:")))
 
     # Callback queries (inline buttons)
     app.add_handler(CallbackQueryHandler(callback_router))
+
 
     # Text messages (search) — must be last to avoid catching commands
     # Note: filters.regex matches non-command text (doesn't start with /)

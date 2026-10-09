@@ -38,6 +38,7 @@ COMMAND_CATEGORIES = {
         "👤 <b>User & Search Commands:</b>\n\n"
         "• <code>/start</code> — Open main start menu\n"
         "• <code>/search &lt;name&gt;</code> — Search anime series & movies\n"
+        "• <code>/browser_source</code> — Browse recent anime releases by source\n"
         "• <code>/schedule</code> — Today's anime airing schedule & countdowns\n"
         "• <code>/help</code> — Quick instructions and usage guide\n"
         "• <code>/commands</code> — Interactive command categories menu\n\n"
