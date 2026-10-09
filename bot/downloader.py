@@ -405,6 +405,150 @@ def _get_origin(url: str) -> str:
     return f"https://{domain}"
 
 
+# ── Engine 0: aria2c Parallel Downloader (IDM-style 16 Connections) ────────
+
+
+def _parse_size_bytes(size_str: str) -> float:
+    """Helper to parse aria2 human size strings like 512KiB, 1.2MiB, 1.4GiB."""
+    m = re.match(r"^([\d.]+)\s*([KkMmGgTt]?[iI]?[Bb]?)$", size_str.strip())
+    if not m:
+        return 0.0
+    val = float(m.group(1))
+    unit = m.group(2).lower()
+    if "g" in unit:
+        return val * 1024 * 1024 * 1024
+    if "m" in unit:
+        return val * 1024 * 1024
+    if "k" in unit:
+        return val * 1024
+    return val
+
+
+async def aria2c_download(
+    url: str,
+    output_path: str,
+    progress_msg: Message | None = None,
+    title: str = "video",
+    quality: str = "auto",
+    referer: str = "",
+    job_id: str | None = None,
+) -> bool:
+    """Download direct video file using aria2c with 16 parallel connections (IDM-style)."""
+    if not shutil.which("aria2c"):
+        return False
+
+    out_p = Path(output_path)
+    save_dir = str(out_p.parent)
+    save_name = out_p.name
+    download_job_manager.attach_temp_file(job_id, output_path)
+
+    # Clean stale files
+    if out_p.exists():
+        try:
+            out_p.unlink()
+        except Exception:
+            pass
+    aria2_control = out_p.with_suffix(out_p.suffix + ".aria2")
+    if aria2_control.exists():
+        try:
+            aria2_control.unlink()
+        except Exception:
+            pass
+
+    cmd = [
+        "aria2c",
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--min-split-size=1M",
+        "--file-allocation=none",
+        "--summary-interval=1",
+        "--allow-overwrite=true",
+        "--auto-file-renaming=false",
+        "--timeout=30",
+        "--max-tries=5",
+        "--retry-wait=2",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "-d", save_dir,
+        "-o", save_name,
+    ]
+    if referer:
+        cmd.extend(["--header", f"Referer: {referer}"])
+
+    cmd.append(url)
+    log.info("Starting aria2c parallel download (16 connections): %s -> %s", url[:80], save_name)
+
+    start_time = time.time()
+    last_edit = [0.0]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        download_job_manager.attach_subprocess(job_id, proc)
+
+        # Monitor stdout for progress
+        while True:
+            if download_job_manager.is_job_cancelled(job_id):
+                log.info("aria2c download cancelled for %s", title)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return False
+
+            line_bytes = await proc.stdout.readline()
+            if not line_bytes:
+                break
+
+            line = line_bytes.decode("utf-8", errors="ignore").strip()
+            # Format: [#a20781 512KiB/1.3GiB(0%) CN:16 DL:1.1MiB ETA:19m45s]
+            m = re.search(r"\[#\w+\s+([^\s/]+)/([^\s(]+)\((\d+)%\)\s+CN:\d+\s+DL:([^\s]+)(?:\s+ETA:([^\s\]]+))?", line)
+            if m:
+                dl_str = m.group(1)
+                tot_str = m.group(2)
+                pct = float(m.group(3))
+                speed_str = m.group(4)
+                eta = m.group(5) or ""
+
+                dl_bytes = _parse_size_bytes(dl_str)
+                tot_bytes = _parse_size_bytes(tot_str)
+                speed_bytes = _parse_size_bytes(speed_str)
+                elapsed = time.time() - start_time
+
+                if progress_msg and dl_bytes > 50_000:
+                    await _update_progress(
+                        progress_msg,
+                        _download_progress_text(
+                            title, quality, pct, dl_bytes, elapsed, speed_bytes, eta=eta, total_bytes=tot_bytes
+                        ),
+                        last_edit,
+                        interval=3.0,
+                        job_id=job_id,
+                    )
+
+        await proc.wait()
+
+        # Clean control file
+        if aria2_control.exists():
+            try:
+                aria2_control.unlink()
+            except Exception:
+                pass
+
+        if proc.returncode == 0 and out_p.exists() and out_p.stat().st_size > 50_000:
+            log.info("aria2c download complete: %s (%s)", output_path, _format_size(out_p.stat().st_size))
+            return True
+        else:
+            log.warning("aria2c exited with code %s (size=%s)", proc.returncode, out_p.stat().st_size if out_p.exists() else 0)
+            return False
+
+    except Exception as e:
+        log.warning("aria2c download exception: %s", e)
+        return False
+
+
 # ── Engine 1: Direct HTTP Download (MP4 / Direct Streams) ─────────────
 
 
@@ -431,7 +575,7 @@ async def direct_http_download(
 
     try:
         timeout = aiohttp.ClientTimeout(total=2400, connect=30, sock_read=60)
-        connector = aiohttp.TCPConnector(limit=16, limit_per_host=8, enable_cleanup_closed=True)
+        connector = aiohttp.TCPConnector(limit=32, limit_per_host=16, enable_cleanup_closed=True)
         async with aiohttp.ClientSession(headers=headers, timeout=timeout, connector=connector) as session:
             # Step 1: Probe Range support with initial chunk (1 MB)
             probe_headers = {"Range": "bytes=0-1048575"}
@@ -553,7 +697,7 @@ async def direct_http_download(
                                                 raise RuntimeError(f"Failed to download byte range {start_b}-{end_b}")
                                             queue.task_done()
 
-                                    concurrency = min(4, len(chunks))
+                                    concurrency = min(8, len(chunks))
                                     workers = [asyncio.create_task(_worker()) for _ in range(concurrency)]
                                     await asyncio.gather(*workers)
                                     range_ok = True
@@ -1621,7 +1765,13 @@ async def _download_once(
     )
 
     if is_mp4:
-        log.info("Detected direct MP4/file URL, using direct HTTP downloader")
+        log.info("Detected direct MP4/file URL — attempting high-speed parallel download")
+        if shutil.which("aria2c"):
+            ok = await aria2c_download(stream_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
+            if ok:
+                return True
+            log.warning("aria2c parallel download failed, falling back to direct HTTP")
+
         ok = await direct_http_download(stream_url, output_path, progress_msg, title, quality, referer=referer, job_id=job_id)
         if ok:
             return True
