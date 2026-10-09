@@ -2055,14 +2055,18 @@ async def download_and_upload(
             except Exception as cte:
                 log.debug("Custom thumbnail check failed: %s", cte)
 
-        # 2. Poster Fallback (AniList as primary, then scraped, then default configured thumbnails)
+        # 2. Poster: ALWAYS load from AniList first, regardless of the
+        # default download source. The incoming `poster_url` (scraped from
+        # whichever source resolved the stream) is only a fallback when
+        # AniList has no match or errors.
         if not thumb_path:
-            if not poster_url:
-                try:
-                    from utils.anilist import resolve_best_poster
-                    poster_url = await resolve_best_poster(title, "", is_movie=is_movie)
-                except Exception:
-                    pass
+            try:
+                from utils.anilist import resolve_best_poster
+                best = await resolve_best_poster(title, poster_url, is_movie=is_movie)
+                if best:
+                    poster_url = best
+            except Exception:
+                pass
 
             if poster_url:
                 try:

@@ -282,7 +282,11 @@ async def resolve_best_poster(
     fallback_default: bool = True,
 ) -> str | None:
     """
-    Resolve the highest quality, authoritative poster for an anime:
+    Resolve the highest quality, authoritative poster for an anime.
+
+    Policy: the poster ALWAYS comes from AniList first, no matter which
+    download source is configured as the default (/source). The scraped
+    source poster is only a fallback when AniList has no match or errors.
     1. Query AniList for official high-resolution coverImage (Primary Source).
     2. Fall back to scraped_poster if AniList has no match or errors,
        filtering out generic banners/logos/placeholders.

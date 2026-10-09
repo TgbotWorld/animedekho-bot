@@ -274,6 +274,17 @@ async def _handle_series_detail(client: Client, q: CallbackQuery, slug: str):
         text += f"\n📂 <b>{series.season_count} Season(s)</b> · {series.total_episodes} episodes\nSelect a season:"
         markup = kb.season_picker(series)
 
+    # Poster ALWAYS comes from AniList, no matter which download source
+    # this series was resolved from. The source-scraped poster is only a
+    # fallback when AniList has no match.
+    try:
+        from utils.anilist import resolve_best_poster
+        _best = await resolve_best_poster(series.title, series.poster, is_movie=False)
+        if _best:
+            series.poster = _best
+    except Exception as _pe:
+        log.debug("AniList poster override failed for series %s: %s", slug, _pe)
+
     # Cache poster for later use in library
     if series.poster:
         _poster_cache[series.slug] = series.poster
@@ -310,6 +321,16 @@ async def _handle_movie_detail(client: Client, q: CallbackQuery, slug: str):
     if movie.description:
         text += f"\n{esc(truncate(movie.description, 350))}\n"
     text += "\n📊 <b>Select quality to download:</b>"
+
+    # Poster ALWAYS comes from AniList, no matter which download source
+    # this movie was resolved from.
+    try:
+        from utils.anilist import resolve_best_poster
+        _best_m = await resolve_best_poster(movie.title, movie.poster, is_movie=True)
+        if _best_m:
+            movie.poster = _best_m
+    except Exception as _pe:
+        log.debug("AniList poster override failed for movie %s: %s", slug, _pe)
 
     # Store raw servers — will be resolved on download
     if movie.poster:
@@ -703,6 +724,8 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 if series_slug and not _poster_cache.get(series_slug):
                     from utils.anilist import resolve_best_poster
                     res_p = await resolve_best_poster(series_title, ad_res.get("poster"))
+                    if res_p:
+                        _poster_cache[series_slug] = res_p
                 ad_sz = ad_res.get("size_mb") or ad_res.get("size")
                 ad_is_4k = await _is_4k_stream_ok(ad_q, size=ad_sz, url=ad_res.get("url", "")) if is_4k else False
                 if ((is_4k and ad_is_4k) or (not is_4k and ad_q == quality_pref.lower())) and not has_exact:

@@ -168,7 +168,11 @@ class DeadToonsExtractor:
             return None
 
         # V3 #5: confident title match (no single-keyword guess).
-        # Score candidates: prefer explicit season matches over movie/spin-off posts
+        # Score candidates: exact title-token overlap wins over spin-offs
+        # (e.g. "One Piece" must beat "LEGO One Piece"), and explicit
+        # season matches beat movie/spin-off posts.
+        from utils.anime_match import normalize_tokens
+        q_toks = normalize_tokens(anime_title)
         candidates = []
         for res in search_results:
             t = res.get("title", "")
@@ -186,7 +190,13 @@ class DeadToonsExtractor:
             )
             is_movie_post = any(k in t.lower() for k in ("movie", "reawakening", "hdcam", "theater", "the movie"))
 
-            score = 0
+            # Title-similarity: shared significant tokens minus extra
+            # distinguishing tokens in the candidate ("lego", "wano", ...).
+            c_toks = normalize_tokens(f"{t} {href}")
+            overlap = len(q_toks & c_toks) if q_toks else 0
+            extra = len(c_toks - q_toks) if q_toks else 0
+
+            score = overlap * 10 - extra
             if is_explicit_season:
                 score += 100
             elif season == 1:
@@ -197,49 +207,77 @@ class DeadToonsExtractor:
 
             candidates.append((score, res))
 
-        if candidates:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            target_post = candidates[0][1]
-
-        if not target_post:
+        if not candidates:
             log.info("DeadToons: No verified season %d post for '%s'", season, anime_title)
             return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
 
-        post_url = target_post["url"]
-        try:
-            r = s.get(post_url, timeout=12)
-            if r.status_code != 200:
-                return None
-            soup = BeautifulSoup(r.text, "html.parser")
+        # Try each candidate in score order: the top hit may be a
+        # lookalike whose API slug 404s while the exact match succeeds.
+        for _, target_post in candidates:
+            post_url = target_post["url"]
+            try:
+                r = s.get(post_url, timeout=12)
+                if r.status_code != 200:
+                    continue
+                soup = BeautifulSoup(r.text, "html.parser")
 
-            # Try modern DeadToons API resolution first
-            api_res = self._resolve_via_api(s, soup, target_post, season, episode, quality_pref)
-            if api_res:
-                return api_res
+                # Try modern DeadToons API resolution first
+                api_res = self._resolve_via_api(s, soup, target_post, season, episode, quality_pref)
+                if api_res:
+                    return api_res
 
-            # Fallback legacy page scraping (for backward compatibility & offline mock tests)
-            pattern = re.compile(rf"/{season}x0*{episode}\b", re.I)
-            ep_href = None
-            for a in soup.find_all("a", href=True):
-                href = a["href"]
-                if pattern.search(href) or f"episode/{season}x{episode}" in href.lower():
-                    ep_href = href
-                    break
+                # Fallback legacy page scraping (for backward compatibility & offline mock tests)
+                pattern = re.compile(rf"/{season}x0*{episode}\b", re.I)
+                ep_href = None
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    if pattern.search(href) or f"episode/{season}x{episode}" in href.lower():
+                        ep_href = href
+                        break
 
-            if not ep_href:
-                return None
+                if not ep_href:
+                    continue
 
-            ep_url = ep_href if ep_href.startswith("http") else f"{self._base_url}{ep_href}"
-            r_ep = s.get(ep_url, timeout=12)
-            if r_ep.status_code != 200:
-                log.warning("DeadToons: episode page %s returned HTTP %d", ep_url, r_ep.status_code)
-                return None
-            ep_ctype = (r_ep.headers.get("Content-Type") or "").lower()
-            if "text/html" not in ep_ctype:
-                # Served media directly instead of a page.
+                ep_url = ep_href if ep_href.startswith("http") else f"{self._base_url}{ep_href}"
+                r_ep = s.get(ep_url, timeout=12)
+                if r_ep.status_code != 200:
+                    log.warning("DeadToons: episode page %s returned HTTP %d", ep_url, r_ep.status_code)
+                    continue
+                ep_ctype = (r_ep.headers.get("Content-Type") or "").lower()
+                if "text/html" not in ep_ctype:
+                    # Served media directly instead of a page.
+                    norm_q = normalize_quality(quality_pref) or "Unknown"
+                    return {
+                        "url": ep_url,
+                        "quality": norm_q,
+                        "requested_quality": quality_pref,
+                        "detected_quality": norm_q,
+                        "verified_quality": norm_q,
+                        "source": "DeadToons",
+                        "poster": target_post.get("poster"),
+                    }
+                ep_soup = BeautifulSoup(r_ep.text, "html.parser")
+                media_url = None
+                for a in ep_soup.find_all("a", href=True):
+                    h = a["href"]
+                    if any(ext in h.lower() for ext in (".mp4", ".mkv", ".webm", ".m3u8")):
+                        media_url = h
+                        break
+                if not media_url:
+                    for fr in ep_soup.find_all(["iframe", "source"], src=True):
+                        src = fr["src"]
+                        if any(ext in src.lower() for ext in (".mp4", ".mkv", ".webm", ".m3u8")):
+                            media_url = src
+                            break
+                if not media_url:
+                    log.warning("DeadToons: no extractable media link on episode page %s", ep_url)
+                    continue
+                if not media_url.startswith("http"):
+                    media_url = f"{self._base_url}{media_url}"
                 norm_q = normalize_quality(quality_pref) or "Unknown"
                 return {
-                    "url": ep_url,
+                    "url": media_url,
                     "quality": norm_q,
                     "requested_quality": quality_pref,
                     "detected_quality": norm_q,
@@ -247,36 +285,9 @@ class DeadToonsExtractor:
                     "source": "DeadToons",
                     "poster": target_post.get("poster"),
                 }
-            ep_soup = BeautifulSoup(r_ep.text, "html.parser")
-            media_url = None
-            for a in ep_soup.find_all("a", href=True):
-                h = a["href"]
-                if any(ext in h.lower() for ext in (".mp4", ".mkv", ".webm", ".m3u8")):
-                    media_url = h
-                    break
-            if not media_url:
-                for fr in ep_soup.find_all(["iframe", "source"], src=True):
-                    src = fr["src"]
-                    if any(ext in src.lower() for ext in (".mp4", ".mkv", ".webm", ".m3u8")):
-                        media_url = src
-                        break
-            if not media_url:
-                log.warning("DeadToons: no extractable media link on episode page %s", ep_url)
-                return None
-            if not media_url.startswith("http"):
-                media_url = f"{self._base_url}{media_url}"
-            norm_q = normalize_quality(quality_pref) or "Unknown"
-            return {
-                "url": media_url,
-                "quality": norm_q,
-                "requested_quality": quality_pref,
-                "detected_quality": norm_q,
-                "verified_quality": norm_q,
-                "source": "DeadToons",
-                "poster": target_post.get("poster"),
-            }
-        except Exception as e:
-            log.warning("DeadToons resolve error for %s: %s", post_url, e)
+            except Exception as e:
+                log.warning("DeadToons resolve error for %s: %s", post_url, e)
+                continue
 
         return None
 

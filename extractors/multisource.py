@@ -280,13 +280,22 @@ class MultiSourceManager:
         total_eps: int | None = None
         genres = []
         try:
-            from utils.anilist import get_anilist_metadata
+            from utils.anilist import get_anilist_metadata, is_valid_poster_url
             meta = await get_anilist_metadata(title)
             if meta:
                 if meta.get("episodes"):
                     total_eps = min(int(meta["episodes"]), 48)
-                if meta.get("cover"):
-                    poster = poster or meta["cover"]
+                # Poster ALWAYS comes from AniList first, no matter which
+                # download source is set as default. Scraped `poster` is
+                # only a fallback when AniList has no match.
+                cover = meta.get("coverImage") or {}
+                anilist_poster = (
+                    cover.get("extraLarge")
+                    or cover.get("large")
+                    or cover.get("medium")
+                )
+                if anilist_poster and is_valid_poster_url(anilist_poster):
+                    poster = anilist_poster
                 if meta.get("genres"):
                     genres = meta["genres"]
         except Exception:

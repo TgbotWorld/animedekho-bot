@@ -771,6 +771,15 @@ async def cmd_createchannel(client: Client, message: Message):
         except Exception as se:
             log.warning("Search failed in createchannel: %s", se)
 
+    # Poster ALWAYS comes from AniList, no matter which source matched.
+    try:
+        from utils.anilist import resolve_best_poster
+        _best_cc = await resolve_best_poster(series_title, poster_url)
+        if _best_cc:
+            poster_url = _best_cc
+    except Exception as _pe:
+        log.debug("AniList poster override failed in createchannel: %s", _pe)
+
     await wait_msg.edit_text(f"🔨 Creating channel for <b>{series_title}</b>...", parse_mode=enums.ParseMode.HTML)
 
     try:
