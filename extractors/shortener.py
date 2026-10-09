@@ -43,6 +43,9 @@ _SHORTENER_DOMAINS: dict[str, str] = {
     "shrinkme.io": "shrinkme",
     "shrinkme.net": "shrinkme",
     "shrinke.me": "shrinkme",
+    "shrinkme.click": "shrinkme",
+    "shrinkme.cc": "shrinkme",
+    "shrinkme.vip": "shrinkme",
     "shareus.io": "shareus",
     "shareus.in": "shareus",
     "ouo.io": "ouo",
@@ -1065,6 +1068,77 @@ async def _bypass_droplink(url: str, http_client) -> str | None:
 
 
 async def _bypass_shrinkme(url: str, http_client) -> str | None:
+    # 1. Fast direct MrProBlogger bypass (studied from IndraYuda13/shortlink-bypass-bot)
+    try:
+        alias = urlparse(url).path.strip("/")
+        if alias:
+            import asyncio
+            from bs4 import BeautifulSoup
+
+            def _sync_direct_mrproblogger():
+                import requests
+                sess = requests.Session()
+                sess.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9",
+                })
+                mr_url = f"https://en.mrproblogger.com/{alias}"
+                r = sess.get(mr_url, headers={"Referer": "https://themezon.net/"}, timeout=15)
+                soup = BeautifulSoup(r.text, "html.parser")
+                form = soup.select_one("form#go-link")
+                if not form:
+                    # ThemeZon hop fallback
+                    try:
+                        hop = sess.post(
+                            "https://themezon.net/?redirect_to=random",
+                            data={"newwpsafelink": alias},
+                            headers={"Referer": "https://themezon.net/", "Origin": "https://themezon.net"},
+                            timeout=12,
+                            allow_redirects=False,
+                        )
+                        next_loc = hop.headers.get("Location")
+                        if next_loc:
+                            r = sess.get(mr_url, headers={"Referer": next_loc}, timeout=15)
+                            soup = BeautifulSoup(r.text, "html.parser")
+                            form = soup.select_one("form#go-link")
+                    except Exception:
+                        pass
+                if not form:
+                    return None
+                hidden = {inp.get("name"): inp.get("value", "") for inp in form.select("input[name]")}
+                action = urljoin(r.url, form.get("action") or "/links/go")
+                counter = 12
+                m = re.search(r"counter_value[\"']?\s*:\s*[\"']?(\d+)", r.text)
+                if m:
+                    try:
+                        counter = max(4, min(int(m.group(1)), 15))
+                    except Exception:
+                        pass
+                time.sleep(counter)
+                go_resp = sess.post(
+                    action,
+                    data=hidden,
+                    headers={
+                        "Referer": r.url,
+                        "Origin": f"{urlparse(r.url).scheme}://{urlparse(r.url).netloc}",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "application/json, text/javascript, */*; q=0.01",
+                    },
+                    timeout=20,
+                )
+                if go_resp.status_code == 200:
+                    data = go_resp.json()
+                    return data.get("url")
+                return None
+
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, _sync_direct_mrproblogger)
+            if res:
+                return res
+    except Exception as e:
+        log.debug("Direct MrProBlogger bypass error: %s", e)
+
     return await _bypass_adlinkfly(url, http_client, "shrinkme")
 
 

@@ -44,9 +44,9 @@ class MultiSourceManager:
             ("AnimeDrive", animedrive),
             ("ToonFlix", toonflix),
             ("AnimeDubHindi", animedubhindi),
+            ("DeadToons", deadtoons),
             ("ToonWorld4All", toonworld4all),
             ("RareAnimes", rareanimes),
-            ("DeadToons", deadtoons),
             ("TOONo", toono),
             ("ToonAnime", toonanime),
         ]

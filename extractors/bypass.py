@@ -103,15 +103,23 @@ def _parse_title_season_episode(url: str, html: str = "") -> tuple[str, int | No
         pass
     try:
         path = urlparse(url).path.strip("/")
-        slug = path.split("/")[-1] if path else ""
+        parts = [p for p in path.split("/") if p]
+        slug = parts[-1] if parts else ""
         slug = re.sub(r"\.(html?|php)$", "", slug, flags=re.I)
+        # Handle DeadToons /episode/<slug>/<season>x<ep> structure
+        if len(parts) >= 3 and parts[-3].lower() == "episode":
+            slug_ep = parts[-1]
+            m_dt = re.search(r"(\d+)[xX](\d+)", slug_ep)
+            if m_dt:
+                season, episode = int(m_dt.group(1)), int(m_dt.group(2))
+            slug = parts[-2]
         # Season/episode patterns: s1e10, 1x10, season-1-episode-10, ep-10
         m = re.search(r"[Ss](\d+)[Ee](\d+)", slug)
         if not m:
             m = re.search(r"(\d+)[xX](\d+)", slug)
         if m:
             season, episode = int(m.group(1)), int(m.group(2))
-        else:
+        elif season is None:
             m2 = re.search(r"(?:season|s)[-_]?(\d+).*?(?:episode|ep)[-_]?(\d+)", slug, re.I)
             if m2:
                 season, episode = int(m2.group(1)), int(m2.group(2))
@@ -708,6 +716,72 @@ async def _resolve_toonworld_url(
     return media_links, sorted(set(archive_urls)), note
 
 
+async def _resolve_deadtoons_bypass(
+    page_url: str,
+    html: str,
+    quality_pref: str,
+    season: int | None,
+    episode: int | None,
+    is_valid_media_destination,
+) -> list[dict]:
+    """DeadToons resolver — parses API links or unlocks mirrors to direct Google CDN / Pixeldrain."""
+    from extractors.deadtoons import deadtoons
+    from urllib.parse import urlparse, parse_qs
+    from bs4 import BeautifulSoup
+    media_links: list[dict] = []
+
+    # 1. Direct unlock link: /unlock?link_server_id=...
+    parsed = urlparse(page_url)
+    qs = parse_qs(parsed.query)
+    if "link_server_id" in qs:
+        try:
+            lsid = int(qs["link_server_id"][0])
+            loop = asyncio.get_running_loop()
+            scraper = deadtoons._get_scraper()
+            direct_url = await loop.run_in_executor(None, deadtoons._unlock_server, scraper, lsid)
+            if direct_url and is_valid_media_destination(direct_url):
+                q = _detect_quality_from_text(direct_url) or "Unknown"
+                media_links.append({
+                    "quality": q,
+                    "url": direct_url,
+                    "provider": "DeadToons Cloud",
+                    "requested_quality": quality_pref,
+                    "detected_quality": q,
+                    "verified_quality": q,
+                    "label": "Direct Unlocked Stream",
+                })
+                return media_links
+        except Exception as e:
+            log.warning("DeadToons unlock link resolve error: %s", e)
+
+    # 2. Episode or post page -> resolve via DeadToons API
+    soup = BeautifulSoup(html, "html.parser")
+    loop = asyncio.get_running_loop()
+    res = await loop.run_in_executor(
+        None,
+        deadtoons._resolve_via_api,
+        deadtoons._get_scraper(),
+        soup,
+        {"url": page_url, "poster": ""},
+        season or 1,
+        episode or 1,
+        quality_pref,
+    )
+    if res and res.get("url"):
+        q = res.get("quality", "Unknown")
+        media_links.append({
+            "quality": q,
+            "url": res["url"],
+            "provider": res.get("server", "DeadToons Cloud"),
+            "requested_quality": quality_pref,
+            "detected_quality": q,
+            "verified_quality": q,
+            "label": f"{res.get('title', 'DeadToons')} [{res.get('size', '')}]".strip(),
+        })
+
+    return media_links
+
+
 async def _resolve_generic_page(
     html: str, quality_pref: str,
     detect_and_bypass, is_shortener, is_valid_media_destination,
@@ -881,6 +955,15 @@ async def resolve_bypass_url(url: str, quality_pref: str = "1080p") -> dict:
                 season, episode,
             )
             result["fallback_stage"] = note
+        elif source == "DeadToons":
+            result["resolver_stage"] = "DeadToons → API/mirror unlock → Direct Media"
+            media_links = await _resolve_deadtoons_bypass(
+                result["final_url"], html, quality_pref, season, episode, is_valid_media_destination,
+            )
+            if not media_links:
+                media_links = await _resolve_generic_page(
+                    html, quality_pref, detect_and_bypass, is_shortener, is_valid_media_destination,
+                )
         else:
             result["resolver_stage"] = f"{source} → page scan → Direct Media"
             media_links = await _resolve_generic_page(
