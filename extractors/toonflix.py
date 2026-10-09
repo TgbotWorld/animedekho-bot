@@ -25,6 +25,10 @@ class ToonflixExtractor:
     def __init__(self):
         self._base_url = "https://toonflix.in"
 
+    def _get_scraper(self) -> cloudscraper.CloudScraper:
+        return _get_scraper()
+
+
     async def search(self, query: str) -> list[dict]:
         """Search ToonFlix catalog for anime or movies."""
         loop = asyncio.get_running_loop()

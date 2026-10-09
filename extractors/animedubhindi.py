@@ -32,6 +32,10 @@ class AnimeDubHindiExtractor:
     def __init__(self):
         self.base_url = BASE_URL
 
+    def _get_scraper(self):
+        return _get_scraper()
+
+
     async def search(self, query: str) -> list[dict]:
         """Search AnimeDubHindi for anime matching *query*."""
         loop = asyncio.get_running_loop()

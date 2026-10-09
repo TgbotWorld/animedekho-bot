@@ -41,6 +41,9 @@ class ToonAnimeExtractor:
         self._base_url = self._base_urls[0]
         self._mirror_dead: dict[str, float] = {}
 
+    def _get_scraper(self) -> cloudscraper.CloudScraper:
+        return _get_scraper()
+
     def _mark_mirror_dead(self, base: str) -> None:
         try:
             self._mirror_dead[base] = time.time() + self._MIRROR_DEAD_TTL

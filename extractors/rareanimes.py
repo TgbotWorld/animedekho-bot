@@ -25,6 +25,10 @@ class RareAnimesExtractor:
     def __init__(self):
         self._base_url = "https://www.rareanimes.mov"
 
+    def _get_scraper(self) -> cloudscraper.CloudScraper:
+        return _get_scraper()
+
+
     async def search(self, query: str) -> list[dict]:
         """Search RareAnimes catalog for anime series."""
         loop = asyncio.get_running_loop()

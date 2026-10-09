@@ -756,6 +756,15 @@ async def _resolve_deadtoons_bypass(
 
     # 2. Episode or post page -> resolve via DeadToons API
     soup = BeautifulSoup(html, "html.parser")
+    if not season or not episode:
+        import re as re_mod
+        m_ep = re_mod.search(r"/episode/[^/?#]+/(\d+)x(\d+)", page_url)
+        if m_ep:
+            if not season:
+                season = int(m_ep.group(1))
+            if not episode:
+                episode = int(m_ep.group(2))
+
     loop = asyncio.get_running_loop()
     res = await loop.run_in_executor(
         None,
@@ -767,6 +776,7 @@ async def _resolve_deadtoons_bypass(
         episode or 1,
         quality_pref,
     )
+
     if res and res.get("url"):
         q = res.get("quality", "Unknown")
         media_links.append({

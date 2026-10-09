@@ -25,6 +25,10 @@ class ToonWorld4AllExtractor:
     def __init__(self):
         self._base_url = "https://toonworld4all.me"
 
+    def _get_scraper(self) -> cloudscraper.CloudScraper:
+        return _get_scraper()
+
+
     async def search(self, query: str) -> list[dict]:
         """Search ToonWorld4All catalog."""
         loop = asyncio.get_running_loop()

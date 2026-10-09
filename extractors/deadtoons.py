@@ -29,6 +29,9 @@ class DeadToonsExtractor:
         self._base_url = "https://deadtoons.sbs"
         self._api_base = "https://api.deadbase.host/api/v1/public"
 
+    def _get_scraper(self) -> cloudscraper.CloudScraper:
+        return _get_scraper()
+
     async def search(self, query: str) -> list[dict]:
         """Search DeadToons for anime series or movies."""
         loop = asyncio.get_running_loop()
@@ -291,14 +294,53 @@ class DeadToonsExtractor:
             slug = None
             is_movie = False
 
+            # 0. Check if target_post URL itself is an episode link: /episode/<slug>/<season>x<episode>
+            post_url = target_post.get("url", "")
+            m_ep_url = re.search(r"/episode/([^/?#]+)(?:/(\d+)x(\d+))?", post_url)
+            if m_ep_url:
+                slug = m_ep_url.group(1)
+                if m_ep_url.group(2) and (not season or season == 1):
+                    try:
+                        season = int(m_ep_url.group(2))
+                    except Exception:
+                        pass
+                if m_ep_url.group(3) and (not episode or episode == 1):
+                    try:
+                        episode = int(m_ep_url.group(3))
+                    except Exception:
+                        pass
+
+            m_mov_url = re.search(r"/movie/([^/?#]+)", post_url)
+            if not slug and m_mov_url:
+                slug = m_mov_url.group(1)
+                is_movie = True
+
+            # Check title tag in soup (e.g. <title>tomb-raider-king · 1x1 | Deadtoons</title>)
+            if not slug and soup and soup.title:
+                m_title = re.search(r"([^·\s]+)\s*·\s*(\d+)x(\d+)", soup.title.get_text())
+                if m_title:
+                    slug = m_title.group(1).strip()
+                    if not season or season == 1:
+                        try:
+                            season = int(m_title.group(2))
+                        except Exception:
+                            pass
+                    if not episode or episode == 1:
+                        try:
+                            episode = int(m_title.group(3))
+                        except Exception:
+                            pass
+
             # 1. Search post HTML for archive episode link: /episode/{slug}/{season}x{episode}
-            ep_pattern = re.compile(rf"/episode/([^/?#]+)/{season}x0*{episode}\b", re.I)
-            for a in soup.find_all("a", href=True):
-                h = a["href"]
-                m = ep_pattern.search(h)
-                if m:
-                    slug = m.group(1)
-                    break
+            if not slug:
+                ep_pattern = re.compile(rf"/episode/([^/?#]+)/{season}x0*{episode}\b", re.I)
+                for a in soup.find_all("a", href=True):
+                    h = a["href"]
+                    m = ep_pattern.search(h)
+                    if m:
+                        slug = m.group(1)
+                        break
+
 
             # 2. Check for movie link: /movie/{slug}
             if not slug and (season == 1 and episode == 1):
