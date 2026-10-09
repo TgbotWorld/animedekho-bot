@@ -120,23 +120,38 @@ class DeadToonsExtractor:
             return None
 
         # V3 #5: confident title match (no single-keyword guess).
-        target_post = None
+        # Score candidates: prefer explicit season matches over movie/spin-off posts
+        candidates = []
         for res in search_results:
             t = res.get("title", "")
             href = res.get("url", "")
             if not is_confident_match(anime_title, t, href):
                 continue
-            if (
+            if not matches_season(t, href, season):
+                continue
+
+            is_explicit_season = (
                 f"season {season}" in t.lower()
                 or f"season {season:02d}" in t.lower()
                 or f"s{season}" in t.lower()
                 or f"s{season:02d}" in t.lower()
-                or (season == 1 and "season" not in t.lower() and "s0" not in t.lower() and "s1" not in t.lower())
-            ):
-                if not matches_season(t, href, season):
-                    continue
-                target_post = res
-                break
+            )
+            is_movie_post = any(k in t.lower() for k in ("movie", "reawakening", "hdcam", "theater", "the movie"))
+
+            score = 0
+            if is_explicit_season:
+                score += 100
+            elif season == 1:
+                score += 20
+
+            if is_movie_post:
+                score -= 50
+
+            candidates.append((score, res))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            target_post = candidates[0][1]
 
         if not target_post:
             log.info("DeadToons: No verified season %d post for '%s'", season, anime_title)
@@ -334,11 +349,13 @@ class DeadToonsExtractor:
                     continue
 
                 raw_q = chosen_link.get("quality", "")
-                norm_q = normalize_quality(raw_q) or normalize_quality(quality_pref) or "Unknown"
+                norm_q = self._normalize_dt_quality(raw_q) or self._normalize_dt_quality(quality_pref) or "Unknown"
 
                 # Poster from API or target post
                 poster_url = target_post.get("poster")
-                if not poster_url and isinstance(data.get("poster"), dict):
+                if not poster_url and isinstance(data.get("img"), dict):
+                    poster_url = data["img"].get("high") or data["img"].get("mid") or data["img"].get("low")
+                elif not poster_url and isinstance(data.get("poster"), dict):
                     poster_url = data["poster"].get("high") or data["poster"].get("mid")
 
                 return {
