@@ -723,12 +723,20 @@ async def _resolve_deadtoons_bypass(
     season: int | None,
     episode: int | None,
     is_valid_media_destination,
+    context: dict | None = None,
 ) -> list[dict]:
-    """DeadToons resolver — parses API links or unlocks mirrors to direct Google CDN / Pixeldrain."""
+    """DeadToons resolver — parses API links or unlocks mirrors to direct Google CDN / Pixeldrain.
+
+    An ``/unlock?link_server_id=…`` URL (or an episode page) is expanded to
+    EVERY quality the episode offers, not just the requested/preferred one —
+    the unlocked file's filename identifies the episode, which the public API
+    then answers with the full quality/server list.
+    """
     from extractors.deadtoons import deadtoons
     from urllib.parse import urlparse, parse_qs
     from bs4 import BeautifulSoup
     media_links: list[dict] = []
+    ctx = context if context is not None else {}
 
     # 1. Direct unlock link: /unlock?link_server_id=...
     parsed = urlparse(page_url)
@@ -738,19 +746,40 @@ async def _resolve_deadtoons_bypass(
             lsid = int(qs["link_server_id"][0])
             loop = asyncio.get_running_loop()
             scraper = deadtoons._get_scraper()
-            direct_url = await loop.run_in_executor(None, deadtoons._unlock_server, scraper, lsid)
-            if direct_url and is_valid_media_destination(direct_url):
-                q = _detect_quality_from_text(direct_url) or "Unknown"
-                media_links.append({
-                    "quality": q,
-                    "url": direct_url,
-                    "provider": "DeadToons Cloud",
-                    "requested_quality": quality_pref,
-                    "detected_quality": q,
-                    "verified_quality": q,
-                    "label": "Direct Unlocked Stream",
-                })
-                return media_links
+            unlocked = await loop.run_in_executor(None, deadtoons._unlock_server, scraper, lsid)
+            if unlocked and unlocked.startswith("http"):
+                # The unlocked file's name tells us WHICH episode this mirror
+                # belongs to → list all of its qualities (not just this one).
+                filename = await loop.run_in_executor(None, deadtoons.extract_filename, scraper, unlocked)
+                ctx_dt = _parse_deadtoons_filename(filename)
+                if ctx_dt:
+                    anime, fn_season, fn_episode = ctx_dt
+                    slug = await loop.run_in_executor(None, deadtoons.search_slug, scraper, anime)
+                    if slug:
+                        all_links = await _deadtoons_all_qualities(
+                            slug, fn_season, fn_episode, quality_pref,
+                            is_valid_media_destination,
+                            primary_lsid=lsid, primary_url=unlocked,
+                        )
+                        if all_links:
+                            ctx.setdefault("anime", anime)
+                            ctx.setdefault("season", fn_season)
+                            ctx.setdefault("episode", fn_episode)
+                            return all_links
+                if is_valid_media_destination(unlocked):
+                    raw = f"{unlocked} {filename or ''}"
+                    q = deadtoons._normalize_dt_quality(raw) or "Unknown"
+                    media_links.append({
+                        "quality": q,
+                        "url": unlocked,
+                        "provider": "DeadToons Cloud",
+                        "requested_quality": quality_pref,
+                        "detected_quality": q,
+                        "verified_quality": q,
+                        "label": (filename or "Direct Unlocked Stream"),
+                    })
+                    return media_links
+                log.info("DeadToons: unlocked URL rejected as landing page; falling back to page scan")
         except Exception as e:
             log.warning("DeadToons unlock link resolve error: %s", e)
 
@@ -764,6 +793,21 @@ async def _resolve_deadtoons_bypass(
                 season = int(m_ep.group(1))
             if not episode:
                 episode = int(m_ep.group(2))
+
+    # Episode URL → same all-qualities expansion as the unlock-link path.
+    m_slug = re.search(r"/episode/([^/?#]+)/(\d+)x(\d+)", page_url)
+    if m_slug:
+        slug = m_slug.group(1)
+        ep_season = season or int(m_slug.group(2))
+        ep_episode = episode or int(m_slug.group(3))
+        all_links = await _deadtoons_all_qualities(
+            slug, ep_season, ep_episode, quality_pref, is_valid_media_destination,
+        )
+        if all_links:
+            ctx.setdefault("anime", slug.replace("-", " ").strip().title())
+            ctx.setdefault("season", ep_season)
+            ctx.setdefault("episode", ep_episode)
+            return all_links
 
     loop = asyncio.get_running_loop()
     res = await loop.run_in_executor(
@@ -789,6 +833,146 @@ async def _resolve_deadtoons_bypass(
             "label": f"{res.get('title', 'DeadToons')} [{res.get('size', '')}]".strip(),
         })
 
+    return media_links
+
+
+def _parse_deadtoons_filename(filename: str | None) -> tuple[str, int, int] | None:
+    """Extract ``(anime, season, episode)`` from a DeadToons download filename.
+
+    e.g. ``"Tomb Raider King S01E01 480p x264 WEB DL Multi Audio ESub [DeadToons].mkv"``
+    → ``("Tomb Raider King", 1, 1)``. Returns None when no season/episode
+    marker exists (movies) — callers must not guess.
+    """
+    if not filename:
+        return None
+    base = re.sub(r"\.[a-z0-9]{2,4}$", "", filename.strip(), flags=re.I)
+    m = re.search(r"(?i)\bS(\d{1,2})[ ._-]*E(\d{1,4})\b", base)
+    if not m:
+        m = re.search(r"(?i)\b(\d{1,2})[xX](\d{1,4})\b", base)
+    if not m:
+        return None
+    season, episode = int(m.group(1)), int(m.group(2))
+    anime = base[: m.start()].strip(" -._~")
+    anime = re.sub(r"[\s_]+", " ", anime).strip()
+    if len(anime) < 3:
+        return None
+    return anime, season, episode
+
+
+async def _deadtoons_all_qualities(
+    slug: str,
+    season: int,
+    episode: int,
+    quality_pref: str,
+    is_valid_media_destination,
+    primary_lsid: int | None = None,
+    primary_url: str | None = None,
+    max_qualities: int = 6,
+) -> list[dict]:
+    """Resolve EVERY quality of a DeadToons episode for /bypass.
+
+    The public episode API lists each quality with its own servers; every
+    server is unlocked (HubCloud → direct Google CDN, Pixeldrain → API file).
+    A server that fails to unlock falls back to its public unlock URL so the
+    quality is still shown instead of silently hidden.
+    """
+    from extractors.deadtoons import deadtoons
+
+    loop = asyncio.get_running_loop()
+    scraper = deadtoons._get_scraper()
+    data = await loop.run_in_executor(
+        None, lambda: deadtoons.get_episode_links(scraper, slug, season, episode)
+    )
+    if not data:
+        return []
+
+    def _weight(srv: dict) -> int:
+        n = (srv.get("name") or "").lower()
+        if "hubcloud" in n:
+            return 0
+        if "pixeldrain" in n:
+            return 1
+        if "filepress" in n or "fpgo" in n:
+            return 2
+        if "gdflix" in n:
+            return 3
+        return 10
+
+    media_links: list[dict] = []
+    for link in (data.get("links") or [])[:max_qualities]:
+        raw_q = str(link.get("quality") or "").strip()
+        norm_q = deadtoons._normalize_dt_quality(raw_q) or "Unknown"
+        size = str(link.get("size") or "").strip()
+        servers = [
+            x for x in (link.get("servers") or [])
+            if (x.get("name") or "").lower() != "telegram"
+        ]
+        servers.sort(key=_weight)
+
+        url = ""
+        provider = ""
+        for srv in servers:
+            lsid = srv.get("link_server_id")
+            if not lsid:
+                continue
+            if primary_lsid and lsid == primary_lsid and primary_url:
+                # Already unlocked by the caller — just resolve it to media.
+                media = await loop.run_in_executor(
+                    None, lambda u=primary_url: deadtoons._resolve_unlocked_url(scraper, u)
+                )
+            else:
+                media = await loop.run_in_executor(
+                    None, lambda l=lsid: deadtoons._unlock_to_media(scraper, l)
+                )
+            if media and is_valid_media_destination(media):
+                url = media
+                provider = f"DeadToons ({srv.get('name') or 'Cloud'})"
+                break
+
+        if not url and servers:
+            # Shortener rate-limit window (burst of solves/IP) — wait it out
+            # and retry the best mirrors once before falling back.
+            await asyncio.sleep(45)
+            for srv in servers[:3]:
+                lsid = srv.get("link_server_id")
+                if not lsid:
+                    continue
+                if primary_lsid and lsid == primary_lsid and primary_url:
+                    media = await loop.run_in_executor(
+                        None, lambda u=primary_url: deadtoons._resolve_unlocked_url(scraper, u)
+                    )
+                else:
+                    media = await loop.run_in_executor(
+                        None, lambda l=lsid: deadtoons._unlock_to_media(scraper, l)
+                    )
+                if media and is_valid_media_destination(media):
+                    url = media
+                    provider = f"DeadToons ({srv.get('name') or 'Cloud'})"
+                    break
+
+        if not url and servers:
+            # Still locked — surface the quality via its public unlock page
+            # rather than hiding it from the user.
+            lsid = servers[0].get("link_server_id")
+            if lsid:
+                url = f"https://archive.deadtoons.sbs/unlock?link_server_id={lsid}"
+                provider = f"DeadToons ({servers[0].get('name') or 'Cloud'}) · unlock page"
+        if not url:
+            continue
+
+        media_links.append({
+            "quality": norm_q,
+            "url": url,
+            "provider": provider or "DeadToons",
+            "requested_quality": quality_pref,
+            "detected_quality": norm_q,
+            "verified_quality": norm_q,
+            "label": f"{raw_q} · {size}".strip(" ·"),
+        })
+
+    # Tidy display order: 480p → 720p → 1080p → 4K → Unknown.
+    _qrank = {"480p": 0, "360p": 1, "720p": 2, "1080p": 3, "4K": 4, "Unknown": 9}
+    media_links.sort(key=lambda m: (_qrank.get(m["quality"], 9), m["label"]))
     return media_links
 
 
@@ -967,9 +1151,19 @@ async def resolve_bypass_url(url: str, quality_pref: str = "1080p") -> dict:
             result["fallback_stage"] = note
         elif source == "DeadToons":
             result["resolver_stage"] = "DeadToons → API/mirror unlock → Direct Media"
+            dt_ctx: dict = {}
             media_links = await _resolve_deadtoons_bypass(
-                result["final_url"], html, quality_pref, season, episode, is_valid_media_destination,
+                result["final_url"], html, quality_pref, season, episode,
+                is_valid_media_destination, context=dt_ctx,
             )
+            # Unlock URLs carry no episode metadata — the unlocked filename
+            # does; prefer it over the placeholder parsed from the SPA page.
+            if dt_ctx.get("anime"):
+                result["anime"] = dt_ctx["anime"]
+            if dt_ctx.get("season") is not None:
+                result["season"] = dt_ctx["season"]
+            if dt_ctx.get("episode") is not None:
+                result["episode"] = dt_ctx["episode"]
             if not media_links:
                 media_links = await _resolve_generic_page(
                     html, quality_pref, detect_and_bypass, is_shortener, is_valid_media_destination,

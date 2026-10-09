@@ -422,30 +422,13 @@ class DeadToonsExtractor:
             viable_servers = [srv for srv in servers if (srv.get("name") or "").lower() != "telegram"]
             viable_servers.sort(key=server_weight)
 
-            from extractors.animedrive import animedrive
-
             # 7. Unlock server link
             for srv in viable_servers:
                 lsid = srv.get("link_server_id")
                 if not lsid:
                     continue
 
-                unlocked_url = self._unlock_server(s, lsid)
-                if not unlocked_url:
-                    continue
-
-                media_url = None
-                low_unlocked = unlocked_url.lower()
-
-                # If HubCloud, resolve to direct Google CDN stream
-                if "hubcloud" in low_unlocked or "gamerxyt" in low_unlocked:
-                    media_url = animedrive._resolve_hubcloud(s, unlocked_url)
-                elif "pixeldrain.com/u/" in low_unlocked:
-                    fid = unlocked_url.split("/u/")[-1].split("?")[0].strip("/")
-                    media_url = f"https://pixeldrain.com/api/file/{fid}"
-                else:
-                    media_url = unlocked_url
-
+                media_url = self._unlock_to_media(s, lsid)
                 if not media_url:
                     continue
 
@@ -613,47 +596,204 @@ class DeadToonsExtractor:
                     if claim.status_code == 200:
                         return claim.json().get("url")
 
-            # 2. Trigger shortener start (shortener_id: 1 is Shrinkme)
-            st = s.post(
-                f"{self._api_base}/unlock/{link_server_id}/start",
-                json={"shortener_id": 1},
-                timeout=12,
-            )
-            if st.status_code != 200:
-                log.warning("DeadToons unlock start failed (status %d): %s", st.status_code, st.text)
-                return None
+            # 2. Bypass a shortener to obtain the unlock callback URL.
+            #    Shrinkme first (fast, proven); the site's own shortener
+            #    (animedigest, id 7) as fallback — Shrinkme rate-limits
+            #    back-to-back solves with "Already solved this shortener
+            #    recently", which blocked multi-quality /bypass runs.
+            last_err = ""
+            for shortener_id in (1, 7):
+                st = s.post(
+                    f"{self._api_base}/unlock/{link_server_id}/start",
+                    json={"shortener_id": shortener_id},
+                    timeout=12,
+                )
+                if st.status_code != 200 and shortener_id == 1:
+                    # Transient per-window limit — brief pause + one retry.
+                    time.sleep(4)
+                    st = s.post(
+                        f"{self._api_base}/unlock/{link_server_id}/start",
+                        json={"shortener_id": shortener_id},
+                        timeout=12,
+                    )
+                if st.status_code != 200:
+                    last_err = f"start({shortener_id}) {st.status_code}: {st.text[:120]}"
+                    continue
 
-            st_data = st.json()
-            redirect_url = st_data.get("redirect_url")
-            if not redirect_url:
-                log.warning("DeadToons unlock start missing redirect_url: %s", st_data)
-                return None
+                redirect_url = (st.json() or {}).get("redirect_url")
+                if not redirect_url:
+                    last_err = f"start({shortener_id}) missing redirect_url"
+                    continue
 
-            # 3. Bypass shortener to obtain unlock callback URL
-            callback_url = self._bypass_shrinkme_shortlink(redirect_url)
-            if not callback_url:
-                log.warning("DeadToons: failed to bypass shortener URL %s", redirect_url)
-                return None
+                if shortener_id == 1:
+                    callback_url = self._bypass_shrinkme_shortlink(redirect_url)
+                else:
+                    own_token = urlparse(redirect_url).path.strip("/").split("/")[-1]
+                    callback_url = self._bypass_own_shortener(s, own_token)
+                if not callback_url:
+                    last_err = f"shortener({shortener_id}) bypass failed"
+                    continue
 
-            token = urlparse(callback_url).path.split("/")[-1]
-            if not token:
-                log.warning("DeadToons: could not extract token from %s", callback_url)
-                return None
+                token = urlparse(callback_url).path.split("/")[-1]
+                if not token:
+                    last_err = f"no callback token in {callback_url[:80]}"
+                    continue
 
-            # 4. Exchange callback token with DeadToons backend for target URL
-            cb = s.post(f"{self._api_base}/unlock/callback/{token}", timeout=15)
-            if cb.status_code != 200:
-                log.warning("DeadToons callback exchange failed (status %d): %s", cb.status_code, cb.text)
-                return None
+                # 3. Exchange callback token with DeadToons backend for target URL
+                cb = s.post(f"{self._api_base}/unlock/callback/{token}", timeout=15)
+                if cb.status_code != 200:
+                    last_err = f"callback {cb.status_code}: {cb.text[:120]}"
+                    continue
 
-            dest_url = cb.json().get("url")
-            if dest_url:
-                log.info("DeadToons server %d successfully unlocked: %s", link_server_id, dest_url[:80])
-                return dest_url
+                dest_url = (cb.json() or {}).get("url")
+                if dest_url:
+                    log.info("DeadToons server %d successfully unlocked: %s", link_server_id, dest_url[:80])
+                    return dest_url
+                last_err = "callback returned no url"
+
+            log.warning("DeadToons unlock %d failed (%s)", link_server_id, last_err)
 
         except Exception as e:
             log.warning("DeadToons _unlock_server error for %d: %s", link_server_id, e)
 
+        return None
+
+    # ── Multi-quality helpers (backs /bypass "all qualities") ──────────────
+
+    def _resolve_unlocked_url(self, s: cloudscraper.CloudScraper, unlocked: str) -> str | None:
+        """Map a raw unlocked mirror URL to a direct media URL."""
+        low = (unlocked or "").lower()
+        if "hubcloud" in low or "gamerxyt" in low:
+            from extractors.animedrive import animedrive
+            return animedrive._resolve_hubcloud(s, unlocked)
+        if "pixeldrain.com/u/" in low:
+            fid = unlocked.split("/u/")[-1].split("?")[0].strip("/")
+            return f"https://pixeldrain.com/api/file/{fid}"
+        return unlocked
+
+    def _unlock_to_media(self, s: cloudscraper.CloudScraper, link_server_id: int) -> str | None:
+        """Unlock a server link and resolve it to a direct media URL.
+
+        HubCloud/Gamerxyt drive pages resolve to the Google CDN stream,
+        Pixeldrain pages become API file links, anything else passes through.
+        Returns None when the unlock or the HubCloud resolution fails.
+        """
+        unlocked = self._unlock_server(s, link_server_id)
+        if not unlocked:
+            return None
+        return self._resolve_unlocked_url(s, unlocked)
+
+    def extract_filename(self, s: cloudscraper.CloudScraper, unlocked_url: str) -> str | None:
+        """Best-effort download filename from an unlocked URL.
+
+        HubCloud/GDflix drive pages put the filename in <title>; Pixeldrain
+        exposes it via /api/file/<id>/info. Direct media URLs carry no name
+        (and are never downloaded for this).
+        """
+        try:
+            low = (unlocked_url or "").lower()
+            if not low.startswith("http"):
+                return None
+            if "pixeldrain.com/u/" in low:
+                fid = unlocked_url.split("/u/")[-1].split("?")[0].strip("/")
+                r = s.get(f"https://pixeldrain.com/api/file/{fid}/info", timeout=10)
+                if r.status_code == 200:
+                    name = (r.json() or {}).get("name")
+                    if name:
+                        return str(name)
+                return None
+            if re.search(r"\.(mkv|mp4|avi|mov|ts|m4v|webm|m3u8)(\?|#|$)", low) or "googleusercontent" in low:
+                return None
+            r = s.get(unlocked_url, timeout=15, stream=True)
+            try:
+                if r.status_code != 200:
+                    return None
+                ctype = (r.headers.get("Content-Type") or "").lower()
+                if any(t in ctype for t in ("video/", "octet-stream", "mp4", "x-matroska", "mpeg")):
+                    return None
+                buf = b""
+                for chunk in r.iter_content(65536):
+                    buf += chunk
+                    if len(buf) >= 262144:
+                        break
+            finally:
+                r.close()
+            text = buf.decode("utf-8", "ignore")
+            m = re.search(
+                r"<title>\s*([^<]+?\.(?:mkv|mp4|avi|mov|ts|m4v|webm))\s*</title>", text, re.I
+            )
+            if m:
+                return m.group(1).strip()
+            m = re.search(r"\"name\"\s*:\s*\"([^\"]+?\.(?:mkv|mp4|avi|mov|webm))\"", text, re.I)
+            if m:
+                return m.group(1)
+        except Exception as e:
+            log.debug("DeadToons filename lookup failed for %s: %s", (unlocked_url or "")[:80], e)
+        return None
+
+    def search_slug(self, s: cloudscraper.CloudScraper, name: str) -> str | None:
+        """Resolve an anime title to its public-API slug (confident match only)."""
+        try:
+            r = s.get(f"{self._api_base}/anime/search", params={"q": name}, timeout=12)
+            if r.status_code != 200:
+                return None
+            items = r.json()
+            if not isinstance(items, list) or not items:
+                return None
+            for it in items:
+                slug = it.get("slug")
+                if slug and is_confident_match(name, str(it.get("anime_name") or "")):
+                    return slug
+            # Never guess: no confident title match.
+            log.debug("DeadToons: no confident anime match for %r", name)
+            return None
+        except Exception as e:
+            log.debug("DeadToons anime search failed for %r: %s", name, e)
+            return None
+
+    def get_episode_links(self, s: cloudscraper.CloudScraper, slug: str, season: int, episode: int) -> dict | None:
+        """Fetch the public episode payload (ALL qualities + their servers)."""
+        try:
+            r = s.get(f"{self._api_base}/anime/{slug}/season/{season}/episode/{episode}", timeout=12)
+            if r.status_code != 200:
+                log.debug("DeadToons episode API %s returned %d", slug, r.status_code)
+                return None
+            data = r.json()
+            return data if data.get("links") else None
+        except Exception as e:
+            log.debug("DeadToons episode API failed for %s %sx%s: %s", slug, season, episode, e)
+            return None
+
+    def _bypass_own_shortener(self, s: cloudscraper.CloudScraper, token: str) -> str | None:
+        """Bypass DeadToons' own shortener (animedigest.world / own-shortener gate).
+
+        Pure API: POST gate → wait the timer → POST continue, which returns the
+        unlock callback URL. No captcha involved (Turnstile only renders in the
+        browser page; the API gate just enforces the wait).
+        """
+        try:
+            gate_url = f"{self._api_base}/own-shortener/gate/{token}"
+            g = s.post(gate_url, timeout=12)
+            if g.status_code != 200:
+                log.debug("DeadToons own-shortener gate %d: %s", g.status_code, g.text[:120])
+                return None
+            data = g.json() or {}
+            for _ in range(4):  # total_steps is normally 1
+                if data.get("done"):
+                    break
+                wait = int(data.get("remaining_seconds") or data.get("wait_seconds") or 15)
+                time.sleep(max(1, min(wait, 30)) + 1)
+                c = s.post(f"{gate_url}/continue", timeout=12)
+                if c.status_code != 200:
+                    log.debug("DeadToons own-shortener continue %d: %s", c.status_code, c.text[:120])
+                    return None
+                data = c.json() or {}
+            cont = data.get("continue_url")
+            if cont:
+                return str(cont)
+            log.debug("DeadToons own-shortener finished without continue_url: %s", data)
+        except Exception as e:
+            log.debug("DeadToons own-shortener bypass failed for %s: %s", token, e)
         return None
 
     def _bypass_shrinkme_shortlink(self, short_url: str) -> str | None:

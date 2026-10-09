@@ -105,10 +105,12 @@ async def cmd_bypass(client: Client, message: Message):
     else:
         lines.append("✅ <b>Resolved Download/Media Links:</b>")
         for m in (res.get("media_links") or [])[:10]:
-            q = esc(str(m.get("quality", "?")))
             prov = esc(str(m.get("provider", "Direct")))
+            # Label carries the variant + size ("720p x265 10bit · 134.94 MB").
+            label = str(m.get("label") or "").strip()
+            head = esc(label) if label else esc(str(m.get("quality", "?")))
             u = esc(str(m.get("url", ""))[:150])
-            lines.append(f"   • [{prov}] {q} → <code>{u}</code>")
+            lines.append(f"   • [{prov}] {head} → <code>{u}</code>")
     if res.get("archive_links"):
         lines.append("")
         lines.append("📦 <b>ZIP/Archive Links:</b>")
