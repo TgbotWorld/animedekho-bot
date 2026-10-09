@@ -478,17 +478,65 @@ class DeadToonsExtractor:
             return "360p"
         return normalize_quality(q) or "Unknown"
 
+    @staticmethod
+    def _is_720p_x265_10bit(raw_q: str) -> bool:
+        """True if string represents 720p x265 / HEVC 10-bit."""
+        s = re.sub(r"[\s_\-.]+", "", str(raw_q or "")).lower()
+        return "720" in s and ("x265" in s or "hevc" in s) and "10bit" in s
+
+    @staticmethod
+    def _is_720p_x265(raw_q: str) -> bool:
+        """True if string represents 720p x265 / HEVC."""
+        s = re.sub(r"[\s_\-.]+", "", str(raw_q or "")).lower()
+        return "720" in s and ("x265" in s or "hevc" in s)
+
     def _select_best_quality_link(self, links: list[dict], quality_pref: str) -> dict | None:
-        """Select quality link matching quality_pref with 4K size eligibility logic."""
+        """Select quality link matching quality_pref with 4K size eligibility logic.
+
+        DEADTOONS RULE: When 720p is requested or evaluated, ALWAYS choose 720p x265 10bit
+        over 720p x264.
+        """
         want_norm = self._normalize_dt_quality(quality_pref)
         is_4k_req = want_norm == "4K"
+        is_720_req = want_norm == "720p" or "720" in (quality_pref or "").lower()
+
+        # If 720p is requested, check if 720p x265 10bit exists and choose it with top priority
+        if is_720_req:
+            # 1. Absolute first choice: 720p x265 10bit
+            for l in links:
+                raw_q = l.get("quality", "")
+                if self._is_720p_x265_10bit(raw_q):
+                    return l
+
+            # 2. Second choice: 720p x265 (HEVC)
+            for l in links:
+                raw_q = l.get("quality", "")
+                if self._is_720p_x265(raw_q):
+                    return l
+
+            # 3. Third choice: any 720p 10bit
+            for l in links:
+                raw_q = l.get("quality", "")
+                raw_low = raw_q.lower()
+                if "720" in raw_low and "10bit" in raw_low:
+                    return l
+
+            # 4. Fallback: standard 720p (e.g. 720p x264)
+            for l in links:
+                raw_q = l.get("quality", "")
+                if self._normalize_dt_quality(raw_q) == "720p":
+                    return l
 
         scored: list[tuple[int, dict]] = []
         for l in links:
             raw_q = l.get("quality", "")
+            raw_low = raw_q.lower()
             size_str = l.get("size", "")
             size_mb = parse_size_mb(size_str)
             norm_q = self._normalize_dt_quality(raw_q)
+
+            is_x265 = "x265" in raw_low or "hevc" in raw_low
+            is_10bit = "10bit" in raw_low or "10b" in raw_low
 
             if is_4k_req:
                 if is_4k_satisfying(raw_q, size_mb):
@@ -497,21 +545,47 @@ class DeadToonsExtractor:
                     scored.append((score, l))
             else:
                 if want_norm == "auto":
-                    scored.append((50, l))
+                    # In auto mode, prioritize high efficiency 1080p x265, then 720p x265 10bit
+                    if norm_q == "1080p":
+                        score = 150 if is_x265 else 120
+                    elif norm_q == "720p":
+                        score = 110 if (is_x265 and is_10bit) else (90 if is_x265 else 60)
+                    elif norm_q == "480p":
+                        score = 40
+                    else:
+                        score = 30
+                    scored.append((score, l))
                 elif norm_q == want_norm:
-                    # Prefer x265 / 10bit for efficient file size (~300MB) if available
-                    score = 100 if "x265" in raw_q.lower() else 90
+                    score = 100
+                    if is_x265 and is_10bit:
+                        score = 140
+                    elif is_x265:
+                        score = 120
+                    elif is_10bit:
+                        score = 110
                     scored.append((score, l))
 
         if scored:
             scored.sort(key=lambda x: x[0], reverse=True)
             return scored[0][1]
 
-        # If strict match didn't yield and request wasn't 4K, return first available link
+        # If strict match didn't yield and request wasn't 4K, return first available link,
+        # but prefer x265 / 10bit over x264
         if not is_4k_req and links:
-            return links[0]
+            def fallback_key(link_item):
+                rq = (link_item.get("quality", "") or "").lower()
+                if "720" in rq and ("x265" in rq or "hevc" in rq) and "10bit" in rq:
+                    return 0
+                if "1080" in rq and "x265" in rq:
+                    return 1
+                if "x265" in rq:
+                    return 2
+                return 10
+            sorted_links = sorted(links, key=fallback_key)
+            return sorted_links[0]
 
         return None
+
 
     def _unlock_server(self, s: cloudscraper.CloudScraper, link_server_id: int) -> str | None:
         """Unlock a DeadToons server mirror via fast shortener bypass (Shrinkme / MrProBlogger)."""

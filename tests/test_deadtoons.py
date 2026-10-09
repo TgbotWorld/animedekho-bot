@@ -59,6 +59,45 @@ def test_select_best_quality_link_720p():
     assert "720p" in link["quality"]
 
 
+def test_select_best_quality_link_always_chooses_720p_x265_10bit_over_x264():
+    extractor = DeadToonsExtractor()
+    # DeadToons API commonly returns 720p x264 before 720p x265 10bit
+    mixed_links = [
+        {"quality": "480p x264", "size": "106.02 MB"},
+        {"quality": "720p x264", "size": "204.15 MB"},
+        {"quality": "720p x265 10bit", "size": "134.12 MB"},
+        {"quality": "1080p x265 10bit", "size": "295.40 MB"},
+    ]
+    # 1. Standard "720p" preference
+    link_720 = extractor._select_best_quality_link(mixed_links, "720p")
+    assert link_720 is not None
+    assert link_720["quality"] == "720p x265 10bit"
+    assert link_720["size"] == "134.12 MB"
+
+    # 2. Explicit "Quality720px26510bit" preference
+    link_pref = extractor._select_best_quality_link(mixed_links, "Quality720px26510bit")
+    assert link_pref is not None
+    assert link_pref["quality"] == "720p x265 10bit"
+
+    # 3. Even when 720p x264 comes first in a 2-item list
+    reversed_mixed = [
+        {"quality": "720p x264", "size": "204.15 MB"},
+        {"quality": "720p x265 10bit", "size": "134.12 MB"},
+    ]
+    res = extractor._select_best_quality_link(reversed_mixed, "720p")
+    assert res is not None
+    assert res["quality"] == "720p x265 10bit"
+
+    # 4. Fallback to 720p x264 only when 720p x265 does NOT exist
+    x264_only = [
+        {"quality": "480p x264", "size": "106.02 MB"},
+        {"quality": "720p x264", "size": "204.15 MB"},
+    ]
+    res_fallback = extractor._select_best_quality_link(x264_only, "720p")
+    assert res_fallback is not None
+    assert res_fallback["quality"] == "720p x264"
+
+
 def test_select_best_quality_link_480p():
     extractor = DeadToonsExtractor()
     link = extractor._select_best_quality_link(SAMPLE_API_LINKS, "480p")
