@@ -512,7 +512,12 @@ class MultiSourceManager:
         clean_title = re.sub(r"(?i)\s*(?:season\s*\d+|s\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$", "", series_title).strip()
         search_title = clean_title or series_title or slug_to_title(series_slug)
         search_title = re.sub(r"[’'\"\-_:!?]+", " ", search_title).strip()
-        search_title = re.sub(r"\s+", " ", search_title)
+        # Strip unbalanced trailing brackets left by the suffix removal above
+        # ("Solo Leveling (Hindi Dubbed)" → "Solo Leveling ("), which broke
+        # strict site searches (DeadToons returned 0 results for it).
+        search_title = re.sub(r"[\s([{\"'`]+$", "", search_title)
+        search_title = re.sub(r"^[\s([{\"'`]+", "", search_title)
+        search_title = re.sub(r"\s+", " ", search_title).strip()
         want_norm = normalize_quality(quality_pref)
 
         is_4k = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")

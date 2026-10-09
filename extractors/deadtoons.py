@@ -45,6 +45,9 @@ class DeadToonsExtractor:
             query,
         ).strip()
         search_query = clean or query
+        # Strip stray brackets/quotes — a query like "Solo Leveling (" returns
+        # far fewer (or zero) results than the clean title.
+        search_query = re.sub(r"^[\s([{\"'`]+|[\s)\]}\"'`]+$", "", search_query).strip() or search_query
         url = f"{self._base_url}/search?q={quote_plus(search_query)}"
 
         try:
