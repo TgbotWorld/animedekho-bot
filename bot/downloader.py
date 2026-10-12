@@ -2338,21 +2338,37 @@ async def download_and_upload(
                 job_id=job_id,
             )
 
-        # V3 #14 + issue #30: mapped channel → mapped channel; otherwise the
-        # MAIN channel still gets the post (never silently skip channel
-        # posting for private-chat downloads). chat_id itself only when no
-        # main channel is configured (or chat_id IS a group/channel).
+        # Resolve Main Channel and Dump Channel
+        try:
+            from bot.database import db as _db_main
+            _main = await _db_main.get_main_channel() if _db_main else None
+        except Exception:
+            _main = None
+
+        from bot.database import db
+        dump_channel_id = await db.get_dump_channel() if db else None
+        if not dump_channel_id:
+            try:
+                from config.settings import settings
+                if settings and settings.bot and settings.bot.dump_channel:
+                    dump_channel_id = int(settings.bot.dump_channel)
+            except Exception:
+                pass
+        if not dump_channel_id:
+            try:
+                from config import Config
+                c_dump = getattr(Config, "DUMP_CHANNEL", None)
+                if c_dump and str(c_dump).lstrip("-").isdigit() and int(c_dump) != 0:
+                    dump_channel_id = int(c_dump)
+            except Exception:
+                pass
+
+        # Target mapped channel (if a dedicated per-anime channel exists).
+        # MAIN_CHANNEL must NEVER receive raw video files — it only receives series album cards.
         target_upload_chat = destination_channel_id
-        if not target_upload_chat:
-            if chat_id > 0:
-                try:
-                    from bot.database import db as _db_main
-                    _main = await _db_main.get_main_channel() if _db_main else None
-                except Exception:
-                    _main = None
-                target_upload_chat = int(_main) if _main else chat_id
-            else:
-                target_upload_chat = chat_id
+        if target_upload_chat and _main and target_upload_chat == int(_main):
+            target_upload_chat = None
+
         await progress_msg.edit_text(
             f"📤 <b>Uploading to Telegram</b>\n"
             f"┌ 📺 {title}\n"
@@ -2362,21 +2378,21 @@ async def download_and_upload(
             parse_mode=enums.ParseMode.HTML,
             reply_markup=cancel_markup_for(job_id))
 
-        # Dump / Storage Channel and Upload Mode
-        from bot.database import db
-        dump_channel_id = await db.get_dump_channel() if db else None
         upload_mode = await db.get_upload_mode() if db else "video"
-
         post_style = await db.get_post_style() if db else "modern"
-        # Build style-aware episode caption and quality buttons
+        # Build style-aware episode caption and quality buttons for mapped channel if applicable
         caption_text, markup_obj = await _build_episode_caption_and_markup(
-            title=title, quality=quality, series_slug=series_slug, client=client, target_chat=target_upload_chat,
+            title=title, quality=quality, series_slug=series_slug, client=client, target_chat=target_upload_chat or chat_id,
             language=language, post_style=post_style,
         )
 
         sent_msg = None
         dump_msg = None
-        if dump_channel_id and target_upload_chat != dump_channel_id:
+        fid = None
+        f_unique_id = None
+
+        # 1. Primary: Upload raw media file to Dump Channel ONLY
+        if dump_channel_id:
             try:
                 await progress_msg.edit_text(
                     f"📤 <b>Uploading to Dump Channel</b>\n"
@@ -2420,19 +2436,27 @@ async def download_and_upload(
                             progress=_upload_progress,
                         )
                 if dump_msg:
-                    fid = dump_msg.video.file_id if dump_msg.video else (dump_msg.document.file_id if dump_msg.document else None)
-                    if fid:
-                        if upload_mode == "document":
-                            sent_msg = await client.send_document(
-                                chat_id=target_upload_chat,
-                                document=fid,
-                                caption=caption_text,
-                                reply_markup=markup_obj,
-                                force_document=True,
-                            )
-                        else:
-                            try:
-                                sent_msg = await client.send_video(
+                    sent_msg = dump_msg
+                    if dump_msg.video:
+                        fid = dump_msg.video.file_id
+                        f_unique_id = dump_msg.video.file_unique_id
+                    elif dump_msg.document:
+                        fid = dump_msg.document.file_id
+                        f_unique_id = dump_msg.document.file_unique_id
+
+                    # If a dedicated non-main mapped channel was explicitly specified, deliver via file_id
+                    if target_upload_chat and target_upload_chat != dump_channel_id:
+                        try:
+                            if upload_mode == "document":
+                                await client.send_document(
+                                    chat_id=target_upload_chat,
+                                    document=fid,
+                                    caption=caption_text,
+                                    reply_markup=markup_obj,
+                                    force_document=True,
+                                )
+                            else:
+                                await client.send_video(
                                     chat_id=target_upload_chat,
                                     video=fid,
                                     caption=caption_text,
@@ -2442,21 +2466,22 @@ async def download_and_upload(
                                     height=vid_height,
                                     supports_streaming=True,
                                 )
-                            except Exception:
-                                sent_msg = await client.send_document(
-                                    chat_id=target_upload_chat,
-                                    document=fid,
-                                    caption=caption_text,
-                                    reply_markup=markup_obj,
-                                )
+                        except Exception as mce:
+                            log.warning("Delivery to mapped channel %s failed: %s", target_upload_chat, mce)
             except Exception as de:
                 log.warning("Dump channel upload failed, falling back to direct upload: %s", de)
 
+        # 2. Fallback if dump channel is unset or dump upload failed:
+        # Upload directly to user chat / mapped channel (NEVER main channel)
         if not sent_msg:
+            direct_upload_target = target_upload_chat or chat_id
+            if _main and direct_upload_target == int(_main):
+                direct_upload_target = chat_id
+
             if upload_mode == "document":
                 try:
                     sent_msg = await client.send_document(
-                        chat_id=target_upload_chat,
+                        chat_id=direct_upload_target,
                         document=output_path,
                         thumb=thumb_path,
                         file_name=filename,
@@ -2469,7 +2494,7 @@ async def download_and_upload(
                     if thumb_path:
                         log.warning("Upload with thumb failed, retrying without thumb: %s", te)
                         sent_msg = await client.send_document(
-                            chat_id=target_upload_chat,
+                            chat_id=direct_upload_target,
                             document=output_path,
                             file_name=filename,
                             caption=caption_text,
@@ -2482,7 +2507,7 @@ async def download_and_upload(
             else:
                 try:
                     sent_msg = await client.send_video(
-                        chat_id=target_upload_chat,
+                        chat_id=direct_upload_target,
                         video=output_path,
                         thumb=thumb_path,
                         file_name=filename,
@@ -2496,7 +2521,7 @@ async def download_and_upload(
                     )
                 except Exception:
                     sent_msg = await client.send_document(
-                        chat_id=target_upload_chat,
+                        chat_id=direct_upload_target,
                         document=output_path,
                         thumb=thumb_path,
                         file_name=filename,
@@ -2505,13 +2530,21 @@ async def download_and_upload(
                         progress=_upload_progress,
                     )
 
+            if sent_msg:
+                if sent_msg.video:
+                    fid = sent_msg.video.file_id
+                    f_unique_id = sent_msg.video.file_unique_id
+                elif sent_msg.document:
+                    fid = sent_msg.document.file_id
+                    f_unique_id = sent_msg.document.file_unique_id
+
+        # 3. Deliver file to user PM if initiated in private chat
         user_file_msg = None
-        # If uploaded somewhere other than the user's own chat (mapped/main
-        # channel), send the file to the user's PM too.
-        if target_upload_chat and chat_id != target_upload_chat and chat_id > 0:
-            try:
-                fid = sent_msg.video.file_id if sent_msg.video else (sent_msg.document.file_id if sent_msg.document else None)
-                if fid:
+        if fid and chat_id > 0:
+            if sent_msg and sent_msg.chat and sent_msg.chat.id == chat_id:
+                user_file_msg = sent_msg
+            else:
+                try:
                     if upload_mode == "document":
                         user_file_msg = await client.send_document(
                             chat_id=chat_id,
@@ -2536,8 +2569,8 @@ async def download_and_upload(
                                 document=fid,
                                 caption=f"📺 {title} [{quality}]",
                             )
-            except Exception as ue:
-                log.warning("Forward/send to user chat %d failed: %s", chat_id, ue)
+                except Exception as ue:
+                    log.warning("Forward/send to user chat %d failed: %s", chat_id, ue)
         elif target_upload_chat == chat_id and chat_id > 0:
             user_file_msg = sent_msg
 

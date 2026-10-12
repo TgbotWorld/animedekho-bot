@@ -167,14 +167,17 @@ class EpisodeMonitorService:
         from bot.downloader import download_and_upload, make_episode_filename
         from bot.database import db
 
-        dest_chan = channel_id or settings.bot.main_channel
-        if not dest_chan:
-            log.warning("No destination channel for auto-monitor upload of %s", series.title)
-            return False
+        mapping = await db.get_channel_mapping(series.slug) if db else None
+        mapped_chan = mapping.get("channel_id") if mapping else None
+        dest_chan = channel_id or mapped_chan
 
         # Route notices to Dump Channel (fallback to owner if not set) - Issue #12
         dump_chan = await db.get_dump_channel() if db else None
         notify_chat = dump_chan if dump_chan else settings.bot.owner_id
+
+        if not dest_chan and not dump_chan and not settings.bot.main_channel:
+            log.warning("No destination or dump channel for auto-monitor upload of %s", series.title)
+            return False
 
         try:
             # 1. Resolve episode stream
