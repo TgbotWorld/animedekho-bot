@@ -335,9 +335,23 @@ async def _handle_movie_detail(client: Client, q: CallbackQuery, slug: str):
     # Store raw servers — will be resolved on download
     if movie.poster:
         _poster_cache[slug] = movie.poster
-    _store_servers(q.message.chat.id, f"movie:{slug}", movie.servers, movie.title, poster_url=movie.poster or "")
+    detected_qualities = set()
+    for s in (movie.servers or []):
+        name_l = s.name.lower()
+        if "4k" in name_l or "2160" in name_l:
+            detected_qualities.add("4k")
+        if "1080" in name_l:
+            detected_qualities.add("1080p")
+        if "720" in name_l:
+            detected_qualities.add("720p")
+        if "480" in name_l:
+            detected_qualities.add("480p")
+        for q_obj in getattr(s, "qualities", []):
+            detected_qualities.add(q_obj.resolution.lower())
+    if not detected_qualities:
+        detected_qualities = {"480p", "720p", "1080p"}
 
-    markup = kb.quality_picker(default_qualities, slug, "mp:1", is_movie=True)
+    markup = kb.quality_picker(detected_qualities, slug, "mp:1", is_movie=True)
 
     await _send_photo_with_fallback(
         client=client,
@@ -409,7 +423,23 @@ async def _handle_episode(q: CallbackQuery, ep_slug: str):
     # Store raw (unresolved) servers — will be resolved on download
     _store_servers(q.message.chat.id, ep_slug, episode.servers, episode.title)
 
-    markup = kb.quality_picker(default_qualities, ep_slug, back_cb, is_movie=False)
+    detected_qualities = set()
+    for s in (episode.servers or []):
+        name_l = s.name.lower()
+        if "4k" in name_l or "2160" in name_l:
+            detected_qualities.add("4k")
+        if "1080" in name_l:
+            detected_qualities.add("1080p")
+        if "720" in name_l:
+            detected_qualities.add("720p")
+        if "480" in name_l:
+            detected_qualities.add("480p")
+        for q_obj in getattr(s, "qualities", []):
+            detected_qualities.add(q_obj.resolution.lower())
+    if not detected_qualities:
+        detected_qualities = {"480p", "720p", "1080p"}
+
+    markup = kb.quality_picker(detected_qualities, ep_slug, back_cb, is_movie=False)
 
     try:
         await q.edit_message_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=markup)
@@ -679,7 +709,12 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             if resolved:
                 _store_servers(chat_id, ep_slug, resolved, title)
             ad_cands = _find_quality_candidates(resolved or raw_servers, quality_pref) if (resolved or raw_servers) else []
-            if ad_cands:
+            if not ad_cands and is_4k:
+                ad_cands = _find_quality_candidates(resolved or raw_servers, "1080p") if (resolved or raw_servers) else []
+                if ad_cands:
+                    candidates.extend(ad_cands)
+                    diag_steps.append(f"AnimeDekho: 1080p fallback for 4K ({len(ad_cands)} candidate(s))")
+            elif ad_cands:
                 ad_has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in ad_cands)
                 if ad_has_exact and not has_exact:
                     # No other exact yet — AnimeDekho exact becomes primary.
@@ -958,6 +993,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     from bot.source_config import get_default_source, is_source
     ad_default = is_source(await get_default_source(), "AnimeDekho")
 
+    is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
     resolved = []
     candidates = []
     has_exact = False
@@ -966,9 +1002,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         if resolved:
             _store_servers(chat_id, f"movie:{movie_slug}", resolved, title, poster_url=poster_url)
         candidates = _find_quality_candidates(resolved or raw_servers, quality_pref)
+        if not candidates and is_4k:
+            candidates = _find_quality_candidates(resolved or raw_servers, "1080p")
         has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
-
-    is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
     async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
         from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb, is_4k_satisfying
@@ -1050,6 +1086,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             if ad_resolved:
                 _store_servers(chat_id, f"movie:{movie_slug}", ad_resolved, title, poster_url=poster_url)
             ad_cands = _find_quality_candidates(ad_resolved or raw_servers, quality_pref)
+            if not ad_cands and is_4k:
+                ad_cands = _find_quality_candidates(ad_resolved or raw_servers, "1080p")
             if ad_cands:
                 candidates.extend(ad_cands)
                 has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
@@ -1474,6 +1512,8 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                     episode_data = await api.get_episode(ep.slug)
                     resolved = await _lazy_resolve_servers(episode_data.servers, quality_pref)
                     candidates = _find_quality_candidates(resolved or [], quality_pref)
+                    if not candidates and is_4k:
+                        candidates = _find_quality_candidates(resolved or [], "1080p")
                     if candidates:
                         for attempt, (srv, quality) in enumerate(candidates, 1):
                             chosen_q = quality
@@ -2130,7 +2170,16 @@ async def _lazy_resolve_servers(servers: list, quality_pref: str = "") -> list:
         q_boost = 0
         if quality_pref:
             qp_l = quality_pref.lower()
-            if qp_l in name_lower:
+            if qp_l in ("4k", "2160p", "2160", "uhd"):
+                if "4k" in name_lower or "2160" in name_lower:
+                    q_boost = -100
+                elif "1080" in name_lower:
+                    q_boost = -50
+                elif "720" in name_lower:
+                    q_boost = 50
+                elif "480" in name_lower:
+                    q_boost = 100
+            elif qp_l in name_lower:
                 q_boost = -100
             elif any(other_q in name_lower for other_q in ("480p", "720p", "1080p", "4k") if other_q != qp_l):
                 q_boost = 100
@@ -2166,7 +2215,16 @@ async def _populate_server_qualities(servers: list, quality_pref: str = ""):
         q_boost = 0
         if quality_pref:
             qp_l = quality_pref.lower()
-            if qp_l in name_lower:
+            if qp_l in ("4k", "2160p", "2160", "uhd"):
+                if "4k" in name_lower or "2160" in name_lower:
+                    q_boost = -100
+                elif "1080" in name_lower:
+                    q_boost = -50
+                elif "720" in name_lower:
+                    q_boost = 50
+                elif "480" in name_lower:
+                    q_boost = 100
+            elif qp_l in name_lower:
                 q_boost = -100
             elif any(other_q in name_lower for other_q in ("480p", "720p", "1080p", "4k") if other_q != qp_l):
                 q_boost = 100

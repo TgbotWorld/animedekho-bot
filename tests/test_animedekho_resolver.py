@@ -181,3 +181,42 @@ async def test_server_priority_boosts_requested_quality():
         assert len(cands) >= 1
         assert cands[0][0].name == "VidSrc-1080p"
         assert cands[0][1].resolution == "1080p"
+
+
+@pytest.mark.anyio
+async def test_server_priority_and_fallback_for_4k():
+    servers = [
+        VideoServer(name="VidSrc-480p", server_id=1, proxy_url="https://animedekho.tv/player.php?url=480"),
+        VideoServer(name="VidSrc-720p", server_id=2, proxy_url="https://animedekho.tv/player.php?url=720"),
+        VideoServer(name="VidSrc-1080p", server_id=3, proxy_url="https://animedekho.tv/player.php?url=1080"),
+    ]
+
+    call_order = []
+
+    async def mock_resolve_player(url: str):
+        if "1080" in url:
+            call_order.append("1080p")
+            return {"url": "https://dl.example/1080.mp4", "type": "mp4", "quality": "1080p"}
+        elif "720" in url:
+            call_order.append("720p")
+            return {"url": "https://dl.example/720.mp4", "type": "mp4", "quality": "720p"}
+        elif "480" in url:
+            call_order.append("480p")
+            return {"url": "https://dl.example/480.mp4", "type": "mp4", "quality": "480p"}
+        return None
+
+    async def mock_resolve_srv(s):
+        s.player_url = s.proxy_url
+        return s
+
+    with patch("extractors.resolver.resolve_player_url", side_effect=mock_resolve_player), \
+         patch("api.client.AnimeDekhoAPI.resolve_server", side_effect=mock_resolve_srv):
+        resolved = await _lazy_resolve_servers(servers, quality_pref="4K")
+        assert len(call_order) >= 1
+        assert call_order[0] == "1080p"
+        cands_4k = _find_quality_candidates(resolved, "4K")
+        assert len(cands_4k) == 0
+        cands_fallback = _find_quality_candidates(resolved, "1080p")
+        assert len(cands_fallback) >= 1
+        assert cands_fallback[0][0].name == "VidSrc-1080p"
+        assert cands_fallback[0][1].resolution == "1080p"

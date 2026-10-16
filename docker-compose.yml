@@ -10,6 +10,7 @@ services:
     # traffic (Telegram DCs, DNS). Host networking restores connectivity.
     network_mode: host
     volumes:
+      - .:/app
       - bot-data:/app/data
       - bot-tmp:/tmp/animedekho_dl
     depends_on:
