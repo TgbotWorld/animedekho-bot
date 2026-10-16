@@ -399,44 +399,101 @@ class AnimeDekhoAPI:
         dgt_pid = episode.dgt_post_id or episode.post_id
         if dgt_pid and episode.dgt_episode_id:
             try:
-                watch_url = f"{cfg.base_url}/wp-json/dgt/v1/watch"
-                post_body = json.dumps({
-                    "post_id": dgt_pid,
-                    "episode_id": episode.dgt_episode_id,
-                })
-                watch_resp = await http_client.post(
-                    watch_url,
-                    data=post_body,
-                    headers={"Content-Type": "application/json"},
-                )
-                if watch_resp:
-                    watch_data = json.loads(watch_resp)
-                    dgt_sources = watch_data.get("sources", [])
-                    dgt_servers: list[VideoServer] = []
-                    for idx, src in enumerate(dgt_sources):
-                        server_name = src.get("server") or f"Server {idx+1}"
-                        embed_url = src.get("embed", "")
-                        dl_url = src.get("download", "")
-                        sid = int(src.get("id")) if str(src.get("id")).isdigit() else idx
-                        if embed_url:
-                            dgt_servers.append(VideoServer(
-                                name=server_name,
-                                server_id=sid,
-                                proxy_url=embed_url,
-                            ))
-                        elif dl_url:
-                            dgt_servers.append(VideoServer(
-                                name=f"{server_name} (DL)",
-                                server_id=sid,
-                                proxy_url=dl_url,
-                            ))
-                    if dgt_servers:
-                        episode.servers = dgt_servers
-                        log.info("DGT Watch API returned %d server(s) for episode '%s'", len(dgt_servers), ep_slug)
+                watch_data = await self._fetch_watch_data(dgt_pid, episode.dgt_episode_id)
+                dgt_sources = watch_data.get("sources", [])
+                dgt_servers = self._parse_dgt_sources(dgt_sources)
+                if dgt_servers:
+                    episode.servers = dgt_servers
+                    log.info("DGT Watch API returned %d server(s) for episode '%s'", len(dgt_servers), ep_slug)
             except Exception as e:
                 log.warning("DGT Watch API failed for episode '%s': %s", ep_slug, e)
 
         return episode
+
+    def _parse_dgt_sources(self, sources: list[dict]) -> list[VideoServer]:
+        dgt_servers: list[VideoServer] = []
+        for idx, src in enumerate(sources):
+            server_name = src.get("server") or f"Server {idx+1}"
+            embed_url = src.get("embed", "")
+            dl_url = src.get("download", "")
+            sid = int(src.get("id")) if str(src.get("id")).isdigit() else idx
+            preferred_url = embed_url if (embed_url and src.get("show_embed", True)) else (dl_url or embed_url)
+            if preferred_url:
+                dgt_servers.append(VideoServer(
+                    name=server_name,
+                    server_id=sid,
+                    proxy_url=preferred_url,
+                ))
+            elif dl_url:
+                dgt_servers.append(VideoServer(
+                    name=f"{server_name} (DL)",
+                    server_id=sid,
+                    proxy_url=dl_url,
+                ))
+        return dgt_servers
+
+    async def _fetch_watch_data(self, post_id: int | str, episode_id: int | str) -> dict:
+        watch_url = f"{cfg.base_url}/wp-json/dgt/v1/watch"
+        post_body = json.dumps({
+            "post_id": post_id,
+            "episode_id": episode_id,
+        })
+        watch_resp = await http_client.post(
+            watch_url,
+            data=post_body,
+            headers={"Content-Type": "application/json"},
+        )
+        if not watch_resp:
+            return {}
+        try:
+            watch_data = json.loads(watch_resp)
+        except Exception:
+            return {}
+
+        # Handle DGT Gate if present
+        if watch_data.get("gated") and watch_data.get("gate"):
+            from urllib.parse import urljoin
+            import html as html_lib
+
+            gate_url = watch_data.get("gate")
+            if gate_url.startswith("/"):
+                gate_url = urljoin(cfg.base_url, gate_url)
+            log.info("DGT watch endpoint gated; unlocking via gate URL: %s", gate_url)
+            try:
+                gate_html = await http_client.get_no_cache(gate_url)
+                verify_url = None
+                shortlink_match = re.search(
+                    r'name=["\']shortlink["\'][^>]*value=["\']([^"\']+)["\']',
+                    gate_html or "",
+                )
+                if shortlink_match:
+                    verify_url = shortlink_match.group(1)
+                else:
+                    verify_match = re.search(
+                        r'(https?://[^\s"\'<>]+\?dgt_verify=[^\s"\'<>]+)',
+                        gate_html or "",
+                    )
+                    if verify_match:
+                        verify_url = verify_match.group(1)
+
+                if verify_url:
+                    verify_url = html_lib.unescape(verify_url)
+                    if verify_url.startswith("/"):
+                        verify_url = urljoin(cfg.base_url, verify_url)
+                    log.info("Visiting DGT verification URL: %s", verify_url)
+                    await http_client.get_no_cache(verify_url)
+                    # Re-fetch watch data now that verification cookie is set
+                    watch_resp = await http_client.post(
+                        watch_url,
+                        data=post_body,
+                        headers={"Content-Type": "application/json"},
+                    )
+                    if watch_resp:
+                        watch_data = json.loads(watch_resp)
+            except Exception as e:
+                log.warning("Failed to unlock DGT gate: %s", e)
+
+        return watch_data
 
     async def get_movie(self, slug: str) -> Movie:
         url_path = f"{cfg.movies_path}/{slug}/"
@@ -467,40 +524,12 @@ class AnimeDekhoAPI:
         movie_post_id = movie.dgt_post_id or movie.post_id
         if movie_post_id:
             try:
-                watch_url = f"{cfg.base_url}/wp-json/dgt/v1/watch"
-                post_body = json.dumps({
-                    "post_id": movie_post_id,
-                    "episode_id": 0,
-                })
-                watch_resp = await http_client.post(
-                    watch_url,
-                    data=post_body,
-                    headers={"Content-Type": "application/json"},
-                )
-                if watch_resp:
-                    watch_data = json.loads(watch_resp)
-                    dgt_sources = watch_data.get("sources", [])
-                    dgt_servers: list[VideoServer] = []
-                    for idx, src in enumerate(dgt_sources):
-                        server_name = src.get("server") or f"Server {idx+1}"
-                        embed_url = src.get("embed", "")
-                        dl_url = src.get("download", "")
-                        sid = int(src.get("id")) if str(src.get("id")).isdigit() else idx
-                        if embed_url:
-                            dgt_servers.append(VideoServer(
-                                name=server_name,
-                                server_id=sid,
-                                proxy_url=embed_url,
-                            ))
-                        elif dl_url:
-                            dgt_servers.append(VideoServer(
-                                name=f"{server_name} (DL)",
-                                server_id=sid,
-                                proxy_url=dl_url,
-                            ))
-                    if dgt_servers:
-                        movie.servers = dgt_servers
-                        log.info("DGT Watch API returned %d server(s) for movie '%s'", len(dgt_servers), slug)
+                watch_data = await self._fetch_watch_data(movie_post_id, 0)
+                dgt_sources = watch_data.get("sources", [])
+                dgt_servers = self._parse_dgt_sources(dgt_sources)
+                if dgt_servers:
+                    movie.servers = dgt_servers
+                    log.info("DGT Watch API returned %d server(s) for movie '%s'", len(dgt_servers), slug)
             except Exception as e:
                 log.warning("DGT Watch API failed for movie '%s': %s", slug, e)
 
@@ -554,7 +583,7 @@ class AnimeDekhoAPI:
                                    "doodstream", "dood.", "streamtape", "strtape",
                                    "mp4upload", "vidguard", "vgfplay", "vimeo",
                                    "megacloud", "rabbitstream", "vidstream",
-                                   "zephyrflick")
+                                   "zephyrflick", "animedekho")
                 iframe_lower = iframe_src.lower()
                 if not any(d in iframe_lower for d in _player_domains):
                     iframe_src = await detect_and_bypass(iframe_src)
@@ -581,6 +610,10 @@ class AnimeDekhoAPI:
                 if m2:
                     server.direct_url = m2.group(1)
                     server.video_type = "m3u8" if ".m3u8" in m2.group(1) else "mp4"
+
+            # Fallback: if server still has no player_url or direct_url, use proxy_url
+            if not server.player_url and not server.direct_url and server.proxy_url:
+                server.player_url = server.proxy_url
 
         except Exception as e:
             log.warning("Failed to resolve server %s: %s", server.name, e)

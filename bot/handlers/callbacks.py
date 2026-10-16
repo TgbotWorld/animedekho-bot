@@ -2127,10 +2127,20 @@ async def _lazy_resolve_servers(servers: list, quality_pref: str = "") -> list:
 
     def _server_priority(srv):
         name_lower = srv.name.lower()
+        q_boost = 0
+        if quality_pref:
+            qp_l = quality_pref.lower()
+            if qp_l in name_lower:
+                q_boost = -100
+            elif any(other_q in name_lower for other_q in ("480p", "720p", "1080p", "4k") if other_q != qp_l):
+                q_boost = 100
+
+        pref_rank = len(preferred)
         for i, pref in enumerate(preferred):
             if pref.lower() in name_lower:
-                return i
-        return len(preferred)
+                pref_rank = i
+                break
+        return (q_boost, pref_rank)
 
     sorted_servers = sorted(servers, key=_server_priority)
 
@@ -2153,10 +2163,20 @@ async def _populate_server_qualities(servers: list, quality_pref: str = ""):
 
     def _server_priority(srv):
         name_lower = srv.name.lower()
+        q_boost = 0
+        if quality_pref:
+            qp_l = quality_pref.lower()
+            if qp_l in name_lower:
+                q_boost = -100
+            elif any(other_q in name_lower for other_q in ("480p", "720p", "1080p", "4k") if other_q != qp_l):
+                q_boost = 100
+
+        pref_rank = len(preferred)
         for i, pref in enumerate(preferred):
             if pref.lower() in name_lower:
-                return i
-        return len(preferred)
+                pref_rank = i
+                break
+        return (q_boost, pref_rank)
 
     sorted_servers = sorted(servers, key=_server_priority)
     resolved_count = 0
@@ -2164,9 +2184,11 @@ async def _populate_server_qualities(servers: list, quality_pref: str = ""):
     for srv in sorted_servers:
         if srv.qualities:
             resolved_count += 1
-            if quality_pref and any(q.resolution == quality_pref for q in srv.qualities):
+            if quality_pref and any(q.resolution.lower() == quality_pref.lower() for q in srv.qualities):
                 return
-            if resolved_count >= 3:
+            if not quality_pref and resolved_count >= 3:
+                return
+            if quality_pref and resolved_count >= 6:
                 return
             continue
 
@@ -2183,22 +2205,27 @@ async def _populate_server_qualities(servers: list, quality_pref: str = ""):
                              srv.name, len(srv.qualities),
                              ", ".join(q.resolution for q in srv.qualities))
                     resolved_count += 1
-                    if quality_pref and any(q.resolution == quality_pref for q in srv.qualities):
+                    if quality_pref and any(q.resolution.lower() == quality_pref.lower() for q in srv.qualities):
                         return
-                    if resolved_count >= 3:
+                    if not quality_pref and resolved_count >= 3:
+                        return
+                    if quality_pref and resolved_count >= 6:
                         return
                 elif result.get("url"):
                     vtype = result.get("type", "mp4")
                     srv.direct_url = result["url"]
                     srv.video_type = vtype
-                    res_name = "auto"
-                    name_l = srv.name.lower()
-                    if "720p" in name_l:
-                        res_name = "720p"
-                    elif "480p" in name_l:
-                        res_name = "480p"
-                    elif "1080p" in name_l or name_l == "vidsrc":
-                        res_name = "1080p"
+                    res_name = result.get("quality") or "auto"
+                    if res_name == "auto":
+                        name_l = srv.name.lower()
+                        if "720p" in name_l:
+                            res_name = "720p"
+                        elif "480p" in name_l:
+                            res_name = "480p"
+                        elif "1080p" in name_l or name_l == "vidsrc":
+                            res_name = "1080p"
+                        elif "4k" in name_l or "2160" in name_l:
+                            res_name = "4K"
                     srv.qualities = [Quality(
                         resolution=res_name,
                         url=result["url"],
@@ -2206,9 +2233,11 @@ async def _populate_server_qualities(servers: list, quality_pref: str = ""):
                     )]
                     log.info("✅ %s: resolved quality %s", srv.name, res_name)
                     resolved_count += 1
-                    if quality_pref and res_name == quality_pref:
+                    if quality_pref and res_name.lower() == quality_pref.lower():
                         return
-                    if resolved_count >= 3:
+                    if not quality_pref and resolved_count >= 3:
+                        return
+                    if quality_pref and resolved_count >= 6:
                         return
         except Exception as e:
             log.debug("Resolver failed for %s: %s", srv.name, e)

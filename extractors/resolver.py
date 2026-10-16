@@ -45,6 +45,8 @@ async def resolve_player_url(player_url: str) -> dict | None:
             result = await _resolve_vidstream_sidecar(resolved_url)
         elif any(x in domain for x in ("xerver.xyz", "mirror.xerver", "vidsrc")):
             result = await _resolve_vidsrc_xerver(resolved_url)
+        elif "animedekho" in domain:
+            result = await _resolve_animedekho(resolved_url)
         elif any(x in domain for x in ("emturbovid", "turboviplay", "turbosplayer")):
             result = await _resolve_packed_player(resolved_url) or await _resolve_generic(resolved_url)
         elif any(x in domain for x in ("streamwish", "swish", "playerwish")):
@@ -63,8 +65,8 @@ async def resolve_player_url(player_url: str) -> dict | None:
             # Generic: try packed first, then scan for m3u8/mp4
             result = await _resolve_packed_player(resolved_url) or await _resolve_generic(resolved_url)
 
-        # If we found an m3u8, try to get quality variants
-        if result and result["type"] == "m3u8":
+        # If we found an m3u8, try to get quality variants (if not already present)
+        if result and result["type"] == "m3u8" and not result.get("qualities"):
             qualities = await get_m3u8_qualities(result["url"])
             result["qualities"] = qualities
 
@@ -539,5 +541,99 @@ async def _resolve_vidsrc_xerver(url: str) -> dict | None:
                 return {"url": stream_url, "type": vtype, "quality": "auto"}
     except Exception as e:
         log.warning("VidSrc xerver extraction failed for %s: %s", url, e)
+
+    return None
+
+
+async def _resolve_animedekho(url: str) -> dict | None:
+    """
+    Extract stream from AnimeDekho player/embed/api endpoints.
+    Handles:
+      - /aaa/myth/play2.php or /aaa/myth/fetch.php (NeoCDN)
+      - /aaa/get/play.php or /aaa/get/file.php (direct GDrive/UserContent via _resolve_vidsrc_xerver)
+      - /player.php?url=... (iframes play.php or other CDN)
+      - /download.php?url=... or /download2.php?url=... (links to file.php or gdflix)
+      - /embed/... (iframes ravok.buzz or other player)
+    """
+    from urllib.parse import urlparse, quote, urljoin
+    import json
+
+    parsed = urlparse(url)
+    path = parsed.path
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    # 1. NeoCDN (play2.php)
+    if "play2.php" in path or "/aaa/myth/" in path:
+        try:
+            html = await http_client.get(url, headers={"Referer": f"{base_url}/"})
+            m = re.search(r'/aaa/myth/fetch\.php\?id=([a-zA-Z0-9_-]+)', html or "")
+            if m:
+                fetch_url = f"{base_url}/aaa/myth/fetch.php?id={m.group(1)}"
+                resp_text = await http_client.get(fetch_url, headers={"Referer": url})
+                if resp_text:
+                    resp = json.loads(resp_text)
+                    if resp and resp.get("sources"):
+                        worker = "https://young-dust-31f3.reimoto.workers.dev/?url="
+                        qualities = []
+                        for s in resp["sources"]:
+                            q_res = s.get("type", "auto")
+                            q_url = worker + quote(s.get("url", ""))
+                            qualities.append(Quality(
+                                resolution=q_res,
+                                url=q_url,
+                                label=f"{q_res} - {s.get('size', '')}".strip(" -"),
+                            ))
+                        if qualities:
+                            return {
+                                "url": qualities[-1].url,
+                                "type": "mp4",
+                                "quality": qualities[-1].resolution,
+                                "qualities": qualities,
+                            }
+        except Exception as e:
+            log.warning("AnimeDekho play2 extraction failed for %s: %s", url, e)
+
+    # 2. VidSrc / GDFlix get endpoint (aaa/get/play.php or aaa/get/file.php)
+    if any(p in path for p in ("play.php", "file.php")) and ("/aaa/get/" in path or "url=" in parsed.query):
+        return await _resolve_vidsrc_xerver(url)
+
+    # 3. AnimeDekho player wrapper (/player.php?url=...)
+    if "player.php" in path:
+        try:
+            html = await http_client.get(url, headers={"Referer": f"{base_url}/"})
+            if html:
+                iframe_m = re.search(r'<iframe[^>]*src\s*=\s*["\']([^"\']+)["\']', html, re.IGNORECASE)
+                if iframe_m:
+                    iframe_src = iframe_m.group(1)
+                    if iframe_src.startswith("/"):
+                        iframe_src = urljoin(base_url, iframe_src)
+                    return await resolve_player_url(iframe_src)
+        except Exception as e:
+            log.warning("AnimeDekho player.php extraction failed for %s: %s", url, e)
+
+    # 4. AnimeDekho embed wrapper (/embed/{post_id}/{ep})
+    if "/embed/" in path:
+        try:
+            html = await http_client.get(url, headers={"Referer": f"{base_url}/"})
+            if html:
+                iframe_m = re.search(r'<iframe[^>]*src\s*=\s*["\']([^"\']+)["\']', html, re.IGNORECASE)
+                if iframe_m:
+                    iframe_src = iframe_m.group(1)
+                    if iframe_src.startswith("/"):
+                        iframe_src = urljoin(base_url, iframe_src)
+                    return await resolve_player_url(iframe_src)
+        except Exception as e:
+            log.warning("AnimeDekho embed extraction failed for %s: %s", url, e)
+
+    # 5. AnimeDekho download wrapper (/download.php or /download2.php)
+    if "download.php" in path or "download2.php" in path:
+        try:
+            html = await http_client.get(url, headers={"Referer": f"{base_url}/"})
+            if html:
+                href_m = re.search(r'href\s*=\s*["\'](https?://[^"\']*(?:file\.php|play\.php|gdflix|hubcloud)[^"\']*)["\']', html, re.IGNORECASE)
+                if href_m:
+                    return await resolve_player_url(href_m.group(1))
+        except Exception as e:
+            log.warning("AnimeDekho download page extraction failed for %s: %s", url, e)
 
     return None
