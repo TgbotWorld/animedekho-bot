@@ -189,11 +189,51 @@ def parse_series_detail(html: str, slug: str) -> Series:
     for s in seasons.values():
         s.episodes.sort(key=lambda x: x.number)
 
+    # DGT DragonTheme detection: extract series ID and season tabs
+    dgt_series_id = 0
+    dgt_seasons: list[int] = []
+    dgt_title = soup.find(id="dgt-title")
+    if dgt_title:
+        ds = dgt_title.get("data-series")
+        if ds and str(ds).isdigit() and int(ds) > 0:
+            dgt_series_id = int(ds)
+        elif dgt_title.get("data-snapshot"):
+            try:
+                import json
+                snap = json.loads(dgt_title.get("data-snapshot"))
+                if snap.get("id"):
+                    dgt_series_id = int(snap["id"])
+            except Exception:
+                pass
+    if not dgt_series_id:
+        m_ds = re.search(r'data-series=["\'](\d+)["\']', html)
+        if m_ds:
+            dgt_series_id = int(m_ds.group(1))
+
+    season_tabs = soup.find(id="dgt-season-tabs")
+    if season_tabs and season_tabs.get("data-tabs"):
+        try:
+            import json
+            tabs_data = json.loads(season_tabs.get("data-tabs"))
+            for t in tabs_data:
+                sn = t.get("season")
+                if sn is not None and int(sn) not in dgt_seasons:
+                    dgt_seasons.append(int(sn))
+        except Exception:
+            pass
+    if not dgt_seasons:
+        for m_s in re.finditer(r'data-season=["\'](\d+)["\']', html):
+            sn = int(m_s.group(1))
+            if sn not in dgt_seasons:
+                dgt_seasons.append(sn)
+
     return Series(
         title=title, slug=slug,
         url=f"{_base_url()}/series-hindi/{slug}/",
         description=desc[:800], poster=poster,
         genres=genres[:10], seasons=seasons,
+        dgt_series_id=dgt_series_id,
+        dgt_seasons=dgt_seasons,
     )
 
 
@@ -251,10 +291,39 @@ def parse_episode_page(html: str, ep_slug: str) -> Episode:
             int_sid = int(sid) if str(sid).isdigit() else 0
             servers.append(VideoServer(name=sname, server_id=int_sid, proxy_url=proxy))
 
+    # Extract DGT post_id and episode_id
+    dgt_post_id = 0
+    dgt_episode_id = 0
+    watch_root = soup.find(id="dgt-watch")
+    if watch_root:
+        try:
+            dt = watch_root.get("data-title") or watch_root.get("data-series")
+            if dt and str(dt).isdigit():
+                dgt_post_id = int(dt)
+            dm = watch_root.get("data-term")
+            if dm and str(dm).isdigit():
+                dgt_episode_id = int(dm)
+            if not dgt_episode_id and watch_root.get("data-episode"):
+                import json
+                ep_data = json.loads(watch_root.get("data-episode"))
+                if ep_data.get("id"):
+                    dgt_episode_id = int(ep_data["id"])
+        except Exception:
+            pass
+    if not dgt_post_id:
+        m_title = re.search(r'data-title=["\'](\d+)["\']', html)
+        if m_title:
+            dgt_post_id = int(m_title.group(1))
+    if not dgt_episode_id:
+        m_term = re.search(r'data-term=["\'](\d+)["\']', html)
+        if m_term:
+            dgt_episode_id = int(m_term.group(1))
+
     return Episode(
         number=ep_num, slug=ep_slug, season=season,
         title=title, post_id=post_id, servers=servers,
         page_url=f"{_base_url()}/epi/{ep_slug}/",
+        dgt_post_id=dgt_post_id, dgt_episode_id=dgt_episode_id,
     )
 
 
@@ -321,11 +390,39 @@ def parse_movie_page(html: str, slug: str) -> Movie:
             int_sid = int(sid) if str(sid).isdigit() else 0
             servers.append(VideoServer(name=sname, server_id=int_sid, proxy_url=proxy))
 
+    # Extract DGT movie post_id
+    dgt_post_id = 0
+    dgt_title = soup.find(id="dgt-title")
+    if dgt_title:
+        try:
+            if dgt_title.get("data-snapshot"):
+                import json
+                snap = json.loads(dgt_title.get("data-snapshot"))
+                if snap.get("id"):
+                    dgt_post_id = int(snap["id"])
+            elif dgt_title.get("data-series"):
+                ds = dgt_title.get("data-series")
+                if ds and str(ds).isdigit() and int(ds) > 0:
+                    dgt_post_id = int(ds)
+        except Exception:
+            pass
+    if not dgt_post_id:
+        watch_root = soup.find(id="dgt-watch")
+        if watch_root:
+            dt = watch_root.get("data-title")
+            if dt and str(dt).isdigit():
+                dgt_post_id = int(dt)
+    if not dgt_post_id:
+        m_title = re.search(r'data-title=["\'](\d+)["\']', html)
+        if m_title:
+            dgt_post_id = int(m_title.group(1))
+
     return Movie(
         title=title, slug=slug,
         url=f"{_base_url()}/movie-hindi/{slug}/",
         description=desc[:800], poster=poster,
         genres=genres[:10], post_id=post_id, servers=servers,
+        dgt_post_id=dgt_post_id,
     )
 
 

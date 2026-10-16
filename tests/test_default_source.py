@@ -188,3 +188,82 @@ async def test_search_animedekho_dgt_rest():
         assert res[0].content_type == "series"
         assert res[0].source == "AnimeDekho"
 
+
+@pytest.mark.anyio
+async def test_dgt_series_seasons_parsing_and_fetch():
+    from api.client import api
+    import json
+
+    series_html = """
+    <html>
+      <head><title>Solo Leveling (Hindi Dubbed) | AnimeDekho</title></head>
+      <body>
+        <div id="dgt-title" class="dgt-title" data-series="4198"></div>
+        <div id="dgt-season-tabs" class="dgt-tabs" data-tabs='[{"season":1,"label":"Season 1"},{"season":2,"label":"Season 2"}]'></div>
+        <a id="dgt-watch-btn" href="https://animedekho.tv/epi/solo-leveling-hindi-1x1/">Start</a>
+      </body>
+    </html>
+    """
+
+    s1_json = json.dumps({
+        "episodes": [
+            {"id": 101, "season": 1, "episode": 1, "name": "Episode 1", "url": "https://animedekho.tv/epi/solo-leveling-hindi-1x1/"},
+            {"id": 102, "season": 1, "episode": 2, "name": "Episode 2", "url": "https://animedekho.tv/epi/solo-leveling-hindi-1x2/"},
+        ]
+    })
+    s2_json = json.dumps({
+        "episodes": [
+            {"id": 201, "season": 2, "episode": 1, "name": "Episode 1", "url": "https://animedekho.tv/epi/solo-leveling-2x1/"},
+            {"id": 202, "season": 2, "episode": 2, "name": "Episode 2", "url": "https://animedekho.tv/epi/solo-leveling-2x2/"},
+            {"id": 203, "season": 2, "episode": 3, "name": "Episode 3", "url": "https://animedekho.tv/epi/solo-leveling-2x3/"},
+        ]
+    })
+
+    async def mock_get(url, **kwargs):
+        if "season=1" in url:
+            return s1_json
+        elif "season=2" in url:
+            return s2_json
+        return series_html
+
+    with patch("utils.http.http_client.get", side_effect=mock_get):
+        series = await api.get_series("solo-leveling-hindi")
+        assert series.season_count == 2
+        assert 1 in series.seasons
+        assert 2 in series.seasons
+        assert len(series.seasons[1].episodes) == 2
+        assert len(series.seasons[2].episodes) == 3
+        assert series.total_episodes == 5
+        assert series.seasons[2].episodes[0].slug == "solo-leveling-2x1"
+
+
+@pytest.mark.anyio
+async def test_dgt_episode_watch_servers():
+    from api.client import api
+    import json
+
+    ep_html = """
+    <html>
+      <head><title>Watch Solo Leveling S2E1 | AnimeDekho</title></head>
+      <body>
+        <div id="dgt-watch" data-title="4198" data-term="201"></div>
+      </body>
+    </html>
+    """
+
+    watch_json = json.dumps({
+        "gated": False,
+        "sources": [
+            {"id": 1, "kind": "embed", "server": "HydraX", "embed": "https://animedekho.tv/player.php?url=xyz123"},
+            {"id": 2, "kind": "embed", "server": "Vidmoly", "embed": "https://animedekho.tv/player.php?url=abc456"},
+        ]
+    })
+
+    with patch("utils.http.http_client.get", AsyncMock(return_value=ep_html)), \
+         patch("utils.http.http_client.post", AsyncMock(return_value=watch_json)):
+        ep = await api.get_episode("solo-leveling-2x1")
+        assert len(ep.servers) == 2
+        assert ep.servers[0].name == "HydraX"
+        assert ep.servers[0].proxy_url == "https://animedekho.tv/player.php?url=xyz123"
+        assert ep.servers[1].name == "Vidmoly"
+

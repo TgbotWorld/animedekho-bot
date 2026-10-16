@@ -54,6 +54,8 @@ class Episode:
     title: str = ""
     page_url: str = ""
     post_id: int = 0
+    dgt_post_id: int = 0
+    dgt_episode_id: int = 0
     servers: list[VideoServer] = field(default_factory=list)
 
 
@@ -77,6 +79,8 @@ class Series:
     genres: list[str] = field(default_factory=list)
     seasons: dict[int, Season] = field(default_factory=dict)
     source: str = "AnimeDekho"
+    dgt_series_id: int = 0
+    dgt_seasons: list[int] = field(default_factory=list)
 
     @property
     def season_count(self) -> int:
@@ -96,6 +100,7 @@ class Movie:
     poster: str | None = None
     genres: list[str] = field(default_factory=list)
     post_id: int = 0
+    dgt_post_id: int = 0
     servers: list[VideoServer] = field(default_factory=list)
 
 

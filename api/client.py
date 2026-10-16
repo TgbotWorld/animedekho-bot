@@ -9,7 +9,7 @@ from urllib.parse import quote
 from config.settings import settings
 from utils.http import http_client
 from .models import (
-    SearchResult, Series, Movie, Episode, Category,
+    SearchResult, Series, Movie, Episode, Season, Category,
     PaginatedResult, VideoServer,
 )
 from .parser import (
@@ -69,31 +69,42 @@ class AnimeDekhoAPI:
         # Strategy 1: Modern AnimeDekho DGT REST API search endpoint (fast & reliable JSON)
         try:
             from urllib.parse import quote_plus
-            suggest_url = f"{cfg.base_url}/wp-json/dgt/v1/suggest?q={quote_plus(query)}"
-            resp = await http_client.get(suggest_url, ttl=settings.cache.search_ttl)
-            if resp:
-                data = json.loads(resp)
-                items = data.get("items", [])
-                if items:
-                    results: list[SearchResult] = []
-                    for it in items:
-                        item_url = it.get("url", "")
-                        title = it.get("title", "")
-                        poster = it.get("poster", "")
-                        c_type = "movie" if it.get("type") == "movie" else "series"
-                        m = (RE_MOVIE_URL if c_type == "movie" else RE_SERIES_URL).search(item_url)
-                        slug = m.group(1) if m else item_url.rstrip("/").split("/")[-1]
-                        results.append(SearchResult(
-                            title=title,
-                            slug=slug,
-                            url=item_url,
-                            content_type=c_type,
-                            poster=poster,
-                            source="AnimeDekho",
-                        ))
-                    if results:
-                        log.info("AnimeDekho DGT REST search returned %d result(s) for '%s'", len(results), query)
-                        return results
+            queries_to_try = [query]
+            clean_q = re.sub(
+                r"(?i)\s*(?:season\s*\d+|s\d+|part\s*\d+|cour\s*\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$",
+                "",
+                query,
+            ).strip()
+            if clean_q and clean_q.lower() != query.lower():
+                queries_to_try.append(clean_q)
+
+            for q_term in queries_to_try:
+                suggest_url = f"{cfg.base_url}/wp-json/dgt/v1/suggest?q={quote_plus(q_term)}"
+                resp = await http_client.get(suggest_url, ttl=settings.cache.search_ttl)
+                if resp:
+                    data = json.loads(resp)
+                    items = data.get("items", [])
+                    if items:
+                        results: list[SearchResult] = []
+                        for it in items:
+                            item_url = it.get("url", "")
+                            title = it.get("title", "")
+                            poster = it.get("poster", "")
+                            c_type = "movie" if it.get("type") == "movie" else "series"
+                            m = (RE_MOVIE_URL if c_type == "movie" else RE_SERIES_URL).search(item_url)
+                            slug = m.group(1) if m else item_url.rstrip("/").split("/")[-1]
+                            results.append(SearchResult(
+                                title=title,
+                                slug=slug,
+                                url=item_url,
+                                content_type=c_type,
+                                poster=poster,
+                                source="AnimeDekho",
+                            ))
+                        if results:
+                            log.info("AnimeDekho DGT REST search returned %d result(s) for '%s' (term: '%s')",
+                                     len(results), query, q_term)
+                            return results
         except Exception as e:
             log.warning("AnimeDekho DGT REST search failed for '%s': %s", query, e)
 
@@ -295,6 +306,58 @@ class AnimeDekhoAPI:
             else:
                 raise e
 
+        # If DGT series ID and season tabs are present, fetch dynamic episodes for all seasons
+        if series.dgt_series_id and series.dgt_seasons:
+            try:
+                import asyncio
+                async def _fetch_dgt_season(s_num: int):
+                    ep_url = f"{cfg.base_url}/wp-json/dgt/v1/episodes?series={series.dgt_series_id}&season={s_num}"
+                    try:
+                        raw = await http_client.get(ep_url, ttl=settings.cache.listing_ttl)
+                        if raw:
+                            data = json.loads(raw)
+                            return s_num, data.get("episodes", [])
+                    except Exception as ex:
+                        log.warning("Failed to fetch DGT episodes for series %s S%s: %s", series.slug, s_num, ex)
+                    return s_num, []
+
+                season_results = await asyncio.gather(
+                    *[_fetch_dgt_season(s_num) for s_num in series.dgt_seasons],
+                    return_exceptions=True
+                )
+
+                has_dgt_episodes = False
+                for item in season_results:
+                    if isinstance(item, tuple):
+                        s_num, ep_list = item
+                        if ep_list:
+                            has_dgt_episodes = True
+                            dgt_season = Season(number=s_num)
+                            for it in ep_list:
+                                ep_num = int(it.get("episode") or 0)
+                                ep_page_url = it.get("url", "")
+                                m_slug = re.search(r"/epi/([^/?#]+)/?", ep_page_url)
+                                it_slug = m_slug.group(1) if m_slug else f"{series.slug}-{s_num}x{ep_num}"
+                                ep_title = it.get("name") or it.get("label") or f"Episode {ep_num}"
+                                dgt_season.episodes.append(Episode(
+                                    number=ep_num,
+                                    slug=it_slug,
+                                    season=s_num,
+                                    title=ep_title,
+                                    page_url=ep_page_url,
+                                    post_id=int(it.get("id") or 0),
+                                    dgt_post_id=series.dgt_series_id,
+                                    dgt_episode_id=int(it.get("id") or 0),
+                                ))
+                            dgt_season.episodes.sort(key=lambda x: x.number)
+                            series.seasons[s_num] = dgt_season
+
+                if has_dgt_episodes:
+                    log.info("Populated %d season(s) with %d episodes from DGT REST for series '%s'",
+                             len(series.seasons), series.total_episodes, series.slug)
+            except Exception as e:
+                log.warning("DGT REST season fetch error for series %s: %s", series.slug, e)
+
         try:
             from utils.anilist import resolve_best_poster
             best = await resolve_best_poster(series.title, series.poster, is_movie=False)
@@ -330,7 +393,50 @@ class AnimeDekhoAPI:
             except Exception as e:
                 log.warning("Verification shortlink failed: %s", e)
 
-        return parse_episode_page(html, ep_slug)
+        episode = parse_episode_page(html, ep_slug)
+
+        # DGT Watch API for dynamic servers
+        dgt_pid = episode.dgt_post_id or episode.post_id
+        if dgt_pid and episode.dgt_episode_id:
+            try:
+                watch_url = f"{cfg.base_url}/wp-json/dgt/v1/watch"
+                post_body = json.dumps({
+                    "post_id": dgt_pid,
+                    "episode_id": episode.dgt_episode_id,
+                })
+                watch_resp = await http_client.post(
+                    watch_url,
+                    data=post_body,
+                    headers={"Content-Type": "application/json"},
+                )
+                if watch_resp:
+                    watch_data = json.loads(watch_resp)
+                    dgt_sources = watch_data.get("sources", [])
+                    dgt_servers: list[VideoServer] = []
+                    for idx, src in enumerate(dgt_sources):
+                        server_name = src.get("server") or f"Server {idx+1}"
+                        embed_url = src.get("embed", "")
+                        dl_url = src.get("download", "")
+                        sid = int(src.get("id")) if str(src.get("id")).isdigit() else idx
+                        if embed_url:
+                            dgt_servers.append(VideoServer(
+                                name=server_name,
+                                server_id=sid,
+                                proxy_url=embed_url,
+                            ))
+                        elif dl_url:
+                            dgt_servers.append(VideoServer(
+                                name=f"{server_name} (DL)",
+                                server_id=sid,
+                                proxy_url=dl_url,
+                            ))
+                    if dgt_servers:
+                        episode.servers = dgt_servers
+                        log.info("DGT Watch API returned %d server(s) for episode '%s'", len(dgt_servers), ep_slug)
+            except Exception as e:
+                log.warning("DGT Watch API failed for episode '%s': %s", ep_slug, e)
+
+        return episode
 
     async def get_movie(self, slug: str) -> Movie:
         url_path = f"{cfg.movies_path}/{slug}/"
@@ -356,6 +462,48 @@ class AnimeDekhoAPI:
                 log.warning("Verification shortlink failed: %s", e)
 
         movie = parse_movie_page(html, slug)
+
+        # DGT Watch API for dynamic movie servers
+        movie_post_id = movie.dgt_post_id or movie.post_id
+        if movie_post_id:
+            try:
+                watch_url = f"{cfg.base_url}/wp-json/dgt/v1/watch"
+                post_body = json.dumps({
+                    "post_id": movie_post_id,
+                    "episode_id": 0,
+                })
+                watch_resp = await http_client.post(
+                    watch_url,
+                    data=post_body,
+                    headers={"Content-Type": "application/json"},
+                )
+                if watch_resp:
+                    watch_data = json.loads(watch_resp)
+                    dgt_sources = watch_data.get("sources", [])
+                    dgt_servers: list[VideoServer] = []
+                    for idx, src in enumerate(dgt_sources):
+                        server_name = src.get("server") or f"Server {idx+1}"
+                        embed_url = src.get("embed", "")
+                        dl_url = src.get("download", "")
+                        sid = int(src.get("id")) if str(src.get("id")).isdigit() else idx
+                        if embed_url:
+                            dgt_servers.append(VideoServer(
+                                name=server_name,
+                                server_id=sid,
+                                proxy_url=embed_url,
+                            ))
+                        elif dl_url:
+                            dgt_servers.append(VideoServer(
+                                name=f"{server_name} (DL)",
+                                server_id=sid,
+                                proxy_url=dl_url,
+                            ))
+                    if dgt_servers:
+                        movie.servers = dgt_servers
+                        log.info("DGT Watch API returned %d server(s) for movie '%s'", len(dgt_servers), slug)
+            except Exception as e:
+                log.warning("DGT Watch API failed for movie '%s': %s", slug, e)
+
         try:
             from utils.anilist import resolve_best_poster
             best = await resolve_best_poster(movie.title, movie.poster, is_movie=True)
