@@ -160,3 +160,31 @@ async def test_settings_default_source_toggle():
         await settings_callback(None, mock_query)
         mock_set.assert_called_once()
         mock_query.answer.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_search_animedekho_dgt_rest():
+    from api.client import api
+    import json
+
+    mock_resp = json.dumps({
+        "items": [
+            {
+                "id": 4198,
+                "title": "Solo Leveling",
+                "year": 2024,
+                "type": "series",
+                "url": "https://animedekho.tv/series-hindi/solo-leveling-hindi/",
+                "poster": "https://image.tmdb.org/t/p/w342/rsOApVLbIQEcNkqSlOxNPyg3FyI.jpg"
+            }
+        ]
+    })
+
+    with patch("utils.http.http_client.get", AsyncMock(return_value=mock_resp)):
+        res = await api._search_animedekho("Solo Leveling")
+        assert len(res) == 1
+        assert res[0].title == "Solo Leveling"
+        assert res[0].slug == "solo-leveling-hindi"
+        assert res[0].content_type == "series"
+        assert res[0].source == "AnimeDekho"
+

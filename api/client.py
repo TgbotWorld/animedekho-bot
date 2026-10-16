@@ -66,7 +66,38 @@ class AnimeDekhoAPI:
 
     async def _search_animedekho(self, query: str, page: int = 1) -> list[SearchResult]:
         """Internal search against AnimeDekho AJAX and GET ?s= endpoints."""
-        # Strategy 1: AJAX search with nonce
+        # Strategy 1: Modern AnimeDekho DGT REST API search endpoint (fast & reliable JSON)
+        try:
+            from urllib.parse import quote_plus
+            suggest_url = f"{cfg.base_url}/wp-json/dgt/v1/suggest?q={quote_plus(query)}"
+            resp = await http_client.get(suggest_url, ttl=settings.cache.search_ttl)
+            if resp:
+                data = json.loads(resp)
+                items = data.get("items", [])
+                if items:
+                    results: list[SearchResult] = []
+                    for it in items:
+                        item_url = it.get("url", "")
+                        title = it.get("title", "")
+                        poster = it.get("poster", "")
+                        c_type = "movie" if it.get("type") == "movie" else "series"
+                        m = (RE_MOVIE_URL if c_type == "movie" else RE_SERIES_URL).search(item_url)
+                        slug = m.group(1) if m else item_url.rstrip("/").split("/")[-1]
+                        results.append(SearchResult(
+                            title=title,
+                            slug=slug,
+                            url=item_url,
+                            content_type=c_type,
+                            poster=poster,
+                            source="AnimeDekho",
+                        ))
+                    if results:
+                        log.info("AnimeDekho DGT REST search returned %d result(s) for '%s'", len(results), query)
+                        return results
+        except Exception as e:
+            log.warning("AnimeDekho DGT REST search failed for '%s': %s", query, e)
+
+        # Strategy 2: Legacy AJAX search with nonce
         for attempt in range(2):
             try:
                 nonce = await self._ensure_nonce(force_refresh=(attempt > 0))
