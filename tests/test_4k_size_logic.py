@@ -166,6 +166,39 @@ class Test4KSizeLogic(unittest.TestCase):
 
         asyncio.run(_run_test())
 
+    def test_animedrive_button_resolution_1_to_2_gb(self):
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup('<a href="/dl/abc">📥 1080p — 1.38 GB</a>', 'html.parser')
+        btn = soup.find('a')
+        from utils.anime_match import parse_size_mb, is_around_1_to_2_gb
+        sz = parse_size_mb(btn.get_text(strip=True))
+        self.assertIsNotNone(sz)
+        self.assertTrue(is_around_1_to_2_gb(sz))
+
+    def test_multisource_accepts_4k_satisfying_stream(self):
+        from extractors.multisource import MultiSourceManager
+        msm = MultiSourceManager()
+
+        class Mock4KExtractor:
+            async def resolve_episode(self, *args, **kwargs):
+                return {
+                    "url": "https://cdn.example.com/video.mp4",
+                    "quality": "1080p HQ x265",
+                    "size_mb": 1400.0,
+                    "poster": "https://example.com/poster.jpg",
+                }
+
+        async def _run():
+            entry, diag, kind = await msm._resolve_one_source(
+                "MockSrc", Mock4KExtractor(), "Solo Leveling", 1, 1, "4K", "4K"
+            )
+            self.assertEqual(kind, "exact")
+            self.assertIsNotNone(entry)
+            self.assertEqual(entry["quality"], "4K")
+            self.assertEqual(entry["verified_quality"], "4K")
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

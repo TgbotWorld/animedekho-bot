@@ -592,10 +592,18 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     diag_steps.append(f"Default source: {default_src}")
 
     async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
-        from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb
-        if is_native_4k(q_str):
+        from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb, is_4k_satisfying
+        if is_native_4k(q_str) or (q_str or "").strip().lower() in ("4k", "2160p", "2160", "uhd"):
             return True
-        if not is_enhanced_1080p(q_str):
+        if is_4k_satisfying(q_str, size=size):
+            return True
+        if "1080" in (q_str or "").lower():
+            if size is not None and is_around_1_to_2_gb(size):
+                return True
+            sz = parse_size_mb(q_str)
+            if sz is not None and is_around_1_to_2_gb(sz):
+                return True
+        if not is_enhanced_1080p(q_str) and "1080" not in (q_str or "").lower():
             return False
         if size is not None:
             return is_around_1_to_2_gb(size)
@@ -963,10 +971,18 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
     async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
-        from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb
-        if is_native_4k(q_str):
+        from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb, is_4k_satisfying
+        if is_native_4k(q_str) or (q_str or "").strip().lower() in ("4k", "2160p", "2160", "uhd"):
             return True
-        if not is_enhanced_1080p(q_str):
+        if is_4k_satisfying(q_str, size=size):
+            return True
+        if "1080" in (q_str or "").lower():
+            if size is not None and is_around_1_to_2_gb(size):
+                return True
+            sz = parse_size_mb(q_str)
+            if sz is not None and is_around_1_to_2_gb(sz):
+                return True
+        if not is_enhanced_1080p(q_str) and "1080" not in (q_str or "").lower():
             return False
         if size is not None:
             return is_around_1_to_2_gb(size)
@@ -1041,7 +1057,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             log.warning("AnimeDekho movie fallback resolution error: %s", ad_err)
 
     found_4k = any(
-        _is_4k_satisfying(q.resolution) for _, q in candidates
+        (q.resolution or "").strip().lower() in ("4k", "2160p", "2160", "uhd") or _is_4k_satisfying(q.resolution) for _, q in candidates
     ) if is_4k else False
 
     if is_4k and not found_4k:

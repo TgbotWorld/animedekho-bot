@@ -434,6 +434,9 @@ class DeadToonsExtractor:
 
                 raw_q = chosen_link.get("quality", "")
                 norm_q = self._normalize_dt_quality(raw_q) or self._normalize_dt_quality(quality_pref) or "Unknown"
+                is_4k_req = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")
+                is_4k_match = is_4k_req and (norm_q == "4K" or is_4k_satisfying(raw_q, parse_size_mb(chosen_link.get("size", ""))))
+                final_q = "4K" if is_4k_match else norm_q
 
                 # Poster from API or target post
                 poster_url = target_post.get("poster")
@@ -444,10 +447,10 @@ class DeadToonsExtractor:
 
                 return {
                     "url": media_url,
-                    "quality": norm_q,
+                    "quality": final_q,
                     "requested_quality": quality_pref,
-                    "detected_quality": norm_q,
-                    "verified_quality": norm_q,
+                    "detected_quality": raw_q or norm_q,
+                    "verified_quality": final_q,
                     "source": "DeadToons",
                     "poster": poster_url,
                     "size": chosen_link.get("size", ""),

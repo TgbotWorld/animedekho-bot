@@ -462,9 +462,17 @@ class MultiSourceManager:
             # V3 #2: skip known non-exact qualities outright.
             got_q = res.get("quality", "Unknown") or "Unknown"
             got_norm = normalize_quality(got_q)
-            if want_norm != "auto" and got_norm != "Unknown" and got_norm != want_norm:
+            got_sz = res.get("size") or res.get("size_mb")
+            from utils.anime_match import qualities_match
+            if want_norm != "auto" and got_norm != "Unknown" and not qualities_match(quality_pref, got_q, size=got_sz):
                 log.info("Source '%s' returned [%s] for [%s] request — skipping (V3 #2 exact-only)", name, got_q, quality_pref)
                 return None, f"{name}: {got_q} ≠ {quality_pref} → skipped", "skip"
+
+            if want_norm == "4K" and qualities_match(quality_pref, got_q, size=got_sz):
+                got_q = "4K"
+                got_norm = "4K"
+                res["quality"] = "4K"
+                res["verified_quality"] = "4K"
 
             curr_url = res["url"].strip()
             original_url = curr_url

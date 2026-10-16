@@ -211,7 +211,8 @@ class ToonflixExtractor:
             return None
 
         # Step 5: Score and rank quality cards (4K/2160p, 1080p HQ, 1080p, 720p, 480p)
-        is_4k_request = quality_pref.lower() in ("4k", "2160p", "2160")
+        is_4k = (quality_pref or "").lower() in ("4k", "2160p", "2160", "uhd")
+        is_4k_request = is_4k
 
         def _detect_toonflix_card_res(card) -> str:
             c_text = card.get_text(" ", strip=True).lower()
@@ -302,10 +303,10 @@ class ToonflixExtractor:
             # V3 #4: explicit detected/requested/verified quality fields.
             return {
                 "url": final_stream_url,
-                "quality": matched_quality,
+                "quality": "4K" if is_4k else matched_quality,
                 "requested_quality": quality_pref,
                 "detected_quality": matched_quality,
-                "verified_quality": matched_quality,
+                "verified_quality": "4K" if is_4k else matched_quality,
                 "size_mb": chosen_size,
                 "server": "ToonFlix",
                 "referer": "https://drive.toonflix.in/",

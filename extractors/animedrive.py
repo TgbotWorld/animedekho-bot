@@ -82,7 +82,7 @@ class AnimeDriveExtractor:
         for base in [self._base_url, self._fallback_url]:
             url = f"{base}/?s={quote_plus(search_query)}"
             try:
-                r = s.get(url, timeout=15)
+                r = s.get(url, timeout=25)
                 if r.status_code != 200:
                     continue
                 soup = BeautifulSoup(r.text, "html.parser")
@@ -117,7 +117,7 @@ class AnimeDriveExtractor:
         for base in [self._base_url, self._fallback_url]:
             url = f"{base}/page/{page}/" if page > 1 else base
             try:
-                r = s.get(url, timeout=15)
+                r = s.get(url, timeout=25)
                 if r.status_code != 200:
                     continue
                 soup = BeautifulSoup(r.text, "html.parser")
@@ -285,7 +285,7 @@ class AnimeDriveExtractor:
 
         # Step 3: Fetch series page and locate link.animedrive.me
         try:
-            r_page = s.get(target_page_url, timeout=15)
+            r_page = s.get(target_page_url, timeout=25)
             if r_page.status_code != 200:
                 return None
             soup_page = BeautifulSoup(r_page.text, "html.parser")
@@ -303,7 +303,7 @@ class AnimeDriveExtractor:
         if link_page:
             try:
                 log.info("AnimeDrive: Inspecting link page: %s", link_page)
-                r_link = s.get(link_page, timeout=15)
+                r_link = s.get(link_page, timeout=25)
                 if r_link.status_code == 200:
                     target_soup = BeautifulSoup(r_link.text, "html.parser")
             except Exception as e:
@@ -312,15 +312,34 @@ class AnimeDriveExtractor:
         # Step 4: Locate episode block
         target_block = None
         ep_blocks_found = 0
-        for elem in target_soup.find_all(re.compile(r"^(h[1-6]|p|div)$")):
-            txt = elem.get_text(" ", strip=True)
-            m = re.search(r"(?:EP|Episode)\s*0*(\d+)", txt, re.I)
-            if m and any(
-                q in txt.lower() for q in ["hubcloud", "filepress", "480p", "720p", "1080p", "4k", "▼", "download"]
-            ):
+
+        # Primary: match exact adc-ep card containers on link.animedrive
+        ep_cards = target_soup.find_all(class_=re.compile(r"\badc-ep\b"))
+        for card in ep_cards:
+            card_classes = card.get("class", [])
+            if any("zip" in c.lower() for c in card_classes):
+                continue
+            hdr = card.find(class_=re.compile(r"adc-hdr|title|header")) or card
+            txt = hdr.get_text(" ", strip=True)
+            m = re.search(r"\b(?:EP|Episode)\s*0*(\d+)\b", txt, re.I)
+            if m:
                 ep_blocks_found += 1
                 if int(m.group(1)) == episode and target_block is None:
-                    target_block = elem
+                    target_block = card
+
+        if not target_block:
+            # Fallback for pages without adc-ep class
+            for elem in target_soup.find_all(re.compile(r"^(h[1-6]|p|div)$")):
+                if len(elem.find_all(re.compile(r"^(h[1-6]|p|div)$"))) > 5:
+                    continue
+                txt = elem.get_text(" ", strip=True)
+                m = re.search(r"\b(?:EP|Episode)\s*0*(\d+)\b", txt, re.I)
+                if m and any(
+                    q in txt.lower() for q in ["hubcloud", "filepress", "480p", "720p", "1080p", "4k", "▼", "download"]
+                ):
+                    ep_blocks_found += 1
+                    if int(m.group(1)) == episode and target_block is None:
+                        target_block = elem
 
         # Collect download buttons
         buttons = []
@@ -367,6 +386,10 @@ class AnimeDriveExtractor:
             if "1080" in btn_txt and "hq" in btn_txt and any(k in btn_txt for k in ("x265", "hevc", "10bit", "10-bit", "10 bit")):
                 return "1080p HQ x265"
             if "1080" in btn_txt and ("x265" in btn_txt or "hevc" in btn_txt or "10bit" in btn_txt or "10-bit" in btn_txt):
+                return "1080p HQ x265"
+            from utils.anime_match import parse_size_mb, is_around_1_to_2_gb
+            btn_sz = parse_size_mb(btn_txt)
+            if "1080" in btn_txt and btn_sz is not None and is_around_1_to_2_gb(btn_sz):
                 return "1080p HQ x265"
             if "1080" in btn_txt and "hq" in btn_txt:
                 return "1080p HQ"
@@ -453,10 +476,10 @@ class AnimeDriveExtractor:
                     log.info("AnimeDrive: Successfully resolved HubCloud direct stream [%s, score=%d]: %s", q_label, sc, stream_url[:80])
                     return {
                         "url": stream_url,
-                        "quality": q_label,
+                        "quality": "4K" if is_4k else q_label,
                         "requested_quality": quality_pref,
                         "detected_quality": q_label,
-                        "verified_quality": q_label,
+                        "verified_quality": "4K" if is_4k else q_label,
                         "size_mb": cand_size,
                         "server": "AnimeDrive (HubCloud)",
                         "referer": "https://hubcloud.ist/",
@@ -466,10 +489,10 @@ class AnimeDriveExtractor:
                 log.info("AnimeDrive: Direct playable link [%s, score=%d]: %s", q_label, sc, dest[:80])
                 return {
                     "url": dest,
-                    "quality": q_label,
+                    "quality": "4K" if is_4k else q_label,
                     "requested_quality": quality_pref,
                     "detected_quality": q_label,
-                    "verified_quality": q_label,
+                    "verified_quality": "4K" if is_4k else q_label,
                     "size_mb": cand_size,
                     "server": "AnimeDrive",
                     "referer": "https://link.animedrive.me/",
