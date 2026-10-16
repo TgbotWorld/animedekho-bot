@@ -69,8 +69,89 @@ class MultiSourceManager:
             pass
         return None
 
-    async def search_fallback(self, query: str) -> list[SearchResult]:
-        """Search fallback sources when primary AnimeDekho returns 0 results.
+    def _process_search_items(
+        self,
+        source_name: str,
+        raw_items: list[dict],
+        seen_slugs: set[str] | None = None,
+    ) -> list[SearchResult]:
+        if seen_slugs is None:
+            seen_slugs = set()
+        from utils.helpers import short_slug
+        results: list[SearchResult] = []
+        for item in raw_items:
+            raw_title = item.get("title", "")
+            title = clean_title(raw_title) or raw_title
+            url = item.get("url", "")
+            poster = item.get("poster", "")
+
+            # Generate clean slug
+            slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
+            if not slug or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+
+            is_movie = "movie" in title.lower() or "film" in title.lower()
+            self._slug_registry[slug] = {
+                "source": source_name,
+                "title": title,
+                "url": url,
+                "poster": poster,
+                "content_type": "movie" if is_movie else "series",
+            }
+            self._slug_registry[short_slug(slug)] = self._slug_registry[slug]
+
+            results.append(SearchResult(
+                title=f"{title} [{source_name}]",
+                slug=slug,
+                url=url,
+                content_type="movie" if is_movie else "series",
+                poster=poster,
+                source=source_name,
+            ))
+        return results
+
+    async def search_by_source(self, source_name: str, query: str) -> list[SearchResult]:
+        """Search a specific source by name."""
+        from bot.source_config import normalize_source
+        canonical = normalize_source(source_name) or source_name
+
+        if canonical == "AnimeDekho":
+            try:
+                from api.client import api
+                return await api._search_animedekho(query)
+            except Exception as e:
+                log.warning("AnimeDekho search_by_source failed for '%s': %s", query, e)
+                return []
+
+        extractor = None
+        for name, ext in self.sources:
+            if name.lower() == canonical.lower():
+                extractor = ext
+                canonical = name
+                break
+
+        if not extractor or not hasattr(extractor, "search"):
+            log.warning("No search extractor found for source '%s'", source_name)
+            return []
+
+        try:
+            from extractors import reliability as _rel
+            if _rel.is_source_benched(canonical):
+                log.info("Source '%s' is benched — skipping search_by_source", canonical)
+                return []
+
+            raw_items = await asyncio.wait_for(extractor.search(query), timeout=25)
+            if not raw_items:
+                return []
+
+            return self._process_search_items(canonical, raw_items)
+        except Exception as e:
+            log.warning("search_by_source on %s failed for '%s': %s", canonical, query, e)
+            return []
+
+    async def search_fallback(self, query: str, exclude_source: str | None = None) -> list[SearchResult]:
+        """Search fallback sources when primary default source returns 0 results.
 
         Issue #34: the sources are queried *concurrently* (bounded to 4 in
         flight, 25s each, 30s round cap) instead of one after another — a
@@ -82,6 +163,12 @@ class MultiSourceManager:
         seen_slugs = set()
 
         _sem = asyncio.Semaphore(4)
+
+        excl_norm = (exclude_source or "").strip().lower()
+        active_sources = [
+            it for it in self.sources
+            if not excl_norm or it[0].lower() != excl_norm
+        ]
 
         async def _search_one(item):
             name, extractor = item
@@ -103,7 +190,7 @@ class MultiSourceManager:
 
         _loop = asyncio.get_running_loop()
         _deadline = _loop.time() + 30.0
-        _tasks = [asyncio.ensure_future(_search_one(it)) for it in self.sources]
+        _tasks = [asyncio.ensure_future(_search_one(it)) for it in active_sources]
         _pending = set(_tasks)
         _raw: dict[str, list] = {}
         try:
@@ -135,43 +222,13 @@ class MultiSourceManager:
                 await asyncio.gather(*_pending, return_exceptions=True)
 
         # Emit in source-priority order regardless of who answered first.
-        for name, _ in self.sources:
+        for name, _ in active_sources:
             raw_items = _raw.get(name)
             if not raw_items:
                 continue
             try:
-                for item in raw_items:
-                    raw_title = item.get("title", "")
-                    title = clean_title(raw_title) or raw_title
-                    url = item.get("url", "")
-                    poster = item.get("poster", "")
-
-                    # Generate clean slug
-                    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title.lower()).strip("-")
-                    if not slug or slug in seen_slugs:
-                        continue
-                    seen_slugs.add(slug)
-
-                    is_movie = "movie" in title.lower() or "film" in title.lower()
-                    self._slug_registry[slug] = {
-                        "source": name,
-                        "title": title,
-                        "url": url,
-                        "poster": poster,
-                        "content_type": "movie" if is_movie else "series",
-                    }
-                    from utils.helpers import short_slug
-                    self._slug_registry[short_slug(slug)] = self._slug_registry[slug]
-
-                    results.append(SearchResult(
-                        title=f"{title} [{name}]",
-                        slug=slug,
-                        url=url,
-                        content_type="movie" if is_movie else "series",
-                        poster=poster,
-                        source=name,
-                    ))
-
+                items = self._process_search_items(name, raw_items, seen_slugs)
+                results.extend(items)
                 if len(results) >= 10:
                     break
             except Exception as e:
@@ -637,6 +694,35 @@ class MultiSourceManager:
         if not pool:
             log.info("MultiSource: no candidates (%s)", "; ".join(diag_trail))
             return None
+
+        # Prioritize preferred_source / default_source candidate if healthy
+        target_src = (preferred_source or "").strip()
+        if not target_src:
+            try:
+                from bot.source_config import get_default_source, is_source
+                _ds = await get_default_source()
+                if not is_source(_ds, "AnimeDekho"):
+                    target_src = _ds
+            except Exception:
+                pass
+
+        if target_src:
+            from bot.source_config import is_source
+            favored = [c for c in pool if is_source(c.get("source", ""), target_src)]
+            if favored:
+                best_fav, favored_diags = await select_fastest_healthy(favored)
+                if best_fav:
+                    for d in favored_diags:
+                        log.info("Health check (favored [%s] %s via %s): %s%s",
+                                 d.get("quality"), d.get("source"), d.get("provider"),
+                                 d.get("status"), f" ({d.get('error')})" if d.get("error") else "")
+                    best_fav["health_diagnostics"] = favored_diags
+                    best_fav["diagnostic_trail"] = diag_trail
+                    log.info("Default/preferred source '%s' selected [%s via %s]: %s",
+                             best_fav["source"], best_fav["quality"], best_fav["provider"], best_fav["url"][:80])
+                    return best_fav
+                log.info("Target source '%s' candidate was unhealthy, falling back to remaining sources", target_src)
+
         best, health_diags = await select_fastest_healthy(pool)
         # V3 #16 diagnostics: every candidate's health status in the log.
         for d in health_diags:

@@ -945,21 +945,22 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     if download_job_manager.is_job_cancelled(job_id):
         return
 
-    raw_servers = data["servers"]
+    raw_servers = data["servers"] if data else []
 
-    resolved = await _lazy_resolve_servers(raw_servers, quality_pref)
-    if resolved:
-        _store_servers(chat_id, f"movie:{movie_slug}", resolved, title, poster_url=poster_url)
-
-    candidates = _find_quality_candidates(resolved or raw_servers, quality_pref)
-
-    # Quality fallback logic for movies (V2 #15: direct first, AnimeDekho last):
-    # Direct-file MultiSource → AnimeDrive (DEFAULT for 4K) → ToonFlix.
-    # AnimeDekho candidates above are the fallback tier, not primary.
-    has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
-    is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
     from bot.source_config import get_default_source, is_source
     ad_default = is_source(await get_default_source(), "AnimeDekho")
+
+    resolved = []
+    candidates = []
+    has_exact = False
+    if ad_default and raw_servers:
+        resolved = await _lazy_resolve_servers(raw_servers, quality_pref)
+        if resolved:
+            _store_servers(chat_id, f"movie:{movie_slug}", resolved, title, poster_url=poster_url)
+        candidates = _find_quality_candidates(resolved or raw_servers, quality_pref)
+        has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
+
+    is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
     async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
         from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb
@@ -986,12 +987,11 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         from utils.anime_match import is_4k_satisfying
         return is_4k_satisfying(q_str, size=size)
 
-    # Step 0 FIRST (movies had no direct-source step at all): MultiSource.
+    # Step 0: MultiSource direct scraper resolution
     try:
         from extractors.multisource import multi_source_manager
-        from extractors.multisource import multi_source_manager as _msm
-        _pref = _msm.get_source_for_slug(movie_slug)
-        log.info("V2#15 movies: trying direct sources first for '%s' [%s] (preferred=%s)", title, quality_pref, _pref)
+        _pref = multi_source_manager.get_source_for_slug(movie_slug)
+        log.info("Movie stream resolution: trying direct sources for '%s' [%s] (preferred=%s, ad_default=%s)", title, quality_pref, _pref, ad_default)
         ms_res = await multi_source_manager.resolve_episode_stream(
             series_title=title, season=1, episode=1,
             quality_pref=quality_pref, series_slug=movie_slug,
@@ -1026,6 +1026,19 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                 candidates.append((ms_srv, ms_srv.qualities[0]))
     except Exception as e:
         log.warning("MultiSource movie resolution error: %s", e)
+
+    # Fallback to AnimeDekho if direct source missed exact quality and AnimeDekho was not resolved yet
+    if not ad_default and not has_exact and raw_servers:
+        try:
+            ad_resolved = await _lazy_resolve_servers(raw_servers, quality_pref)
+            if ad_resolved:
+                _store_servers(chat_id, f"movie:{movie_slug}", ad_resolved, title, poster_url=poster_url)
+            ad_cands = _find_quality_candidates(ad_resolved or raw_servers, quality_pref)
+            if ad_cands:
+                candidates.extend(ad_cands)
+                has_exact = any(q.resolution.lower() == quality_pref.lower() for _, q in candidates)
+        except Exception as ad_err:
+            log.warning("AnimeDekho movie fallback resolution error: %s", ad_err)
 
     found_4k = any(
         _is_4k_satisfying(q.resolution) for _, q in candidates

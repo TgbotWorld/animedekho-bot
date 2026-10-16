@@ -122,34 +122,80 @@ class AnimeDekhoAPI:
         return []
 
     async def search(self, query: str, page: int = 1) -> list[SearchResult]:
-        """Search anime/movies with multi-source fallback architecture."""
+        """Search anime/movies prioritizing configured default source, with multi-source fallback."""
         query = query.strip()
         if not query:
             return []
 
-        # 1. Primary search on AnimeDekho
-        results = await self._search_animedekho(query, page=page)
-        if results:
-            return results
+        from bot.source_config import get_default_source, is_source
+        default_src = await get_default_source()
+        is_ad_default = is_source(default_src, "AnimeDekho")
 
-        # 2. Clean query search on AnimeDekho (strip Season/Dub suffixes)
         clean_q = re.sub(
             r"(?i)\s*(?:season\s*\d+|s\d+|part\s*\d+|cour\s*\d+|hindi|dubbed|subbed|multi-audio|tamil|telugu).*$",
             "",
             query,
         ).strip()
-        if clean_q and clean_q.lower() != query.lower():
-            log.info("AnimeDekho 0 results for '%s'. Trying clean query: '%s'", query, clean_q)
+        has_clean = bool(clean_q and clean_q.lower() != query.lower())
+
+        if is_ad_default:
+            # 1. Primary search on AnimeDekho (default source)
+            results = await self._search_animedekho(query, page=page)
+            if results:
+                return results
+
+            # 2. Clean query search on AnimeDekho (strip Season/Dub suffixes)
+            if has_clean:
+                log.info("AnimeDekho 0 results for '%s'. Trying clean query: '%s'", query, clean_q)
+                results = await self._search_animedekho(clean_q, page=page)
+                if results:
+                    return results
+
+            # 3. Multi-source fallback search (AnimeDrive, ToonFlix, ToonWorld4All, RareAnimes, DeadToons, TOONo)
+            log.info("AnimeDekho returned 0 results for '%s'. Querying multi-source fallback scrapers...", query)
+            from extractors.multisource import multi_source_manager
+            fallback_results = await multi_source_manager.search_fallback(query)
+            if fallback_results:
+                return fallback_results
+            if has_clean:
+                fallback_results = await multi_source_manager.search_fallback(clean_q)
+                if fallback_results:
+                    return fallback_results
+
+            return []
+
+        # Default source is an extractor (e.g. DeadToons, AnimeDubHindi, ToonWorld4All, etc.)
+        from extractors.multisource import multi_source_manager
+        log.info("Searching default source '%s' for '%s'...", default_src, query)
+        results = await multi_source_manager.search_by_source(default_src, query)
+        if results:
+            return results
+
+        if has_clean:
+            log.info("Default source '%s' 0 results for '%s'. Trying clean query: '%s'", default_src, query, clean_q)
+            results = await multi_source_manager.search_by_source(default_src, clean_q)
+            if results:
+                return results
+
+        # Fallback 1: AnimeDekho
+        log.info("Default source '%s' returned 0 results for '%s'. Falling back to AnimeDekho...", default_src, query)
+        results = await self._search_animedekho(query, page=page)
+        if results:
+            return results
+        if has_clean:
             results = await self._search_animedekho(clean_q, page=page)
             if results:
                 return results
 
-        # 3. Multi-source fallback search (AnimeDrive, ToonFlix, ToonWorld4All, RareAnimes, DeadToons, TOONo)
-        log.info("AnimeDekho returned 0 results for '%s'. Querying multi-source fallback scrapers...", query)
-        from extractors.multisource import multi_source_manager
-        fallback_results = await multi_source_manager.search_fallback(query)
+        # Fallback 2: Remaining multi-source scrapers
+        log.info("AnimeDekho returned 0 results for '%s'. Querying remaining fallback scrapers...", query)
+        fallback_results = await multi_source_manager.search_fallback(query, exclude_source=default_src)
         if fallback_results:
             return fallback_results
+        if has_clean:
+            fallback_results = await multi_source_manager.search_fallback(clean_q, exclude_source=default_src)
+            if fallback_results:
+                return fallback_results
 
         return []
 

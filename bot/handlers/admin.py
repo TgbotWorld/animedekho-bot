@@ -255,7 +255,7 @@ async def cmd_source(client: Client, message: Message):
 
     if not args:
         lines = [
-            "🎬 <b>Default Download Source</b>",
+            "🎬 <b>Default Search & Download Source</b>",
             f"Current: <b>{htmlmod.escape(current)}</b>",
             "",
             "<b>Available sources:</b>",
@@ -266,7 +266,7 @@ async def cmd_source(client: Client, message: Message):
         lines += [
             "",
             "Usage: <code>/source &lt;name&gt;</code>",
-            "The default source resolves <b>first</b> for every new download;",
+            "The default source is searched and downloaded <b>first</b>;",
             "all other sources stay as automatic fallback. Changes apply instantly.",
         ]
         await message.reply_text("\n".join(lines), parse_mode=enums.ParseMode.HTML)
@@ -297,7 +297,7 @@ async def cmd_source(client: Client, message: Message):
     await message.reply_text(
         f"✅ <b>Default source changed</b>\n"
         f"<code>{htmlmod.escape(current)}</code> → <b>{htmlmod.escape(new)}</b>\n\n"
-        f"New downloads now resolve from <b>{htmlmod.escape(new)}</b> first; "
+        f"New searches and downloads now prioritize <b>{htmlmod.escape(new)}</b> first; "
         "every other source remains as fallback. No restart needed.",
         parse_mode=enums.ParseMode.HTML,
     )

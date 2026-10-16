@@ -187,6 +187,8 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
 
     from config.settings import settings
     ai_enabled = settings.ai.enabled if settings and settings.ai else True
+    from bot.source_config import get_default_source
+    default_src = await get_default_source()
 
     # Formatting helper badges
     def _badge(val: bool) -> str:
@@ -221,6 +223,7 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         "⚙️ <b>AnimeDekho Bot — Settings & Control Panel</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "Click the buttons below to toggle features and customize UI styles in real-time.\n\n"
+        f"• 🎬 <b>Default Source:</b> <code>{default_src}</code> (Search & DL Lead)\n"
         f"• 📁 <b>Upload Mode:</b> <code>{_mode_badge(upload_mode)}</code> (Video / Document)\n"
         f"• 🔒 <b>FSub Timer Link:</b> <code>{_badge(fsub_mod)}</code> (2m Expire)\n"
         f"• ⏳ <b>File Auto-Delete:</b> <code>{_dlt_badge(dlt_time)}</code>\n"
@@ -239,38 +242,39 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
 
     markup = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton(f"🎬 Source: {default_src}", callback_data="set_toggle:default_source"),
             InlineKeyboardButton(f"📁 Mode: {_mode_badge(upload_mode)}", callback_data="set_toggle:upload_mode"),
+        ],
+        [
             InlineKeyboardButton(f"⭐ Custom Emoji: {_badge(custom_emoji)}", callback_data="set_toggle:custom_emoji"),
-        ],
-        [
             InlineKeyboardButton(f"🖼️ Style: {_template_badge(thumb_template, random_thumb)}", callback_data="set_toggle:thumb_template"),
+        ],
+        [
             InlineKeyboardButton(f"🎲 Random Thumb: {_badge(random_thumb)}", callback_data="set_toggle:random_thumb"),
-        ],
-        [
             InlineKeyboardButton(f"🖼️ AutoThumb: {_badge(auto_thumb)}", callback_data="set_toggle:auto_thumb"),
+        ],
+        [
             InlineKeyboardButton(f"🔒 FSub: {_badge(fsub_mod)}", callback_data="set_toggle:fsub_mod"),
-        ],
-        [
             InlineKeyboardButton(f"⏳ Delete: {_dlt_badge(dlt_time)}", callback_data="set_toggle:dlt_time"),
+        ],
+        [
             InlineKeyboardButton(f"🎨 Start: {_style_badge(start_style)}", callback_data="set_toggle:start_style"),
-        ],
-        [
             InlineKeyboardButton(f"📅 Sched: {_style_badge(sched_style)}", callback_data="set_toggle:sched_style"),
+        ],
+        [
             InlineKeyboardButton(f"📺 Ep: {_style_badge(ep_style)}", callback_data="set_toggle:ep_style"),
-        ],
-        [
             InlineKeyboardButton(f"🖼️ Post: {_style_badge(post_style)}", callback_data="set_toggle:post_style"),
+        ],
+        [
             InlineKeyboardButton(f"🔍 AutoSearch: {_badge(auto_search)}", callback_data="set_toggle:auto_search"),
-        ],
-        [
             InlineKeyboardButton(f"⏰ 12 AM Post: {_badge(auto_sched)}", callback_data="set_toggle:auto_sched"),
+        ],
+        [
             InlineKeyboardButton(f"🤖 AI Agent: {_badge(ai_enabled)}", callback_data="set_toggle:ai_enabled"),
-        ],
-        [
             InlineKeyboardButton("🔄 Refresh", callback_data="set_toggle:refresh"),
-            InlineKeyboardButton("❌ Close Panel", callback_data="settings_action:close"),
         ],
         [
+            InlineKeyboardButton("❌ Close Panel", callback_data="settings_action:close"),
             InlineKeyboardButton("📖 Open /commands Guide", callback_data="cmd_cat:home"),
         ],
     ])
@@ -423,6 +427,18 @@ async def settings_callback(client: Client, query: CallbackQuery):
         new_mode = "document" if cur_mode == "video" else "video"
         await db.set_upload_mode(new_mode)
         alert_msg = f"Upload Mode: {new_mode.upper()} ({'Document 📄' if new_mode == 'document' else 'Video 🎬'})"
+
+    elif data == "set_toggle:default_source":
+        from bot.source_config import SOURCE_CATALOG, get_default_source, set_default_source
+        cur_src = await get_default_source()
+        names = [n for n, _ in SOURCE_CATALOG]
+        try:
+            idx = names.index(cur_src)
+            next_src = names[(idx + 1) % len(names)]
+        except ValueError:
+            next_src = names[0]
+        await set_default_source(next_src)
+        alert_msg = f"Default Source: {next_src} (Searches & downloads prioritize this source)"
 
     # Render updated UI
     text, markup = await _render_settings_panel(db)

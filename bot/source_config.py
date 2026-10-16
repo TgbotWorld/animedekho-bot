@@ -1,7 +1,7 @@
-"""Runtime-configurable default download source (owner command: /source).
+"""Runtime-configurable default search and download source (owner command: /source).
 
-The default source decides which resolver is tried FIRST when a user
-requests a download. It is persisted in the DB ``config`` collection under
+The default source decides which provider is tried FIRST when a user
+searches or requests a download. It is persisted in the DB ``config`` collection under
 the ``default_source`` key, so changing it takes effect immediately for
 every worker without a restart.
 
@@ -13,6 +13,7 @@ can be restored with ``/source animedekho``.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 
@@ -110,12 +111,13 @@ async def get_default_source() -> str:
     now = time.monotonic()
     if _cache["value"] and (now - _cache["ts"]) < _CACHE_TTL:
         return _cache["value"]
-    value = DEFAULT_SOURCE
+    env_default = normalize_source(os.environ.get("DEFAULT_SOURCE", "")) or DEFAULT_SOURCE
+    value = env_default
     try:
         from bot.database import db
         if db:
-            stored = await db.get_config("default_source", DEFAULT_SOURCE)
-            value = normalize_source(stored) or DEFAULT_SOURCE
+            stored = await db.get_config("default_source", env_default)
+            value = normalize_source(stored) or env_default
     except Exception as e:
         log.debug("get_default_source read failed: %s", e)
     _cache["value"] = value
