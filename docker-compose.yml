@@ -1,6 +1,12 @@
-version: "3.8"
-
 services:
+  mongo:
+    image: mongo:7
+    container_name: test-mongo
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - mongo-data:/data/db
+
   bot:
     build: .
     container_name: animedekho-bot
@@ -14,6 +20,7 @@ services:
       - bot-data:/app/data
       - bot-tmp:/tmp/animedekho_dl
     depends_on:
+      - mongo
       - vidstream-api
     environment:
       - VIDSTREAM_API_URL=http://127.0.0.1:4030
@@ -31,3 +38,4 @@ services:
 volumes:
   bot-data:
   bot-tmp:
+  mongo-data:
