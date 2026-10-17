@@ -255,7 +255,7 @@ Minimal surface for users — full arsenal for admins. Tap <kbd>/commands</kbd> 
 |--------------|--------------------------------------|
 | `/fsub`      | Manage Force Subscribe channel       |
 | `/fsub_mod`  | Toggle 2-min timer FSub links        |
-| `/dlt_time`  | Configure file auto-delete timer     |
+| `/dlt_time`  | Auto-delete status (feature removed) |
 
 **🤖 AI · 👥 Worker Bots · 🧑‍💻 Userbot**
 
@@ -336,7 +336,7 @@ cp .env.example .env
 | `AUTO_THUMB`            | Auto-generate branded thumbnails                       | `on`         |
 | `AUTO_SEARCH`           | Type-in-chat search trigger                            | `on`         |
 | `FSUB_MOD`              | 2-minute expiring invite links                         | `on`         |
-| `AUTO_DELETE_TIME`      | Media self-destruct timer (seconds, `0` = off)         | `600`        |
+| `AUTO_DELETE_TIME`      | Media self-destruct timer (feature removed, default `0`) | `0`          |
 | `AUTO_SCHEDULE_POST`    | Daily schedule card at 12 AM IST                       | `off`        |
 | `START_STYLE` / `SCHED_STYLE` / `EP_STYLE` / `POST_STYLE` | UI styles: `modern`-only (classic retired, V3 #7) | `modern` |
 | `START_PIC` / `START_MSG` | Custom /start banner & text                          | —            |
@@ -349,7 +349,7 @@ cp .env.example .env
 </details>
 
 > **🛰️ Runtime settings** — some switches live in the database, not `.env`, so they apply instantly to every worker without a restart:
-> <kbd>/source</kbd> *(default download source — AnimeDekho-first)* · <kbd>/albummode</kbd> · <kbd>/poststyle</kbd> · <kbd>/dlt_time</kbd> · <kbd>/setbotquality</kbd>
+> <kbd>/source</kbd> *(default download source — AnimeDekho-first)* · <kbd>/albummode</kbd> · <kbd>/poststyle</kbd> · <kbd>/setbotquality</kbd>
 
 <img src="assets/divider.png" width="100%" alt="divider">
 

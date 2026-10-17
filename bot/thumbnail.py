@@ -293,17 +293,28 @@ def _save_optimized_jpeg(img: Image.Image, output_path: str, max_kb: int = 285) 
     """Save image with optimal quality, unsharp mask, and ensure size is strictly under Telegram's limit."""
     final = img.convert("RGB")
     final = ImageEnhance.Contrast(final).enhance(1.05)
-    final = final.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=2))
+    final = ImageEnhance.Color(final).enhance(1.04)
+    final = ImageEnhance.Sharpness(final).enhance(1.20)
+    final = final.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=2))
 
-    q = 95
+    # Progressive JPEG with 4:4:4 chroma subsampling (subsampling=0) and 300 DPI metadata
+    q = 96
     while q >= 75:
-        final.save(output_path, "JPEG", quality=q, optimize=True, subsampling=0)
+        final.save(
+            output_path,
+            "JPEG",
+            quality=q,
+            optimize=True,
+            progressive=True,
+            subsampling=0,
+            dpi=(300, 300),
+        )
         try:
             if os.path.getsize(output_path) <= max_kb * 1024:
                 break
         except Exception:
             break
-        q -= 4
+        q -= 3
     return output_path
 
 
@@ -398,18 +409,26 @@ def enhance_custom_thumbnail(
             canvas = ImageEnhance.Contrast(canvas).enhance(1.08)
             canvas = ImageEnhance.Color(canvas).enhance(1.06)
             canvas = ImageEnhance.Sharpness(canvas).enhance(1.25)
-            canvas = canvas.filter(ImageFilter.UnsharpMask(radius=1.6, percent=135, threshold=3))
+            canvas = canvas.filter(ImageFilter.UnsharpMask(radius=1.3, percent=130, threshold=2))
 
-            # Optimize JPEG file size strictly for Telegram
-            q = 95
+            # Optimize JPEG file size strictly for Telegram with progressive 4:4:4
+            q = 96
             while q >= 75:
-                canvas.save(output_path, "JPEG", quality=q, optimize=True, subsampling=0)
+                canvas.save(
+                    output_path,
+                    "JPEG",
+                    quality=q,
+                    optimize=True,
+                    progressive=True,
+                    subsampling=0,
+                    dpi=(300, 300),
+                )
                 try:
                     if os.path.getsize(output_path) <= 285 * 1024:
                         break
                 except Exception:
                     break
-                q -= 4
+                q -= 3
 
             log.info("Enhanced custom thumbnail created: %s (%d bytes)", output_path, os.path.getsize(output_path))
             return output_path
@@ -623,47 +642,53 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             # ── 1. Key art on the right, feathered into the panel ──────────
             art = _resolve_poster_image(poster_path)
             if art:
-                # cover-crop into the art box (x >= ART_X)
-                ART_X = 500
+                # Enhance key art clarity, vibrancy, and contrast
+                art = ImageEnhance.Color(art).enhance(1.08)
+                art = ImageEnhance.Contrast(art).enhance(1.06)
+                art = art.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=2))
+
+                ART_X = 460
                 box_w, box_h = W - ART_X, H
                 scale = max(box_w / art.width, box_h / art.height)
-                art = art.resize((max(1, int(art.width * scale)), max(1, int(art.height * scale))),
-                                 Image.Resampling.LANCZOS)
+                nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
+                art = art.resize((nw, nh), Image.Resampling.LANCZOS)
                 ox = max(0, (art.width - box_w) // 2)
-                oy = max(0, (art.height - box_h) // 2)
+                # Keep portrait focal point (character heads/faces) in frame
+                oy = max(0, int((art.height - box_h) * 0.25)) if art.height > box_h else 0
                 art = art.crop((ox, oy, ox + box_w, oy + box_h))
-                # Feather: art fully hidden under the rail, ramping in right.
+
+                # Smooth, cinematic feather into the panel
                 mask = Image.new("L", (W, H), 0)
                 md = ImageDraw.Draw(mask)
-                ramp_start, ramp_end = 560, 940
+                ramp_start, ramp_end = 480, 820
                 for x in range(W):
                     if x < ramp_start:
                         a = 0
                     elif x > ramp_end:
                         a = 255
                     else:
-                        a = int(255 * ((x - ramp_start) / (ramp_end - ramp_start)) ** 0.85)
+                        a = int(255 * ((x - ramp_start) / (ramp_end - ramp_start)) ** 0.9)
                     md.line([(x, 0), (x, H - 1)], fill=a)
                 layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
                 layer.paste(art, (ART_X, 0))
                 canvas.paste(layer, (0, 0), mask)
             else:
-                # No art — keep the panel and add a soft glow so it isn't flat.
+                # No art — keep the panel and add a rich ambient radial glow
                 canvas.alpha_composite(_radial_glow((W, H), (1030, 360), 470, (167, 139, 250), 44))
 
-            # Vertical scrim on the art so the bottom watermark stays legible.
+            # Vertical scrim on the art so bottom watermark stays legible
             scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             sd = ImageDraw.Draw(scrim)
-            for y in range(int(H * 0.55), H):
-                a = int(150 * ((y - H * 0.55) / (H * 0.45)))
+            for y in range(int(H * 0.60), H):
+                a = int(140 * ((y - H * 0.60) / (H * 0.40)))
                 sd.line([(0, y), (W, y)], fill=(5, 4, 12, a))
             canvas.alpha_composite(scrim)
 
-            # Panel edge shade: keep the rail readable where art bleeds in.
+            # Left panel gradient edge: guarantees 100% readability of typography
             edge = _multi_gradient((W, H), [
                 (0.0, (13, 11, 24, 255)),
-                (0.44, (13, 11, 24, 255)),
-                (0.68, (13, 11, 24, 0)),
+                (0.42, (13, 11, 24, 255)),
+                (0.62, (13, 11, 24, 0)),
                 (1.0, (13, 11, 24, 0)),
             ])
             canvas.alpha_composite(edge)
@@ -755,17 +780,19 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 draw, title, max_w=self.RAIL_W, base_size=64, min_size=40, max_lines=3,
             )
             for line in title_lines:
-                # White with a soft shadow — the reference title is flat white.
+                # White with smooth Gaussian blurred shadow for depth & legibility
                 bb = draw.textbbox((0, 0), line, font=font_title)
                 tw, th = bb[2] - bb[0], bb[3] - bb[1]
-                tmask = Image.new("L", (tw + 20, th + 20), 0)
-                ImageDraw.Draw(tmask).text((10 - bb[0], 10 - bb[1]), line, font=font_title, fill=255)
+                pad_s = 14
+                tmask = Image.new("L", (tw + pad_s * 2, th + pad_s * 2), 0)
+                ImageDraw.Draw(tmask).text((pad_s - bb[0], pad_s - bb[1]), line, font=font_title, fill=255)
                 sh = Image.new("RGBA", tmask.size, (0, 0, 0, 255))
-                sh.putalpha(tmask.point(lambda p: p * 170 // 255))
-                canvas.alpha_composite(sh, (x0 - 10 + 3, ty - 10 + 5))
+                sh.putalpha(tmask.point(lambda p: p * 200 // 255))
+                sh = sh.filter(ImageFilter.GaussianBlur(radius=3))
+                canvas.alpha_composite(sh, (x0 - pad_s + 2, ty - pad_s + 4))
                 txt = Image.new("RGBA", tmask.size, (0, 0, 0, 0))
                 txt.paste(Image.new("RGBA", tmask.size, (255, 255, 255, 255)), (0, 0), tmask)
-                canvas.alpha_composite(txt, (x0 - 10, ty - 10))
+                canvas.alpha_composite(txt, (x0 - pad_s, ty - pad_s))
                 ty += line_h
             ty += 20
 
@@ -801,15 +828,18 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
 
             # ── 6. CTA + quality pills ─────────────────────────────────────
             font_pill = _get_font(20, bold=True, weight="bold")
-            # Primary "DOWNLOAD" pill (gradient fill).
+            # Primary "DOWNLOAD" pill (gradient fill + ambient shadow).
             cta = "DOWNLOAD"
             cb = draw.textbbox((0, 0), cta, font=font_pill)
             cw, chh = (cb[2] - cb[0]) + 56, 54
+            sh_cta = Image.new("RGBA", (cw + 24, chh + 24), (0, 0, 0, 0))
+            ImageDraw.Draw(sh_cta).rounded_rectangle((12, 12, cw + 12, chh + 12), radius=14, fill=(0, 0, 0, 160))
+            canvas.alpha_composite(sh_cta.filter(ImageFilter.GaussianBlur(radius=8)), (x0 - 12, ty - 12 + 3))
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), (x0, ty, x0 + cw, ty + chh), 14,
                 [(0.0, _shade_rgba(self.ACCENT[0][1], 1.0)), (1.0, _shade_rgba(self.ACCENT[1][1], 1.0))],
             ))
-            draw.text((x0 + 28, ty + 15), cta, font=font_pill, fill=(255, 255, 255, 255))
+            draw.text((x0 + (cw - (cb[2] - cb[0])) // 2 - cb[0], ty + (chh - (cb[3] - cb[1])) // 2 - cb[1]), cta, font=font_pill, fill=(255, 255, 255, 255))
             # Secondary outline pill: quality tier.
             q_label, q_color = _get_quality_pill(quality)
             qb = draw.textbbox((0, 0), q_label, font=font_pill)
@@ -818,9 +848,9 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             # Translucent fill → overlay (see note above), then flush so the
             # label is painted on top of it rather than under it.
             od.rounded_rectangle((qx, ty, qx + qw, ty + chh), radius=14,
-                                 fill=(255, 255, 255, 26), outline=(255, 255, 255, 130), width=2)
+                                 fill=(255, 255, 255, 28), outline=(255, 255, 255, 130), width=2)
             _flush_overlay()
-            draw.text((qx + 22, ty + 15), q_label, font=font_pill, fill=(241, 245, 249, 255))
+            draw.text((qx + 22, ty + (chh - (qb[3] - qb[1])) // 2 - qb[1]), q_label, font=font_pill, fill=(241, 245, 249, 255))
             # Dot accent in the pill's tier color.
             draw.ellipse((qx + qw - 20, ty + chh // 2 - 5, qx + qw - 10, ty + chh // 2 + 5),
                          fill=q_color[:3] + (255,))

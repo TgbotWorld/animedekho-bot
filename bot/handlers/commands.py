@@ -253,7 +253,7 @@ async def cmd_help(client: Client, message: Message):
         "• /users — Total registered users\n"
         "• /broadcast · /pbroadcast · /dbroadcast — Announce to everyone\n"
         "• /ban &lt;id&gt; · /uban &lt;id&gt; — Ban or unban a user\n"
-        "• /fsub · /fsub_mod · /dlt_time — Force-subscribe &amp; auto-delete timers\n"
+        "• /fsub · /fsub_mod — Force-subscribe management\n"
         "• /startstyle · /schedstyle · /epstyle · /poststyle — UI styles\n"
         "• /startpic — Custom banner for /start\n"
         "• /source — Show or change the default download source\n"
@@ -495,15 +495,6 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
         reply_markup=InlineKeyboardMarkup(buttons),
     )
 
-    # Schedule deletion of this invite link notice after 2 minutes
-    from bot.auto_delete import auto_delete_service
-    await auto_delete_service.schedule_deletion(
-        client=client,
-        chat_id=message.chat.id,
-        message_id=sent_msg.id,
-        custom_seconds=120,
-    )
-
 
 async def _handle_file_request(client: Client, message: Message, param: str):
     """Handle deep link file requests from main channel.
@@ -624,34 +615,9 @@ async def _handle_file_request(client: Client, message: Message, param: str):
                     except Exception as e:
                         log.error("Failed to send %s: %s", ep_key, e)
 
-            if sent_msg:
-                sec_param = encode_file_param(f"get_{series_slug}_{quality}_{ep_key}")
-                await auto_delete_service.schedule_deletion(
-                    client=client,
-                    chat_id=message.chat.id,
-                    message_id=sent_msg.id,
-                    get_file_link=f"https://t.me/{b_name}?start={sec_param}",
-                    file_title=title,
-                )
             await asyncio.sleep(0.4)
 
         await status_msg.delete()
-
-        # Send auto-delete notification note (Issue #15)
-        dlt_seconds = await db.get_dlt_time() if db else 0
-        if dlt_seconds > 0:
-            dlt_mins = max(1, round(dlt_seconds / 60))
-            notice_text = (
-                f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
-                f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
-            )
-            notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
-            await auto_delete_service.schedule_deletion(
-                client=client,
-                chat_id=message.chat.id,
-                message_id=notice_msg.id,
-                custom_seconds=dlt_seconds,
-            )
         return
 
     # Normal single-file logic
@@ -710,33 +676,7 @@ async def _handle_file_request(client: Client, message: Message, param: str):
                 file_id=file_id,
             )
 
-        # Auto-delete scheduling
-        if sent_msg:
-            from bot.auto_delete import auto_delete_service
-            sec_param = encode_file_param(param)
-            await auto_delete_service.schedule_deletion(
-                client=client,
-                chat_id=message.chat.id,
-                message_id=sent_msg.id,
-                get_file_link=f"https://t.me/{b_name}?start={sec_param}",
-                file_title=title,
-            )
-
-            # Send auto-delete notification note (Issue #15)
-            dlt_seconds = await db.get_dlt_time() if db else 0
-            if dlt_seconds > 0:
-                dlt_mins = max(1, round(dlt_seconds / 60))
-                notice_text = (
-                    f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
-                    f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
-                )
-                notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
-                await auto_delete_service.schedule_deletion(
-                    client=client,
-                    chat_id=message.chat.id,
-                    message_id=notice_msg.id,
-                    custom_seconds=dlt_seconds,
-                )
+        pass
 
     except Exception as e:
         log.error("Failed to send library file: %s", e)

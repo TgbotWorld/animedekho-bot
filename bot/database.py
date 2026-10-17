@@ -1063,8 +1063,8 @@ class Database:
         await self.set_config("fsub_channel", channel)
 
     async def get_dlt_time(self) -> int:
-        """Get file auto-delete time in seconds (default 600s = 10 mins; 0 = disabled)."""
-        val = await self.get_config("dlt_time", default=None)
+        """Get file auto-delete time in seconds (0 = disabled). Auto-delete is disabled."""
+        val = await self.get_config("dlt_time", default=0)
         if val is not None:
             try:
                 return max(0, int(val))
@@ -1076,7 +1076,7 @@ class Database:
                 return max(0, int(Config.AUTO_DELETE_TIME))
         except Exception:
             pass
-        return 600
+        return 0
 
     async def set_dlt_time(self, seconds: int):
         """Set file auto-delete time in seconds (0 = disabled)."""

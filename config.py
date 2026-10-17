@@ -142,8 +142,8 @@ class Config:
     # FSub Timer Link Mode: "on" (2-min expiring links) or "off" (standard links)
     FSUB_MOD = os.environ.get("FSUB_MOD", "on").lower() in ("on", "true", "1", "yes")
 
-    # Auto-Delete Time in seconds for sent files/videos (0 = disabled, 600 = 10 min)
-    AUTO_DELETE_TIME = int(os.environ.get("AUTO_DELETE_TIME", "600"))
+    # Auto-Delete Time in seconds for sent files/videos (0 = disabled, feature removed)
+    AUTO_DELETE_TIME = int(os.environ.get("AUTO_DELETE_TIME", "0"))
 
     # Auto Thumbnail: Automatically generate branded 1280x720 HD thumbnails with title & badges
     AUTO_THUMB = os.environ.get("AUTO_THUMB", "on").lower() in ("on", "true", "1", "yes")

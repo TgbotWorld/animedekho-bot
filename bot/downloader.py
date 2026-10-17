@@ -2451,47 +2451,7 @@ async def download_and_upload(
         elif target_upload_chat == chat_id and chat_id > 0:
             user_file_msg = sent_msg
 
-        # Auto-delete scheduling if delivered in user PM
-        if user_file_msg and chat_id > 0:
-            try:
-                from bot.auto_delete import auto_delete_service
-                from utils.helpers import encode_file_param
-                bot_user = getattr(client, "me", None)
-                bname = bot_user.username if bot_user else ""
-                m_ep = re.search(r"S(\d+)E(\d+)", title, re.IGNORECASE)
-                ep_k = f"S{int(m_ep.group(1)):01d}E{int(m_ep.group(2)):02d}" if m_ep else ("movie" if is_movie else "all")
-                q_slug = quality.lower().replace(" ", "")
-                sec_param = encode_file_param(f"get_{series_slug}_{q_slug}_{ep_k}")
-                # V3 #15: recovery link must hit the quality's worker, not
-                # always the main bot (users were bounced to main here).
-                link_bot = _worker_username_for_quality(quality, bname) if bname else ""
-                get_link = f"https://t.me/{link_bot}?start={sec_param}" if link_bot else ""
-                await auto_delete_service.schedule_deletion(
-                    client=client,
-                    chat_id=chat_id,
-                    message_id=user_file_msg.id,
-                    get_file_link=get_link,
-                    file_title=title,
-                )
-
-                # Send auto-delete notification note (Issue #15)
-                dlt_seconds = await db.get_dlt_time() if db else 0
-                if dlt_seconds > 0:
-                    dlt_mins = max(1, round(dlt_seconds / 60))
-                    notice_text = (
-                        f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
-                        f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
-                    )
-                    notice_msg = await client.send_message(chat_id=chat_id, text=notice_text, parse_mode=enums.ParseMode.HTML)
-                    await auto_delete_service.schedule_deletion(
-                        client=client,
-                        chat_id=chat_id,
-                        message_id=notice_msg.id,
-                        custom_seconds=dlt_seconds,
-                    )
-            except Exception as ade:
-                log.debug("Auto-delete scheduling in downloader failed: %s", ade)
-
+        # Auto-delete feature removed; worker routing reference: _worker_username_for_quality(quality, bname)
         total_time = time.time() - overall_start
 
         # Deliver upload completion notification directly to Dump Channel (not owner DM)

@@ -468,74 +468,17 @@ async def cmd_fsub_mod(client: Client, message: Message):
 
 
 async def cmd_dlt_time(client: Client, message: Message):
-    """Set or inspect auto-delete time for sent files and videos."""
+    """Notify that auto-delete feature has been removed/disabled."""
     user = message.from_user
     if user and not is_owner(user.id):
         await message.reply_text("⛔ Owner only command.")
         return
 
-    from bot.database import db
-    if not db:
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) > 1:
-        raw_val = parts[1].strip().lower()
-        seconds = 0
-        if raw_val in ("off", "disable", "none", "0"):
-            seconds = 0
-        elif raw_val.endswith("m"):
-            seconds = int(raw_val[:-1]) * 60
-        elif raw_val.endswith("h"):
-            seconds = int(raw_val[:-1]) * 3600
-        elif raw_val.endswith("s"):
-            seconds = int(raw_val[:-1])
-        elif raw_val.isdigit():
-            seconds = int(raw_val)
-        else:
-            await message.reply_text("⚠️ Invalid time. Examples: <code>/dlt_time 10m</code>, <code>/dlt_time 600</code>, <code>/dlt_time off</code>", parse_mode=enums.ParseMode.HTML)
-            return
-
-        await db.set_dlt_time(seconds)
-        if seconds == 0:
-            await message.reply_text("❌ <b>Auto-Delete Disabled.</b> Sent files will not be deleted automatically.", parse_mode=enums.ParseMode.HTML)
-        else:
-            mins = seconds / 60
-            await message.reply_text(
-                f"⏱ <b>Auto-Delete Time Updated:</b> <code>{seconds} seconds</code> ({mins:.1f} mins)\n\n"
-                "Files/videos delivered to users will be automatically deleted after this duration, and replaced with a 'Get File Again' message. Pending deletions persist across bot restarts.",
-                parse_mode=enums.ParseMode.HTML,
-            )
-        return
-
-    # Display current settings and quick preset buttons
-    current_sec = await db.get_dlt_time()
-    pending_count = await db.get_auto_delete_jobs_count()
-    status_str = f"{current_sec}s ({current_sec / 60:.1f} mins)" if current_sec > 0 else "Disabled (OFF)"
-
-    text = (
-        "⏱ <b>Auto-Delete System Settings</b>\n\n"
-        f"• <b>Current Deletion Timer:</b> <code>{status_str}</code>\n"
-        f"• <b>Pending Auto-Delete Jobs:</b> <code>{pending_count}</code>\n\n"
-        "User-delivered videos/files will automatically be deleted after this timer expires, and replaced with recovery notice.\n"
-        "<i>Select a preset below or use <code>/dlt_time &lt;seconds&gt;</code>:</i>"
+    await message.reply_text(
+        "ℹ️ <b>Auto-Delete Feature Removed</b>\n\n"
+        "The auto-delete feature has been removed. All delivered files and messages are now permanent and will not be automatically deleted.",
+        parse_mode=enums.ParseMode.HTML,
     )
-    buttons = [
-        [
-            InlineKeyboardButton("1 Min", callback_data="dlt:60"),
-            InlineKeyboardButton("2 Min", callback_data="dlt:120"),
-            InlineKeyboardButton("5 Min", callback_data="dlt:300"),
-        ],
-        [
-            InlineKeyboardButton("10 Min (Default)", callback_data="dlt:600"),
-            InlineKeyboardButton("30 Min", callback_data="dlt:1800"),
-            InlineKeyboardButton("1 Hour", callback_data="dlt:3600"),
-        ],
-        [
-            InlineKeyboardButton("❌ Disable Auto-Delete", callback_data="dlt:0"),
-        ]
-    ]
-    await message.reply_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 def _get_tutorial_arch_text() -> str:
@@ -554,11 +497,9 @@ def _get_tutorial_arch_text() -> str:
         "• Set dump channel: <code>/setdump -100123456789</code> (used for backup and monitor notices).\n"
         "• Toggle automatic monitoring: <code>/monitor on</code> (global) or <code>/monitor on &lt;channel_id&gt;</code>.\n"
         "• Auto-monitor automatically checks for releases, retries 3x, and cleans up notices on success.\n\n"
-        "<b>4. Secure Base64 Deep Links & Auto-Delete</b>\n"
+        "<b>4. Secure Base64 Deep Links</b>\n"
         "• URL-safe base64 deep links mask internal episode identifiers (<code>start=Z2V0...</code>).\n"
-        "• Auto-delete timer is configurable via <code>/dlt_time</code> or <code>/settings</code>.\n"
-        "• When files expire, users receive a clean card with <i>[Get File Again]</i>.\n"
-        "• All pending deletions are stored in MongoDB and survive bot restarts.\n\n"
+        "• Fast instant delivery directly to users' private chat with full permanence.\n\n"
         "<b>5. Visual Dashboard & UI Styles</b>\n"
         "• Open <code>/settings</code> to visually toggle styles, upload mode (Video/Document), and features.\n"
         "• <code>/startstyle modern</code>, <code>/poststyle modern</code>, <code>/schedstyle modern</code>.\n"
@@ -647,26 +588,16 @@ async def tutorial_callback(client: Client, query: CallbackQuery):
 
 
 async def dlt_time_callback(client: Client, query: CallbackQuery):
-    """Handle preset auto-delete time selection buttons."""
-    user = query.from_user
-    if user and not is_owner(user.id):
-        await query.answer("⛔ Owner only", show_alert=True)
-        return
-
-    from bot.database import db
-    data = query.data
-    sec_str = data.split(":", 1)[1]
-    sec = int(sec_str)
-
-    await db.set_dlt_time(sec)
-    await query.answer(f"Updated auto-delete to {sec}s")
-
-    status_str = f"{sec}s ({sec / 60:.1f} mins)" if sec > 0 else "Disabled (OFF)"
-    await query.message.edit_text(
-        f"✅ <b>Auto-Delete Time Updated:</b> <code>{status_str}</code>\n\n"
-        "Delivered files will automatically be deleted and replaced with recovery notice.",
-        parse_mode=enums.ParseMode.HTML,
-    )
+    """Handle preset auto-delete time selection buttons (feature removed)."""
+    await query.answer("Auto-delete feature has been removed.", show_alert=True)
+    try:
+        await query.message.edit_text(
+            "ℹ️ <b>Auto-Delete Feature Removed</b>\n\n"
+            "All user-delivered files and messages are now permanent and will not be automatically deleted.",
+            parse_mode=enums.ParseMode.HTML,
+        )
+    except Exception:
+        pass
 
 
 async def toggle_fsub_mod_callback(client: Client, query: CallbackQuery):

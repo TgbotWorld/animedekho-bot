@@ -88,7 +88,6 @@ COMMAND_CATEGORIES = {
     "cmd_cat:features": (
         "⚡ <b>Automation, AI & Storage:</b>\n\n"
         "• <code>/autosearch &lt;on|off&gt;</code> — Toggle direct name typing search\n"
-        "• <code>/dlt_time &lt;seconds&gt;</code> — Set file auto-delete timer (e.g. 600)\n"
         "• <code>/automonitor &lt;on|off&gt;</code> — Automated episode release monitor\n"
         "• <code>/ai &lt;query&gt;</code> — Ask Autonomous AI Agent to find anime\n"
         "• <code>/setai</code> — Configure AI Agent provider & model\n"
@@ -226,7 +225,6 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         f"• 🎬 <b>Default Source:</b> <code>{default_src}</code> (Search & DL Lead)\n"
         f"• 📁 <b>Upload Mode:</b> <code>{_mode_badge(upload_mode)}</code> (Video / Document)\n"
         f"• 🔒 <b>FSub Timer Link:</b> <code>{_badge(fsub_mod)}</code> (2m Expire)\n"
-        f"• ⏳ <b>File Auto-Delete:</b> <code>{_dlt_badge(dlt_time)}</code>\n"
         f"• ⭐ <b>Custom Emoji:</b> <code>{_badge(custom_emoji)}</code> (Premium Emojis)\n"
         f"• 🖼️ <b>Thumb Style:</b> <code>{_template_badge(thumb_template, random_thumb)}</code>\n"
         f"• 🎨 <b>Start Menu UI:</b> <code>{_style_badge(start_style)}</code>\n"
@@ -255,7 +253,6 @@ async def _render_settings_panel(db) -> tuple[str, InlineKeyboardMarkup]:
         ],
         [
             InlineKeyboardButton(f"🔒 FSub: {_badge(fsub_mod)}", callback_data="set_toggle:fsub_mod"),
-            InlineKeyboardButton(f"⏳ Delete: {_dlt_badge(dlt_time)}", callback_data="set_toggle:dlt_time"),
         ],
         [
             InlineKeyboardButton(f"🎨 Start: {_style_badge(start_style)}", callback_data="set_toggle:start_style"),
@@ -334,16 +331,7 @@ async def settings_callback(client: Client, query: CallbackQuery):
         alert_msg = f"FSub Timer Mode: {'ON (2-min links)' if new_val else 'OFF (Standard links)'}"
 
     elif data == "set_toggle:dlt_time":
-        cur = await db.get_dlt_time()
-        # Cycle through: 0 -> 300 -> 600 -> 1800 -> 3600 -> 0
-        cycle = [0, 300, 600, 1800, 3600]
-        try:
-            curr_idx = cycle.index(cur)
-            next_val = cycle[(curr_idx + 1) % len(cycle)]
-        except ValueError:
-            next_val = 600
-        await db.set_dlt_time(next_val)
-        alert_msg = f"Auto-Delete set to: {'Disabled' if next_val == 0 else f'{next_val // 60} Minutes'}"
+        alert_msg = "Auto-Delete feature has been removed."
 
     elif data == "set_toggle:start_style":
         # V3 #7: modern-only — toggle retired, enforce modern.

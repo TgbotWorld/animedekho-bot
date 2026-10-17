@@ -317,27 +317,18 @@ class EpisodeMonitorService:
                     except Exception:
                         pass
 
-                # Send failure notice and auto-delete after 120 hours - Issue #12
+                # Send failure notice
                 if notify_chat and self.client:
                     try:
-                        from bot.auto_delete import auto_delete_service
-                        fail_msg = await self.client.send_message(
+                        await self.client.send_message(
                             chat_id=notify_chat,
                             text=(
                                 f"⚠️ <b>Auto-Monitor Download Failed:</b>\n"
                                 f"📺 {series.title} S{season_num}E{ep.number} [{best_quality.resolution}]\n"
-                                f"❌ Failed after {max_retries} attempts.\n"
-                                f"<i>(This notice will auto-delete in 120 hours)</i>"
+                                f"❌ Failed after {max_retries} attempts."
                             ),
                             parse_mode=enums.ParseMode.HTML,
                         )
-                        if fail_msg and auto_delete_service and self.client:
-                            await auto_delete_service.schedule_deletion(
-                                client=self.client,
-                                chat_id=fail_msg.chat.id,
-                                message_id=fail_msg.id,
-                                custom_seconds=120 * 3600,
-                            )
                     except Exception as fe:
                         log.warning("Failed sending monitor failure notice: %s", fe)
                 return False

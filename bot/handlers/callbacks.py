@@ -1922,8 +1922,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
             await progress_msg.edit_text(
                 f"🛑 <b>Batch Cancelled</b>\n"
                 f"┌ 📺 {esc(series.title)} — Season {season}\n"
-                f"├ ✅ {completed}/{total} delivered before cancel\n"
-                f"└ 🗑️ This message will auto-delete in 12h",
+                f"└ ✅ {completed}/{total} delivered before cancel",
                 parse_mode=enums.ParseMode.HTML,
             )
         except Exception:
@@ -1935,7 +1934,6 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                 await bot.logger.bot_logger.log_batch_complete(f"{series.title} (CANCELLED)", season, completed, total)
             except Exception:
                 pass
-        asyncio.create_task(_auto_delete_messages(client, chat_id, sent_messages, 43200))
         return
     cache_info = f"\n⚡ {skipped} served from library (instant)" if skipped > 0 else ""
     downloaded = completed - skipped
@@ -1945,8 +1943,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
             f"┌ 📺 {esc(series.title)} — Season {season}\n"
             f"├ ✅ {completed}/{total} episodes delivered\n"
             f"{'├ 📥 ' + str(downloaded) + ' freshly downloaded' + chr(10) if downloaded > 0 else ''}"
-            f"{'├ ⚡ ' + str(skipped) + ' from library (instant)' + chr(10) if skipped > 0 else ''}"
-            f"└ 🗑️ This message will auto-delete in 12h",
+            f"{'└ ⚡ ' + str(skipped) + ' from library (instant)' if skipped > 0 else ''}".rstrip("\n"),
             parse_mode=enums.ParseMode.HTML,
         )
     except Exception:
@@ -1965,9 +1962,6 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
             await post_end_of_season(client, dest_channel_id, series.title, season)
         except Exception as _eos_err:
             log.debug("END OF SEASON sticker skipped: %s", _eos_err)
-
-    # Auto-delete all bot messages after 12 hours (43200 seconds)
-    asyncio.create_task(_auto_delete_messages(client, chat_id, sent_messages, 43200))
 
 
 async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServer, Quality]],
@@ -2263,12 +2257,7 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
                 )
             except Exception:
                 pass
-
-        # Auto-delete progress + file messages after 12h
-        to_delete = [progress_msg]
-        if sent_msg:
-            to_delete.append(sent_msg)
-        asyncio.create_task(_auto_delete_messages(client, chat_id, to_delete, 43200))
+        pass
 
     except Exception as e:
         log.exception("Download task error for %s", title)
@@ -2575,10 +2564,5 @@ async def _safe_edit(q: CallbackQuery, text: str, markup=None):
 
 
 async def _auto_delete_messages(client: Client, chat_id: int, messages: list, delay_seconds: int = 43200):
-    """Auto-delete a list of bot messages after delay (default 12h)."""
-    await asyncio.sleep(delay_seconds)
-    for msg in messages:
-        try:
-            await client.delete_messages(chat_id, msg.id)
-        except Exception:
-            pass
+    """Auto-delete feature is disabled; messages are preserved permanently."""
+    return

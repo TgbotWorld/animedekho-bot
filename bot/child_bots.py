@@ -293,13 +293,6 @@ class ChildBotManager:
                                 parse_mode=enums.ParseMode.HTML,
                                 reply_markup=InlineKeyboardMarkup(buttons),
                             )
-                            from bot.auto_delete import auto_delete_service
-                            await auto_delete_service.schedule_deletion(
-                                client=c,
-                                chat_id=m.chat.id,
-                                message_id=t_msg.id,
-                                custom_seconds=120,
-                            )
                             return
                         else:
                             await m.reply_text("⚠️ No dedicated channel found for this series.")
@@ -434,8 +427,6 @@ class ChildBotManager:
                     title = _stored.strip()
         except Exception:
             pass
-        from bot.auto_delete import auto_delete_service
-
         # Batch download / Get All request
         if episode_key.lower() == "all":
             query: dict = {"series_slug": series_slug}
@@ -471,8 +462,6 @@ class ChildBotManager:
             status_msg = await message.reply_text(f"⚡ <b>Worker @{bot_doc['username']}:</b> Delivering {len(all_files)} episode(s)...", parse_mode=enums.ParseMode.HTML)
             delivered = 0
 
-            from utils.helpers import encode_file_param
-
             for f in all_files:
                 ep_key = f.get("episode_key", "")
                 q_label = f.get("quality", quality)
@@ -481,35 +470,10 @@ class ChildBotManager:
                 sent_msg = await self._send_single_file(client, message.chat.id, f, caption)
                 if sent_msg:
                     delivered += 1
-                    sec_param = encode_file_param(f"get_{series_slug}_{quality}_{ep_key}")
-                    get_file_link = f"https://t.me/{bot_doc['username']}?start={sec_param}"
-                    await auto_delete_service.schedule_deletion(
-                        client=client,
-                        chat_id=message.chat.id,
-                        message_id=sent_msg.id,
-                        get_file_link=get_file_link,
-                        file_title=title,
-                    )
                 await asyncio.sleep(0.4)
 
             await status_msg.edit_text(f"✅ <b>Delivered {delivered}/{len(all_files)} episode(s)</b> via @{bot_doc['username']}!", parse_mode=enums.ParseMode.HTML)
             await db.increment_child_bot_stats(bot_doc["bot_id"])
-
-            # Send auto-delete notification note (Issue #15)
-            dlt_seconds = await db.get_dlt_time() if db else 0
-            if dlt_seconds > 0:
-                dlt_mins = max(1, round(dlt_seconds / 60))
-                notice_text = (
-                    f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
-                    f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
-                )
-                notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
-                await auto_delete_service.schedule_deletion(
-                    client=client,
-                    chat_id=message.chat.id,
-                    message_id=notice_msg.id,
-                    custom_seconds=dlt_seconds,
-                )
             return
 
         # Single episode or movie
@@ -531,32 +495,6 @@ class ChildBotManager:
         sent_msg = await self._send_single_file(client, message.chat.id, cached_file, caption)
         if sent_msg:
             await db.increment_child_bot_stats(bot_doc["bot_id"])
-            from utils.helpers import encode_file_param
-            sec_param = encode_file_param(param)
-            get_file_link = f"https://t.me/{bot_doc['username']}?start={sec_param}"
-            await auto_delete_service.schedule_deletion(
-                client=client,
-                chat_id=message.chat.id,
-                message_id=sent_msg.id,
-                get_file_link=get_file_link,
-                file_title=title,
-            )
-
-            # Send auto-delete notification note (Issue #15)
-            dlt_seconds = await db.get_dlt_time() if db else 0
-            if dlt_seconds > 0:
-                dlt_mins = max(1, round(dlt_seconds / 60))
-                notice_text = (
-                    f"<blockquote>‣ <b>ɴᴏᴛᴇ:</b> ᴛʜɪs ғɪʟᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ᴀᴜᴛᴏᴍᴀᴛɪᴄᴀʟʟʏ ɪɴ "
-                    f"<b>{dlt_mins} mins</b>. ꜰᴏʀᴡᴀʀᴅ ɪᴛ ᴛᴏ ʏᴏᴜʀ sᴀᴠᴇᴅ ᴍᴇssᴀɢᴇs ɴᴏᴡ..!</blockquote>"
-                )
-                notice_msg = await message.reply_text(notice_text, parse_mode=enums.ParseMode.HTML)
-                await auto_delete_service.schedule_deletion(
-                    client=client,
-                    chat_id=message.chat.id,
-                    message_id=notice_msg.id,
-                    custom_seconds=dlt_seconds,
-                )
         else:
             await message.reply_text("⚠️ Could not deliver file. Please try again or download via our main bot.")
 

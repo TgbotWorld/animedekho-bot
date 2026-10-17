@@ -140,11 +140,6 @@ async def _on_start(client: Client):
     userbot_mod.userbot_manager = ub_mgr
     log.info("Userbot Manager initialized")
 
-    # Init Auto-Delete Service
-    from bot.auto_delete import auto_delete_service
-    auto_delete_service.start(client)
-    log.info("Auto-Delete service started")
-
     # Init Episode Monitor Service (OFF by default)
     from bot.monitor import monitor_service
     monitor_service.start(client)
@@ -229,7 +224,6 @@ async def _on_start(client: Client):
                 BotCommand("stats", "VPS stats & performance card"),
                 BotCommand("fsub", "Manage Force Subscribe channel"),
                 BotCommand("fsub_mod", "Toggle 2-min timer FSub links"),
-                BotCommand("dlt_time", "Configure file auto-delete timer"),
                 BotCommand("setdump", "Configure dump storage channel"),
                 BotCommand("setthumb", "Set custom thumbnail for uploads"),
                 BotCommand("delthumb", "Delete custom thumbnail"),
@@ -278,8 +272,6 @@ async def _on_stop(client: Client):
     await monitor_service.stop()
     from bot.schedule import auto_schedule_service
     auto_schedule_service.stop()
-    from bot.auto_delete import auto_delete_service
-    await auto_delete_service.stop()
     from bot.userbot import userbot_manager
     if userbot_manager:
         await userbot_manager.stop()
