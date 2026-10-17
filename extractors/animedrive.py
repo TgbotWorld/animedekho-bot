@@ -36,7 +36,7 @@ def is_playable_media_url(url: str) -> bool:
     # Known video stream / direct file patterns
     if any(ext in u for ext in (".m3u8", ".mpd", ".mp4", ".mkv", ".webm", ".ts", ".zip")):
         return True
-    if any(dom in u for dom in ("googleusercontent.com", "drive.google.com", "mega.nz", "workers.dev", "storage.googleapis.com", "cloudflarestorage.com")):
+    if any(dom in u for dom in ("googleusercontent.com", "drive.google.com", "mega.nz", "workers.dev", "storage.googleapis.com", "cloudflarestorage.com", "pixeldrain")):
         return True
     return False
 
@@ -79,32 +79,39 @@ class AnimeDriveExtractor:
         ).strip()
         search_query = clean or query
 
-        for base in [self._base_url, self._fallback_url]:
-            url = f"{base}/?s={quote_plus(search_query)}"
-            try:
-                r = s.get(url, timeout=25)
-                if r.status_code != 200:
+        queries_to_try = [search_query]
+        if ":" in search_query:
+            queries_to_try.append(search_query.split(":")[0].strip())
+        if " - " in search_query:
+            queries_to_try.append(search_query.split(" - ")[0].strip())
+
+        for q_attempt in queries_to_try:
+            for base in [self._base_url, self._fallback_url]:
+                url = f"{base}/?s={quote_plus(q_attempt)}"
+                try:
+                    r = s.get(url, timeout=25)
+                    if r.status_code != 200:
+                        continue
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    results = []
+                    for art in soup.find_all("article"):
+                        a = art.find("a", href=True)
+                        title_el = art.find(["h1", "h2", "h3", "h4"])
+                        img = art.find("img")
+                        if a and title_el:
+                            title_text = title_el.get_text(strip=True)
+                            raw_p = img.get("src") or img.get("data-src", "") if img else ""
+                            from utils.anilist import is_valid_poster_url
+                            results.append({
+                                "title": title_text,
+                                "url": a["href"],
+                                "poster": raw_p if is_valid_poster_url(raw_p) else "",
+                            })
+                    if results:
+                        return results
+                except Exception as e:
+                    log.warning("AnimeDrive search failed on %s for '%s': %s", base, q_attempt, e)
                     continue
-                soup = BeautifulSoup(r.text, "html.parser")
-                results = []
-                for art in soup.find_all("article"):
-                    a = art.find("a", href=True)
-                    title_el = art.find(["h1", "h2", "h3", "h4"])
-                    img = art.find("img")
-                    if a and title_el:
-                        title_text = title_el.get_text(strip=True)
-                        raw_p = img.get("src") or img.get("data-src", "") if img else ""
-                        from utils.anilist import is_valid_poster_url
-                        results.append({
-                            "title": title_text,
-                            "url": a["href"],
-                            "poster": raw_p if is_valid_poster_url(raw_p) else "",
-                        })
-                if results:
-                    return results
-            except Exception as e:
-                log.warning("AnimeDrive search failed on %s for '%s': %s", base, query, e)
-                continue
         return []
 
     async def get_recent(self, page: int = 1) -> list[dict]:
@@ -435,14 +442,16 @@ class AnimeDriveExtractor:
             return None
 
         def _score_candidate(q_detected: str, dest_url: str, size_mb: float | None = None) -> tuple[int, str]:
-            # V3 #2: exact requested quality only — no closest fallback.
-            # 1080p HQ x265 and enhanced tiers satisfy 4K only when size is around 1 to 2 GB.
-            # AnimeDrive is designated as 4K-only to keep quality accurate.
             if not is_4k:
                 return (-1, q_detected)
-            from utils.anime_match import qualities_match
             is_hub = "hubcloud" in dest_url.lower()
             h_bonus = 20 if is_hub else 0
+            if q_detected == "4K":
+                return (1000 + h_bonus, q_detected)
+            # AnimeDrive is our 4K source: 1080p HQ x265 / HEVC 10-bit is the 4K tier
+            if q_detected in ("1080p HQ x265", "1080p HQ") or (q_detected == "1080p" and is_4k):
+                return (950 + h_bonus, q_detected)
+            from utils.anime_match import qualities_match
             if qualities_match(quality_pref, q_detected, size=size_mb):
                 return (1000 + h_bonus, q_detected)
             return (-1, q_detected)

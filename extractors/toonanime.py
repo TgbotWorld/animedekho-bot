@@ -85,78 +85,15 @@ class ToonAnimeExtractor:
         ).strip()
         search_query = clean or query
 
+        queries_to_try = [search_query]
+        if ":" in search_query:
+            queries_to_try.append(search_query.split(":")[0].strip())
+        if " - " in search_query:
+            queries_to_try.append(search_query.split(" - ")[0].strip())
+
         now = time.time()
-
-        def _probe(base: str) -> list[dict]:
-            """One mirror → its results, or [] when it is parked/unreachable."""
-            url = f"{base}/?s={quote_plus(search_query)}"
-            try:
-                ms = _get_scraper()
-                r = ms.get(url, timeout=4)
-                # Check for JS challenge redirect
-                m = re.search(r"window\.location\.replace\('([^']+)'\)", r.text)
-                if m:
-                    try:
-                        r = ms.get(m.group(1), headers={"Referer": url}, timeout=4)
-                    except Exception as ce:
-                        log.debug("ToonAnime challenge follow failed on %s: %s", base, ce)
-                        self._mark_mirror_dead(base)
-                        return []
-
-                if r.status_code != 200 or len(r.text) < 1000:
-                    self._mark_mirror_dead(base)
-                    return []
-                if self._is_dead_challenge_page(r.text, str(getattr(r, "url", ""))):
-                    log.info("ToonAnime %s is parked/challenged — skipping mirror", base)
-                    self._mark_mirror_dead(base)
-                    return []
-
-                soup = BeautifulSoup(r.text, "html.parser")
-                results = []
-                seen = set()
-
-                for art in soup.find_all(["article", "div"], class_=lambda c: c and any(k in str(c) for k in ("post", "item", "result", "anime", "film"))):
-                    a = art.find("a", href=True)
-                    if not a:
-                        continue
-                    href = a["href"]
-                    if href in seen:
-                        continue
-                    seen.add(href)
-                    full_url = href if href.startswith("http") else f"{base}{href}"
-
-                    h = art.find(["h1", "h2", "h3", "h4", "h5", "header", "span"])
-                    title = h.get_text(strip=True) if h else a.get_text(strip=True)
-                    title = re.sub(r"\d{4}$", "", title).strip()
-                    if not title or len(title) < 3 or title.lower() in ("watch series", "series", "movies", "menu", "home"):
-                        continue
-
-                    poster = ""
-                    img = art.find("img")
-                    if img:
-                        p_url = img.get("src") or img.get("data-src", "")
-                        if is_valid_poster_url(p_url):
-                            poster = p_url
-
-                    results.append({
-                        "title": title,
-                        "url": full_url,
-                        "poster": poster,
-                        "source": "ToonAnime",
-                    })
-
-                return results
-
-            except Exception as e:
-                log.debug("ToonAnime search attempt on %s failed: %s", base, e)
-                self._mark_mirror_dead(base)
-                return []
-
         live = [b for b in self._base_urls if self._mirror_dead.get(b, 0.0) <= now]
         if not live:
-            # Every mirror is inside its dead window — record it so the source
-            # bench can take this extractor out of the rotation completely
-            # instead of re-probing a parked domain on every request.
             try:
                 from extractors import reliability as _rel
                 _rel.note_source_failure("ToonAnime", "all mirrors parked")
@@ -164,15 +101,78 @@ class ToonAnimeExtractor:
                 pass
             return []
 
-        # Issue #34: probe the mirrors *together*. Taken one after another the
-        # parked mirrors cost ~17s on the first round.
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=min(4, len(live))) as pool:
-            found = list(pool.map(_probe, live))
-        for base, results in zip(live, found):
-            if results:
-                self._base_url = base
-                return results
+
+        for q_attempt in queries_to_try:
+            def _probe(base: str) -> list[dict]:
+                url = f"{base}/?s={quote_plus(q_attempt)}"
+                try:
+                    ms = _get_scraper()
+                    r = ms.get(url, timeout=4)
+                    m = re.search(r"window\.location\.replace\('([^']+)'\)", r.text)
+                    if m:
+                        try:
+                            r = ms.get(m.group(1), headers={"Referer": url}, timeout=4)
+                        except Exception as ce:
+                            log.debug("ToonAnime challenge follow failed on %s: %s", base, ce)
+                            self._mark_mirror_dead(base)
+                            return []
+
+                    if r.status_code != 200 or len(r.text) < 1000:
+                        self._mark_mirror_dead(base)
+                        return []
+                    if self._is_dead_challenge_page(r.text, str(getattr(r, "url", ""))):
+                        log.info("ToonAnime %s is parked/challenged — skipping mirror", base)
+                        self._mark_mirror_dead(base)
+                        return []
+
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    results = []
+                    seen = set()
+
+                    for art in soup.find_all(["article", "div"], class_=lambda c: c and any(k in str(c) for k in ("post", "item", "result", "anime", "film"))):
+                        a = art.find("a", href=True)
+                        if not a:
+                            continue
+                        href = a["href"]
+                        if href in seen:
+                            continue
+                        seen.add(href)
+                        full_url = href if href.startswith("http") else f"{base}{href}"
+
+                        h = art.find(["h1", "h2", "h3", "h4", "h5", "header", "span"])
+                        title = h.get_text(strip=True) if h else a.get_text(strip=True)
+                        title = re.sub(r"\d{4}$", "", title).strip()
+                        if not title or len(title) < 3 or title.lower() in ("watch series", "series", "movies", "menu", "home"):
+                            continue
+
+                        poster = ""
+                        img = art.find("img")
+                        if img:
+                            p_url = img.get("src") or img.get("data-src", "")
+                            if is_valid_poster_url(p_url):
+                                poster = p_url
+
+                        results.append({
+                            "title": title,
+                            "url": full_url,
+                            "poster": poster,
+                            "source": "ToonAnime",
+                        })
+
+                    return results
+
+                except Exception as e:
+                    log.debug("ToonAnime search attempt on %s failed: %s", base, e)
+                    self._mark_mirror_dead(base)
+                    return []
+
+            with ThreadPoolExecutor(max_workers=min(4, len(live))) as pool:
+                found = list(pool.map(_probe, live))
+            for base, results in zip(live, found):
+                if results:
+                    self._base_url = base
+                    return results
 
         return []
 
@@ -280,6 +280,8 @@ class ToonAnimeExtractor:
                 for q in ("2160p", "2160", "4k", "uhd"):
                     if q in blob:
                         return "4K"
+                if "1080" in blob and any(k in blob for k in ("hq", "x265", "hevc", "10bit", "10-bit", "10 bit")):
+                    return "1080p HQ x265"
                 for q in ("1080p", "1080"):
                     if q in blob:
                         return "1080p"
@@ -299,6 +301,7 @@ class ToonAnimeExtractor:
             # Non-exact candidates are discarded (next source, not fallback).
             from utils.anime_match import normalize_quality, qualities_match
             pref_norm = normalize_quality(quality_pref)
+            is_4k_req = quality_pref.lower() in ("4k", "2160p", "2160", "uhd")
             scored: list[tuple[int, str, str]] = []
 
             for iframe in soup_ep.find_all("iframe"):
@@ -307,7 +310,10 @@ class ToonAnimeExtractor:
                     continue
                 parent_txt = (iframe.parent.get_text(" ", strip=True) if iframe.parent else "")[:200]
                 det = _detect_quality(src, parent_txt) or "Unknown"
-                if not qualities_match(quality_pref, det):
+                if is_4k_req:
+                    if det not in ("4K", "1080p HQ x265") and not qualities_match(quality_pref, det):
+                        continue
+                elif not qualities_match(quality_pref, det):
                     continue
                 score = 10
                 # Prefer http(s) embeds over relative/js stubs
@@ -324,7 +330,10 @@ class ToonAnimeExtractor:
                     continue
                 label = a.get_text(" ", strip=True)[:200]
                 det = _detect_quality(href, label) or "Unknown"
-                if not qualities_match(quality_pref, det):
+                if is_4k_req:
+                    if det not in ("4K", "1080p HQ x265") and not qualities_match(quality_pref, det):
+                        continue
+                elif not qualities_match(quality_pref, det):
                     continue
                 score = 10
                 # Direct files outrank generic embeds on ties
@@ -337,14 +346,15 @@ class ToonAnimeExtractor:
                 return None
             scored.sort(key=lambda t: t[0], reverse=True)
             best_score, best_url, best_q = scored[0]
+            final_q = "4K" if is_4k_req else best_q
             log.info("ToonAnime: %d exact candidate(s), picked %s [%s] score=%d for '%s' S%dE%d",
                      len(scored), best_url[:80], best_q, best_score, anime_title, season, episode)
             return {
                 "url": best_url,
-                "quality": best_q,
+                "quality": final_q,
                 "requested_quality": quality_pref,
                 "detected_quality": best_q,
-                "verified_quality": best_q,
+                "verified_quality": final_q,
                 "source": "ToonAnime",
                 "poster": target_series.get("poster"),
             }
