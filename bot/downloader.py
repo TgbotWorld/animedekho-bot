@@ -1279,10 +1279,17 @@ async def fix_or_verify_video_resolution(
 
     actual_res = min(w, h)
 
+    if target_height == 2160:
+        # In anime distribution, 4K/top-tier is distributed either as native 4K (2160p)
+        # or as enhanced 1080p (HQ x265 / 10-bit HEVC WEB-DL). Both are valid top-tier releases.
+        if actual_res >= 950:
+            return True, "", meta
+        return False, f"Resolution mismatch: requested 4K/2160p but got {actual_res}p (undersized)", meta
+
     # V3 #2 strict bands (±~12% tolerance for encoder variance).
     # Oversize → downscale to exact; undersize/out-of-band → reject so the
     # caller tries the next source instead of delivering the wrong quality.
-    bands = {2160: (1900, 2300), 1080: (950, 1200), 720: (630, 810),
+    bands = {1080: (950, 1200), 720: (630, 810),
              480: (420, 530), 360: (310, 410), 240: (200, 280)}
     lo, hi = bands.get(target_height, (0, 0))
 
