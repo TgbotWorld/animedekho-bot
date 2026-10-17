@@ -251,11 +251,28 @@ class ChildBotManager:
                 raw_arg = args[1].strip()
                 from utils.helpers import decode_file_param
                 param = decode_file_param(raw_arg)
+                if param.startswith(("get_t_", "join_t_", "dl_t_")) or not param.startswith(("get_", "join_", "dl_")):
+                    try:
+                        from bot.slug_store import resolve_slug_async
+                        resolved = await resolve_slug_async(param)
+                        if resolved and resolved.startswith(("get_", "join_", "dl_")):
+                            param = resolved
+                    except Exception:
+                        pass
                 if param.startswith("get_"):
                     await self._handle_child_file_request(c, m, param, doc)
                     return
+                elif param.startswith("dl_"):
+                    from bot.handlers.commands import _handle_gated_download
+                    await _handle_gated_download(c, m, param)
+                    return
                 elif param.startswith("join_"):
                     slug = param[5:]
+                    try:
+                        from bot.slug_store import resolve_slug_async
+                        slug = await resolve_slug_async(slug)
+                    except Exception:
+                        pass
                     if db:
                         mapping = await db.get_channel_mapping(slug)
                         if mapping and mapping.get("channel_id"):
@@ -404,17 +421,27 @@ class ChildBotManager:
         # Parse deep link: get_<slug>_<quality>_<episode_key>
         raw = param[4:]  # strip 'get_'
         m = re.match(
-            r"^(.+?)_(480p|720p|1080p|1080p\s*hq|1080p\s*hq\s*x265|4k|2160p|auto)_(s\d+e\d+|movie|all)$",
+            r"^(.+?)_((?:480|720|1080|2160|\d{3,4})p?(?:[\s_.-]?(?:hq|hevc|x265|x264|10-?bit|web-?dl|hdrip|dvdrip))*|4k|auto)_(s\d+e\d+|movie|all|\d+)$",
             raw,
             re.IGNORECASE,
         )
-        if not m:
-            await message.reply_text("⚠️ Invalid or expired download link.")
-            return
+        if m:
+            series_slug = m.group(1)
+            quality = m.group(2)
+            episode_key = m.group(3)
+        else:
+            parts = raw.rsplit("_", 2)
+            if len(parts) == 3 and re.match(r"^(s\d+e\d+|movie|all|\d+)$", parts[2], re.IGNORECASE):
+                series_slug, quality, episode_key = parts[0], parts[1], parts[2]
+            else:
+                await message.reply_text("⚠️ Invalid or expired download link.")
+                return
 
-        series_slug = m.group(1)
-        quality = m.group(2)
-        episode_key = m.group(3)
+        try:
+            from bot.slug_store import resolve_slug_async
+            series_slug = await resolve_slug_async(series_slug)
+        except Exception:
+            pass
 
         from utils.helpers import slug_to_title
         title = slug_to_title(series_slug)

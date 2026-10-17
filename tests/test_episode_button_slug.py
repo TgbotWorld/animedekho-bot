@@ -62,3 +62,43 @@ def test_keyboard_callback_data_within_64_bytes():
         for btn in row:
             cb = btn.callback_data
             assert len(cb.encode("utf-8")) <= 64, f"Quality callback data too long: {cb}"
+
+
+def test_long_file_param_within_64_chars():
+    from utils.helpers import encode_file_param, decode_file_param
+    long_slug = "i-was-reincarnated-as-the-7th-prince-so-i-can-take-my-time-perfecting-my-magical-ability"
+
+    # 1. get_ deep link parameter
+    raw_param = f"get_{long_slug}_1080p_HQ_HEVC_s1e01"
+    encoded = encode_file_param(raw_param)
+    assert len(encoded) <= 64, f"Encoded param exceeds 64 chars ({len(encoded)}): {encoded}"
+    decoded = decode_file_param(encoded)
+    assert decoded == raw_param, f"Decoded param mismatch: expected {raw_param}, got {decoded}"
+
+    # 2. join_ deep link parameter
+    join_param = f"join_{long_slug}"
+    enc_join = encode_file_param(join_param)
+    assert len(enc_join) <= 64, f"Encoded join param exceeds 64 chars ({len(enc_join)}): {enc_join}"
+    dec_join = decode_file_param(enc_join)
+    assert dec_join == join_param, f"Decoded join mismatch: expected {join_param}, got {dec_join}"
+
+    # 3. dl_ deep link parameter
+    dl_param = f"dl_{long_slug}_2"
+    enc_dl = encode_file_param(dl_param)
+    assert len(enc_dl) <= 64, f"Encoded dl param exceeds 64 chars ({len(enc_dl)}): {enc_dl}"
+    dec_dl = decode_file_param(enc_dl)
+    assert dec_dl == dl_param, f"Decoded dl mismatch: expected {dl_param}, got {dec_dl}"
+
+    # 4. Standard short parameter maintains standard base64 behavior
+    short_param = "get_naruto_720p_s1e01"
+    enc_short = encode_file_param(short_param)
+    assert len(enc_short) <= 64
+    assert decode_file_param(enc_short) == short_param
+
+
+def test_bot_username_sanitization():
+    from bot.library import bot_username_for_quality
+    uname = bot_username_for_quality("720p", "@TestBot")
+    assert not uname.startswith("@")
+    assert uname == "TestBot"
+

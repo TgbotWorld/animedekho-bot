@@ -85,11 +85,25 @@ async def cmd_start(client: Client, message: Message):
         raw_arg = args[1].strip()
         from utils.helpers import decode_file_param
         param = decode_file_param(raw_arg)
+        if param.startswith(("get_t_", "join_t_", "dl_t_")) or not param.startswith(("get_", "join_", "dl_")):
+            try:
+                from bot.slug_store import resolve_slug_async
+                resolved = await resolve_slug_async(param)
+                if resolved and resolved.startswith(("get_", "join_", "dl_")):
+                    param = resolved
+            except Exception:
+                pass
         if param.startswith("get_"):
             await _handle_file_request(client, message, param)
             return
         elif param.startswith("join_"):
-            await _handle_channel_join_request(client, message, param[5:])
+            slug = param[5:]
+            try:
+                from bot.slug_store import resolve_slug_async
+                slug = await resolve_slug_async(slug)
+            except Exception:
+                pass
+            await _handle_channel_join_request(client, message, slug)
             return
         elif param.startswith("dl_"):
             # Issue #33: gated ⬇ DOWNLOAD button on channel posts.
@@ -357,6 +371,11 @@ async def _handle_gated_download(client: Client, message: Message, param: str):
     user = message.from_user
     user_id = user.id if user else 0
     slug, season = decode_gate_param(param)
+    try:
+        from bot.slug_store import resolve_slug_async
+        slug = await resolve_slug_async(slug)
+    except Exception:
+        pass
     if not slug:
         await message.reply_text("⚠️ Invalid download link.")
         return
@@ -428,6 +447,12 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
 
     user = message.from_user
     user_id = user.id if user else 0
+
+    try:
+        from bot.slug_store import resolve_slug_async
+        series_slug = await resolve_slug_async(series_slug)
+    except Exception:
+        pass
 
     from bot.fsub import check_fsub, create_timer_invite_link, send_fsub_prompt
     from utils.helpers import encode_file_param
@@ -540,6 +565,12 @@ async def _handle_file_request(client: Client, message: Message, param: str):
         else:
             await message.reply_text("⚠️ Invalid file link format.")
             return
+
+    try:
+        from bot.slug_store import resolve_slug_async
+        series_slug = await resolve_slug_async(series_slug)
+    except Exception:
+        pass
 
     import html as htmlmod
     from utils.helpers import slug_to_title

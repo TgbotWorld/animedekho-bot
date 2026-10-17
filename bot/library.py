@@ -796,7 +796,7 @@ class LibraryManager:
         if gated:
             from bot.linkgate import encode_gate_param
             from config import Config
-            uname = str(getattr(Config, "BOT_USERNAME", "") or "").lstrip("@") or self.bot_username
+            uname = (str(getattr(Config, "BOT_USERNAME", "") or "").lstrip("@") or self.bot_username or "").lstrip("@")
             return InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     "⬇️ DOWNLOAD",
@@ -808,7 +808,7 @@ class LibraryManager:
             qualities, series_slug, is_movie=is_movie, bot_username=self.bot_username,
         )
         return markup if markup.inline_keyboard else InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚡ Open Bot", url=f"https://t.me/{self.bot_username}?start=start")]
+            [InlineKeyboardButton("⚡ Open Bot", url=f"https://t.me/{(self.bot_username or '').lstrip('@')}?start=start")]
         ])
 
     async def get_file(self, series_slug: str, quality: str, episode_key: str) -> str | None:
@@ -946,13 +946,27 @@ def bot_username_for_quality(quality: str, fallback_username: str = "") -> str:
         allow_fallback = bool(getattr(Config, "QUALITY_BUTTON_FALLBACK_TO_MAIN", True))
     except Exception:
         allow_fallback = True
+    if not fallback_username:
+        try:
+            from config import Config
+            fallback_username = getattr(Config, "BOT_USERNAME", "") or ""
+        except Exception:
+            pass
+    if not fallback_username:
+        try:
+            from bot.library import library_manager
+            if library_manager and library_manager.bot_username:
+                fallback_username = library_manager.bot_username
+        except Exception:
+            pass
+    fallback_clean = (fallback_username or "").lstrip("@")
     if not allow_fallback:
         log.warning("V3 #15: no active worker for quality %s and fallback disabled — using main bot",
                     q)
     else:
         log.warning("V3 #15: no active worker for quality %s — explicit fallback to main bot @%s",
-                    q, fallback_username)
-    return fallback_username
+                    q, fallback_clean)
+    return fallback_clean
 
 
 def build_quality_buttons(

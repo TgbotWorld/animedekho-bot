@@ -1701,7 +1701,13 @@ def _worker_username_for_quality(q_label: str, fallback: str) -> str:
             log.warning("V3 #15: no active worker for [%s] — falling back to main bot", q_label)
     except Exception as e:
         log.warning("V3 #15: worker lookup failed for [%s]: %s", q_label, e)
-    return fallback
+    if not fallback:
+        try:
+            from config import Config
+            fallback = getattr(Config, "BOT_USERNAME", "") or ""
+        except Exception:
+            pass
+    return (fallback or "").lstrip("@")
 
 
 _GENRE_EMOJIS = {

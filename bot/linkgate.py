@@ -274,12 +274,18 @@ async def gate_prompt(
 def _bot_username(client: Client) -> str:
     me = getattr(client, "me", None)
     if me and getattr(me, "username", None):
-        return me.username
+        return me.username.lstrip("@")
     try:
         from config import Config
         uname = getattr(Config, "BOT_USERNAME", "") or ""
         if uname:
             return uname.lstrip("@")
+    except Exception:
+        pass
+    try:
+        from bot.library import library_manager
+        if library_manager and library_manager.bot_username:
+            return library_manager.bot_username.lstrip("@")
     except Exception:
         pass
     return "bot"

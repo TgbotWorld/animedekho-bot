@@ -74,13 +74,36 @@ def extract_series_slug(ep_slug: str) -> str | None:
 
 
 import base64
+import hashlib
 
 
 def encode_file_param(param: str) -> str:
-    """Encode a deep link parameter (e.g. 'get_series_720p_S1E01') to a secure URL-safe base64 string."""
+    """Encode a deep link parameter (e.g. 'get_series_720p_S1E01') to a secure URL-safe base64 string.
+
+    Telegram strictly limits the start parameter to 64 characters [a-zA-Z0-9_-].
+    When a long anime title or quality parameter would cause the Base64 representation
+    to exceed 64 characters, it is safely tokenized and stored in the persistent slug store.
+    """
     if not param:
         return ""
-    return base64.urlsafe_b64encode(param.encode("utf-8")).decode("utf-8").rstrip("=")
+    b64 = base64.urlsafe_b64encode(param.encode("utf-8")).decode("utf-8").rstrip("=")
+    if len(b64) <= 64:
+        return b64
+
+    # Tokenize long parameter to fit strictly within 64 characters
+    try:
+        from bot.slug_store import _cache_put
+        prefix = ""
+        for p in _PARAM_PREFIXES:
+            if param.startswith(p):
+                prefix = p
+                break
+        h = hashlib.sha256(param.encode("utf-8")).hexdigest()[:16]
+        token = f"{prefix}t_{h}" if prefix else f"t_{h}"
+        _cache_put(token, param)
+        return token
+    except Exception:
+        return b64[:64]
 
 
 #: Deep-link parameter families this bot accepts (file requests, series-channel
@@ -89,17 +112,39 @@ _PARAM_PREFIXES = ("get_", "join_", "dl_")
 
 
 def decode_file_param(param: str) -> str:
-    """Decode a base64 URL-safe parameter. Returns original if already raw or if decoding fails."""
+    """Decode a base64 URL-safe parameter or resolve a deep link token."""
     if not param:
         return ""
+
+    # Check if raw param is already a known token
+    try:
+        from bot.slug_store import resolve_slug
+        resolved = resolve_slug(param)
+        if resolved and resolved != param and resolved.startswith(_PARAM_PREFIXES):
+            return resolved
+    except Exception:
+        pass
+
+    # Raw param already starts with prefix
     if param.startswith(_PARAM_PREFIXES):
         return param
+
+    # Base64 decode
     try:
         padded = param + "=" * ((4 - len(param) % 4) % 4)
         decoded = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+        try:
+            from bot.slug_store import resolve_slug
+            res_dec = resolve_slug(decoded)
+            if res_dec and res_dec != decoded and res_dec.startswith(_PARAM_PREFIXES):
+                return res_dec
+        except Exception:
+            pass
         if decoded.startswith(_PARAM_PREFIXES):
             return decoded
     except Exception:
         pass
+
     return param
+
 
