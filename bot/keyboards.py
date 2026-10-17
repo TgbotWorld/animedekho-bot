@@ -9,6 +9,7 @@ from api.models import (
 )
 from config.settings import settings
 from utils.helpers import short_slug
+from bot.slug_store import pack_episode_slug, pack_series_slug, pack_slug
 
 S = settings.bot
 
@@ -79,7 +80,7 @@ def browse_source_page(
     """Paginated listing of recent releases from a specific source."""
     buttons = []
     for it in items[: S.items_per_page]:
-        cb = _safe_cb(f"sr:{short_slug(it.slug)}")
+        cb = _safe_cb(f"sr:{pack_series_slug(it.slug)}")
         title = it.title
         tag = f" [{source_name}]"
         if title.endswith(tag):
@@ -107,7 +108,7 @@ def search_results(results: list[SearchResult]) -> InlineKeyboardMarkup:
     for r in results[: S.max_search_results]:
         prefix = "sr" if r.is_series else "mr"
         emoji = "📺" if r.is_series else "🎬"
-        cb = _safe_cb(f"{prefix}:{short_slug(r.slug)}")
+        cb = _safe_cb(f"{prefix}:{pack_slug(r.slug)}")
         buttons.append([InlineKeyboardButton(f"{emoji} {r.title[:45]}", callback_data=cb)])
     buttons.append([_menu_btn()])
     return InlineKeyboardMarkup(buttons)
@@ -123,7 +124,7 @@ def listing_page(
 ) -> InlineKeyboardMarkup:
     buttons = []
     for it in items[: S.items_per_page]:
-        cb = _safe_cb(f"{item_prefix}:{short_slug(it.slug)}")
+        cb = _safe_cb(f"{item_prefix}:{pack_slug(it.slug)}")
         buttons.append([InlineKeyboardButton(f"{emoji} {it.title[:45]}", callback_data=cb)])
     nav = []
     if page > 1:
@@ -139,7 +140,7 @@ def listing_page(
 def season_picker(series: Series) -> InlineKeyboardMarkup:
     buttons = []
     row = []
-    ss = short_slug(series.slug, 30)
+    ss = pack_series_slug(series.slug)
     for sn in sorted(series.seasons.keys()):
         ep_count = series.seasons[sn].episode_count
         cb = _safe_cb(f"se:{ss}:{sn}")
@@ -170,20 +171,20 @@ def episode_picker(
     buttons = []
     row = []
     for ep in episodes:
-        cb = _safe_cb(f"ep:{short_slug(ep.slug, 60)}")
+        cb = _safe_cb(f"ep:{pack_episode_slug(ep.slug, season, ep.number)}")
         row.append(InlineKeyboardButton(f"Ep {ep.number}", callback_data=cb))
         if len(row) >= S.episodes_per_row:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
-    ss = short_slug(series_slug, 30)
+    ss = pack_series_slug(series_slug)
     cb = _safe_cb(f"bat:{ss}:{season}")
     buttons.append([InlineKeyboardButton(
         f"📥 Batch Download S{season}", callback_data=cb
     )])
     buttons.append([
-        InlineKeyboardButton("🔙 Seasons", callback_data=_safe_cb(f"sr:{short_slug(series_slug)}")),
+        InlineKeyboardButton("🔙 Seasons", callback_data=_safe_cb(f"sr:{ss}")),
         _menu_btn(),
     ])
     return InlineKeyboardMarkup(buttons)
@@ -200,7 +201,7 @@ QUALITY_CODE_MAP = {
 def batch_quality_picker(series_slug: str, season: int) -> InlineKeyboardMarkup:
     """Quality selection for batch download — supports single, all, and multi-select."""
     buttons = []
-    ss = short_slug(series_slug, 28)
+    ss = pack_series_slug(series_slug)
     row: list[InlineKeyboardButton] = []
     for q in settings.site.default_qualities:  # ["480p", "720p", "1080p"]
         cb = _safe_cb(f"bq:{ss}:{season}:{q}")
@@ -216,7 +217,7 @@ def batch_quality_picker(series_slug: str, season: int) -> InlineKeyboardMarkup:
 
     buttons.append([InlineKeyboardButton("✨ Multi-Select Qualities", callback_data=_safe_cb(f"mq_o:bq:{season}:{ss}"))])
     buttons.append([
-        InlineKeyboardButton("🔙 Cancel", callback_data=_safe_cb(f"se:{short_slug(series_slug, 30)}:{season}")),
+        InlineKeyboardButton("🔙 Cancel", callback_data=_safe_cb(f"se:{ss}:{season}")),
         _menu_btn(),
     ])
     return InlineKeyboardMarkup(buttons)
@@ -231,7 +232,7 @@ def quality_picker(
     """Show quality buttons. Marks available ones with ✅, unavailable with ⚡ (will use closest)."""
     buttons = []
     prefix = "mdl" if is_movie else "dl"
-    ss = short_slug(slug)
+    ss = pack_slug(slug)
 
     default_q = settings.site.default_qualities  # ["480p", "720p", "1080p"]
 
@@ -345,7 +346,7 @@ def category_page(
     for it in items[: S.items_per_page]:
         prefix = "sr" if it.is_series else "mr"
         emoji = "📺" if it.is_series else "🎬"
-        cb = _safe_cb(f"{prefix}:{short_slug(it.slug)}")
+        cb = _safe_cb(f"{prefix}:{pack_slug(it.slug)}")
         buttons.append([InlineKeyboardButton(f"{emoji} {it.title[:45]}", callback_data=cb)])
     nav = []
     if page > 1:

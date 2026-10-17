@@ -48,8 +48,29 @@ def slug_to_title(slug: str) -> str:
 
 
 def extract_series_slug(ep_slug: str) -> str | None:
-    m = re.match(r"(.+)-\d+x\d+", ep_slug)
-    return m.group(1) if m else None
+    if not ep_slug:
+        return None
+    if ep_slug.startswith("e_"):
+        try:
+            from bot.slug_store import resolve_slug
+            resolved = resolve_slug(ep_slug)
+            if resolved and resolved != ep_slug:
+                ep_slug = resolved
+        except Exception:
+            pass
+    m = re.match(r"^(.+)-\d+x\d+$", ep_slug)
+    if m:
+        return m.group(1)
+    m2 = re.match(r"^(.+)-(?:season-\d+-)?episode-\d+$", ep_slug, re.IGNORECASE)
+    if m2:
+        return m2.group(1)
+    m3 = re.match(r"^(.+)-s\d+e\d+$", ep_slug, re.IGNORECASE)
+    if m3:
+        return m3.group(1)
+    m4 = re.match(r"^(.+)-\d+x\d+", ep_slug)
+    if m4:
+        return m4.group(1)
+    return None
 
 
 import base64

@@ -42,6 +42,7 @@ class Database:
         self.auto_delete_jobs = self.db["auto_delete_jobs"]
         self.custom_thumbnails = self.db["custom_thumbnails"]
         self.monitored_series = self.db["monitored_series"]
+        self.slug_cache = self.db["slug_cache"]
 
     async def init_indexes(self):
         """Create necessary indexes."""
@@ -71,6 +72,7 @@ class Database:
         await self.auto_delete_jobs.create_index([("chat_id", 1), ("message_id", 1)], unique=True)
         await self.custom_thumbnails.create_index([("thumb_type", 1), ("key", 1)], unique=True)
         await self.monitored_series.create_index("series_slug", unique=True)
+        await self.slug_cache.create_index("updated_at", expireAfterSeconds=86400 * 30)
         log.info("MongoDB indexes created")
 
     # ── User management ───────────────────────────────────────────
@@ -1488,6 +1490,23 @@ class Database:
         start = time.perf_counter()
         await self.db.command("ping")
         return round((time.perf_counter() - start) * 1000, 2)
+
+    async def get_cached_slug(self, token: str) -> str | None:
+        try:
+            doc = await self.slug_cache.find_one({"_id": token})
+            return doc.get("slug") if doc else None
+        except Exception:
+            return None
+
+    async def save_cached_slug(self, token: str, slug: str):
+        try:
+            await self.slug_cache.update_one(
+                {"_id": token},
+                {"$set": {"slug": slug, "updated_at": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
+        except Exception:
+            pass
 
     def close(self):
         """Close the MongoDB connection."""

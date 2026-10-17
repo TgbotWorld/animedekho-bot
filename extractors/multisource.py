@@ -62,7 +62,12 @@ class MultiSourceManager:
             return None
         try:
             from utils.helpers import short_slug
-            item = self._slug_registry.get(slug) or self._slug_registry.get(short_slug(slug))
+            from bot.slug_store import resolve_slug
+            item = (
+                self._slug_registry.get(slug)
+                or self._slug_registry.get(resolve_slug(slug))
+                or self._slug_registry.get(short_slug(slug))
+            )
             if item:
                 return item.get("source")
         except Exception:
@@ -327,8 +332,13 @@ class MultiSourceManager:
         """
         from api.models import Series, Season, Episode
         from utils.helpers import short_slug
+        from bot.slug_store import resolve_slug
 
-        item = self._slug_registry.get(slug) or self._slug_registry.get(short_slug(slug))
+        item = (
+            self._slug_registry.get(slug)
+            or self._slug_registry.get(resolve_slug(slug))
+            or self._slug_registry.get(short_slug(slug))
+        )
         title = item.get("title") if item else slug_to_title(slug)
         url = item.get("url", "") if item else ""
         poster = item.get("poster") if item else ""

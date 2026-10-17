@@ -19,6 +19,7 @@ from bot.downloader import (
     sanitize_filename, download_job_manager,
 )
 from utils.helpers import esc, truncate, short_slug, extract_series_slug, slug_to_title
+from bot.slug_store import resolve_slug_async, pack_series_slug, parse_season_episode
 
 log = logging.getLogger(__name__)
 
@@ -63,47 +64,59 @@ async def callback_router(client: Client, query: CallbackQuery):
             await _handle_movies_listing(query, int(data.split(":")[1]))
 
         elif data.startswith("sr:"):
-            await _handle_series_detail(client, query, data[3:])
+            slug = await resolve_slug_async(data[3:])
+            await _handle_series_detail(client, query, slug)
 
         elif data.startswith("mr:"):
-            await _handle_movie_detail(client, query, data[3:])
+            slug = await resolve_slug_async(data[3:])
+            await _handle_movie_detail(client, query, slug)
 
         elif data.startswith("se:"):
             parts = data.split(":")
-            await _handle_season(query, slug=parts[1], season=int(parts[2]))
+            slug = await resolve_slug_async(parts[1])
+            await _handle_season(query, slug=slug, season=int(parts[2]))
 
         elif data.startswith("ep:"):
-            await _handle_episode(query, data[3:])
+            raw_ep = data[3:]
+            ep_slug = await resolve_slug_async(raw_ep)
+            await _handle_episode(query, ep_slug, raw_payload=raw_ep)
 
         elif data.startswith("dl:"):
             # dl:quality:ep_slug — auto server selection
             parts = data.split(":", 2)
+            raw_ep = parts[2]
+            ep_slug = await resolve_slug_async(raw_ep)
             await _handle_download(
                 client, query,
                 quality_pref=parts[1],
-                ep_slug=parts[2],
+                ep_slug=ep_slug,
+                raw_payload=raw_ep,
             )
 
         elif data.startswith("mdl:"):
             # mdl:quality:movie_slug — auto server selection
             parts = data.split(":", 2)
+            raw_m = parts[2]
+            movie_slug = await resolve_slug_async(raw_m)
             await _handle_movie_download(
                 client, query,
                 quality_pref=parts[1],
-                movie_slug=parts[2],
+                movie_slug=movie_slug,
             )
 
         elif data.startswith("bat:"):
             # bat:series_slug:season — show quality picker
             parts = data.split(":", 2)
-            await _handle_batch_picker(query, slug=parts[1], season=int(parts[2]))
+            slug = await resolve_slug_async(parts[1])
+            await _handle_batch_picker(query, slug=slug, season=int(parts[2]))
 
         elif data.startswith("bq:"):
             # bq:series_slug:season:quality — execute batch download
             parts = data.split(":", 3)
+            slug = await resolve_slug_async(parts[1])
             await _handle_batch_download(
                 client, query,
-                slug=parts[1],
+                slug=slug,
                 season=int(parts[2]),
                 quality_pref=parts[3],
             )
@@ -395,16 +408,23 @@ async def _handle_season(q: CallbackQuery, slug: str, season: int):
         await _safe_edit(q, text, markup)
 
 
-async def _handle_episode(q: CallbackQuery, ep_slug: str):
+async def _handle_episode(q: CallbackQuery, ep_slug: str, raw_payload: str = ""):
     """Show episode with skeleton quality buttons instantly — no server resolution."""
+    s_num, e_num = parse_season_episode(ep_slug)
+    if s_num == 1 and e_num == 1 and raw_payload:
+        s_fb, e_fb = parse_season_episode(raw_payload)
+        if s_fb != 1 or e_fb != 1:
+            s_num, e_num = s_fb, e_fb
+
     try:
         episode = await api.get_episode(ep_slug)
+        if episode.season:
+            s_num = episode.season
+        if episode.number:
+            e_num = episode.number
     except Exception as e:
         log.warning("api.get_episode failed for '%s': %s", ep_slug, e)
-        m = re.match(r".*-(\d+)x(\d+)", ep_slug)
-        s_num = int(m.group(1)) if m else 1
-        e_num = int(m.group(2)) if m else 1
-        series_slug = extract_series_slug(ep_slug)
+        series_slug = extract_series_slug(ep_slug) or (extract_series_slug(raw_payload) if raw_payload else "")
         series_name = slug_to_title(series_slug) if series_slug else "Episode"
         title = f"{series_name} S{s_num}E{e_num:02d}"
         from api.models import Episode
@@ -417,11 +437,17 @@ async def _handle_episode(q: CallbackQuery, ep_slug: str):
     text = f"▶️ <b>{esc(episode.title)}</b>\n\n"
     text += "📊 <b>Select quality to download:</b>"
 
-    series_slug = extract_series_slug(ep_slug)
-    back_cb = f"sr:{short_slug(series_slug)}" if series_slug else "rp:1"
+    series_slug = extract_series_slug(ep_slug) or (extract_series_slug(raw_payload) if raw_payload else "")
+    if series_slug:
+        ss = pack_series_slug(series_slug)
+        back_cb = f"se:{ss}:{s_num}"
+    else:
+        back_cb = "rp:1"
 
     # Store raw (unresolved) servers — will be resolved on download
     _store_servers(q.message.chat.id, ep_slug, episode.servers, episode.title)
+    if raw_payload and raw_payload != ep_slug:
+        _store_servers(q.message.chat.id, raw_payload, episode.servers, episode.title)
 
     detected_qualities = set()
     for s in (episode.servers or []):
@@ -521,7 +547,7 @@ async def _real_series_title(series_slug: str, fallback: str = "") -> str:
     return fallback or slug_to_title(series_slug)
 
 
-async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str):
+async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str, raw_payload: str = ""):
     """Handle single episode download — resolves servers and falls back across multi-source chain if needed."""
     # Multi-quality expansion
     if quality_pref == "all" or "+" in quality_pref:
@@ -534,7 +560,7 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
         except Exception:
             pass
         for single_q in qualities:
-            asyncio.create_task(_handle_download(client, q, single_q, ep_slug))
+            asyncio.create_task(_handle_download(client, q, single_q, ep_slug, raw_payload=raw_payload))
             await asyncio.sleep(0.3)
         return
 
@@ -550,6 +576,8 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
 
     # Get stored server data (may be raw/unresolved from skeleton episode view)
     data = _get_servers(chat_id, ep_slug)
+    if not data and raw_payload:
+        data = _get_servers(chat_id, raw_payload)
     if not data:
         try:
             episode = await api.get_episode(ep_slug)
@@ -562,11 +590,12 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     raw_servers = data.get("servers", []) if data else []
 
     # Extract season/episode info for filename and ToonFlix lookup
-    import re
-    m = re.match(r".*-(\d+)x(\d+)", ep_slug)
-    season = int(m.group(1)) if m else 1
-    ep_num = int(m.group(2)) if m else 1
-    series_slug = extract_series_slug(ep_slug) or ""
+    season, ep_num = parse_season_episode(ep_slug)
+    if season == 1 and ep_num == 1 and raw_payload:
+        s_fb, ep_fb = parse_season_episode(raw_payload)
+        if s_fb != 1 or ep_fb != 1:
+            season, ep_num = s_fb, ep_fb
+    series_slug = extract_series_slug(ep_slug) or (extract_series_slug(raw_payload) if raw_payload else "") or ""
     series_title = await _real_series_title(series_slug, title)
     episode_key = f"S{season:02d}E{ep_num:02d}" if season and ep_num else ""
 
