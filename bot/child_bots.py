@@ -434,6 +434,32 @@ class ChildBotManager:
             if len(parts) == 3 and re.match(r"^(s\d+e\d+|movie|all|\d+)$", parts[2], re.IGNORECASE):
                 series_slug, quality, episode_key = parts[0], parts[1], parts[2]
             else:
+                clean_raw = raw.strip("-_")
+                found_doc = None
+                if db and len(clean_raw) >= 5:
+                    try:
+                        found_doc = await db.files.find_one({
+                            "series_slug": {"$regex": f"^{re.escape(clean_raw)}", "$options": "i"}
+                        })
+                    except Exception:
+                        pass
+                if found_doc:
+                    series_slug = found_doc["series_slug"]
+                    from utils.helpers import slug_to_title
+                    import html as htmlmod
+                    series_title = found_doc.get("series_title") or slug_to_title(series_slug)
+                    from bot.library import qualities_for_series, build_quality_buttons
+                    quals = await qualities_for_series(series_slug)
+                    is_movie = "movie" in series_slug.lower()
+                    b_uname = getattr(getattr(c, "me", None), "username", "") or ""
+                    q_markup = build_quality_buttons(quals, series_slug, is_movie=is_movie, bot_username=b_uname)
+                    await message.reply_text(
+                        f"📺 <b>{htmlmod.escape(series_title)}</b>\n\n"
+                        f"⚠️ <i>You tapped an older link format. Please select your quality below:</i>",
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=q_markup,
+                    )
+                    return
                 await message.reply_text("⚠️ Invalid or expired download link.")
                 return
 

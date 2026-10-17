@@ -229,8 +229,8 @@ async def cmd_setbotquality(client: Client, message: Message):
 async def cmd_refreshalbums(client: Client, message: Message):
     """Re-build buttons on all existing channel album posts with current child bot links."""
     from bot.library import library_manager
-    if not library_manager or not library_manager.channel:
-        await message.reply_text("⚠️ Main channel or library manager is not configured.")
+    if not library_manager:
+        await message.reply_text("⚠️ Library manager is not initialized.")
         return
 
     status_msg = await message.reply_text("🔄 Updating channel album posts with latest child bot links...", parse_mode=enums.ParseMode.HTML)

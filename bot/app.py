@@ -193,6 +193,21 @@ async def _on_start(client: Client):
     client._vps_cleanup_task = asyncio.create_task(_periodic_vps_cleanup())
     log.info("Periodic VPS + MongoDB cleanup task started (every 30m)")
 
+    # Auto-refresh existing channel albums on startup to update old links to short tokens
+    async def _auto_refresh_channel_albums():
+        try:
+            await asyncio.sleep(5)
+            from bot.library import library_manager
+            if library_manager:
+                log.info("Starting background refresh of channel album buttons...")
+                refreshed = await library_manager.refresh_all_albums()
+                if refreshed:
+                    log.info("Auto-refreshed %d channel album post(s) with updated links", refreshed)
+        except Exception as e:
+            log.warning("Startup album refresh encountered error: %s", e)
+
+    client._auto_refresh_albums_task = asyncio.create_task(_auto_refresh_channel_albums())
+
     # Set bot commands menu
     from bot.telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
     try:
@@ -297,6 +312,16 @@ async def _on_stop(client: Client):
         except (asyncio.CancelledError, Exception):
             pass
         client._vps_cleanup_task = None
+    if hasattr(client, "_auto_refresh_albums_task") and client._auto_refresh_albums_task:
+        try:
+            client._auto_refresh_albums_task.cancel()
+        except Exception:
+            pass
+        try:
+            await client._auto_refresh_albums_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        client._auto_refresh_albums_task = None
     from utils.http import http_client
     await http_client.close()
     from bot.database import db

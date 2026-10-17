@@ -380,6 +380,21 @@ async def _handle_gated_download(client: Client, message: Message, param: str):
         await message.reply_text("⚠️ Invalid download link.")
         return
 
+    # Fallback: check if slug was truncated from an older link
+    if db:
+        doc = await db.files.find_one({"series_slug": slug})
+        if not doc:
+            clean_slug = slug.strip("-_")
+            if len(clean_slug) >= 5:
+                try:
+                    prefix_doc = await db.files.find_one({
+                        "series_slug": {"$regex": f"^{re.escape(clean_slug)}", "$options": "i"}
+                    })
+                    if prefix_doc and prefix_doc.get("series_slug"):
+                        slug = prefix_doc["series_slug"]
+                except Exception:
+                    pass
+
     # 1. Force-subscribe (existing behaviour, unchanged). `retry_param` must be
     #    the *encoded* form — that's what lands in the ?start= URL.
     from bot.fsub import check_fsub, send_fsub_prompt
@@ -453,6 +468,18 @@ async def _handle_channel_join_request(client: Client, message: Message, series_
         series_slug = await resolve_slug_async(series_slug)
     except Exception:
         pass
+
+    if db:
+        clean_slug = series_slug.strip("-_")
+        if len(clean_slug) >= 5:
+            try:
+                ch_doc = await db.channels.find_one({
+                    "series_slug": {"$regex": f"^{re.escape(clean_slug)}", "$options": "i"}
+                })
+                if ch_doc and ch_doc.get("series_slug"):
+                    series_slug = ch_doc["series_slug"]
+            except Exception:
+                pass
 
     from bot.fsub import check_fsub, create_timer_invite_link, send_fsub_prompt
     from utils.helpers import encode_file_param
@@ -563,6 +590,32 @@ async def _handle_file_request(client: Client, message: Message, param: str):
         if len(parts) == 3 and re.match(r"^(s\d+e\d+|movie|all|\d+)$", parts[2], re.IGNORECASE):
             series_slug, quality, episode_key = parts[0], parts[1], parts[2]
         else:
+            # Fallback for old truncated links (where quality/episode was cut off by Telegram 64-char limit)
+            clean_raw = raw.strip("-_")
+            found_doc = None
+            if db and len(clean_raw) >= 5:
+                try:
+                    found_doc = await db.files.find_one({
+                        "series_slug": {"$regex": f"^{re.escape(clean_raw)}", "$options": "i"}
+                    })
+                except Exception:
+                    pass
+            if found_doc:
+                series_slug = found_doc["series_slug"]
+                from utils.helpers import slug_to_title
+                import html as htmlmod
+                series_title = found_doc.get("series_title") or slug_to_title(series_slug)
+                from bot.library import qualities_for_series, build_quality_buttons
+                quals = await qualities_for_series(series_slug)
+                is_movie = "movie" in series_slug.lower()
+                q_markup = build_quality_buttons(quals, series_slug, is_movie=is_movie)
+                await message.reply_text(
+                    f"📺 <b>{htmlmod.escape(series_title)}</b>\n\n"
+                    f"⚠️ <i>You tapped an older link format. Please select your quality below:</i>",
+                    parse_mode=enums.ParseMode.HTML,
+                    reply_markup=q_markup,
+                )
+                return
             await message.reply_text("⚠️ Invalid file link format.")
             return
 
