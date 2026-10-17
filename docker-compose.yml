@@ -4,6 +4,8 @@ services:
     container_name: test-mongo
     restart: unless-stopped
     network_mode: host
+    profiles:
+      - mongo
     volumes:
       - mongo-data:/data/db
 
@@ -20,8 +22,11 @@ services:
       - bot-data:/app/data
       - bot-tmp:/tmp/animedekho_dl
     depends_on:
-      - mongo
-      - vidstream-api
+      vidstream-api:
+        condition: service_started
+      mongo:
+        condition: service_started
+        required: false
     environment:
       - VIDSTREAM_API_URL=http://127.0.0.1:4030
 
