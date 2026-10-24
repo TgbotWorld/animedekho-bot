@@ -109,14 +109,47 @@ def is_around_1_to_2_gb(val: str | int | float | None) -> bool:
     return mb is not None and (850.0 <= mb <= 2600.0)
 
 
-def is_4k_satisfying(quality_str: str, size: str | int | float | None = None) -> bool:
+#: Sources that ship a plain 1080p release *in lieu of* native 4K — their
+#: de-facto 4K tier. The value is the accepted size bands in MB. 4KHDHub has
+#: no native 2160p; per the operator its "4K" deliverable is a high-bitrate
+#: 1080p file of ~1–2 GB, with the older self-upscale tier at ~500–600 MB.
+SOURCE_4K_PROXIES: dict[str, tuple[tuple[float, float], ...]] = {
+    "4KHDHub": ((1000.0, 2000.0), (450.0, 650.0)),
+}
+
+
+def is_source_4k_proxy(source: str, quality_str: str,
+                       size: str | int | float | None = None) -> bool:
+    """True when *source* legitimately counts this plain 1080p file as 4K.
+
+    Only applies to sources listed in :data:`SOURCE_4K_PROXIES`, and only for a
+    plain (non-native) 1080p label whose size falls in that source's accepted
+    bands. Native 4K is handled by :func:`is_4k_satisfying` before this.
+    """
+    bands = SOURCE_4K_PROXIES.get((source or "").strip())
+    if not bands:
+        return False
+    if is_native_4k(quality_str) or normalize_quality(quality_str) != "1080p":
+        return False
+    mb = parse_size_mb(size if size is not None else quality_str)
+    if mb is None:
+        return False
+    return any(lo <= mb <= hi for lo, hi in bands)
+
+
+def is_4k_satisfying(quality_str: str, size: str | int | float | None = None,
+                     source: str | None = None) -> bool:
     """Check if quality satisfies a 4K request.
-    
+
     - Native 4K (2160p / UHD) always satisfies 4K.
+    - A source-specific 1080p proxy (see :data:`SOURCE_4K_PROXIES`) satisfies
+      4K when its size falls in that source's accepted bands.
     - Enhanced 1080p (1080p HQ x265, 10-bit, HEVC) satisfies 4K ONLY when its
       size is around 1 to 2 GB (approx 850 MB to 2600 MB).
     """
     if is_native_4k(quality_str):
+        return True
+    if is_source_4k_proxy(source, quality_str, size):
         return True
     if is_enhanced_1080p(quality_str):
         if size is not None:
@@ -150,11 +183,13 @@ def normalize_quality(q: str) -> str:
     return "Unknown"
 
 
-def qualities_match(requested: str, detected: str, size: str | int | float | None = None) -> bool:
+def qualities_match(requested: str, detected: str, size: str | int | float | None = None,
+                    source: str | None = None) -> bool:
     """V3 #2 strict equality on canonical labels (4K≡2160p≡UHD).
-    
+
     When requested quality is 4K:
     - Native 4K matches.
+    - A source-specific 1080p proxy matches within its accepted size bands.
     - Enhanced 1080p (1080p HQ x265, 10-bit, etc.) matches ONLY if its size is
       around 1 to 2 GB.
     """
@@ -163,6 +198,6 @@ def qualities_match(requested: str, detected: str, size: str | int | float | Non
         return True
 
     if req_clean in ("4k", "2160p", "2160", "uhd"):
-        return is_4k_satisfying(detected, size=size)
+        return is_4k_satisfying(detected, size=size, source=source)
 
     return normalize_quality(requested) == normalize_quality(detected) and normalize_quality(detected) != "Unknown"

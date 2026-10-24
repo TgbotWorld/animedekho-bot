@@ -650,13 +650,13 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     ad_is_default = is_source(default_src, "AnimeDekho")
     diag_steps.append(f"Default source: {default_src}")
 
-    async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
+    async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "", source: str = "") -> bool:
         from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb, is_4k_satisfying
         if is_native_4k(q_str) or (q_str or "").strip().lower() in ("4k", "2160p", "2160", "uhd"):
             return True
-        if is_enhanced_1080p(q_str):
+        if is_4k_satisfying(q_str, size=size, source=source):
             return True
-        if is_4k_satisfying(q_str, size=size):
+        if is_enhanced_1080p(q_str):
             return True
         if "1080" in (q_str or "").lower():
             if size is not None and is_around_1_to_2_gb(size):
@@ -681,9 +681,9 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 pass
         return False
 
-    def _is_4k_satisfying(q_str: str, size: str | int | float | None = None) -> bool:
+    def _is_4k_satisfying(q_str: str, size: str | int | float | None = None, source: str = "") -> bool:
         from utils.anime_match import is_4k_satisfying
-        return is_4k_satisfying(q_str, size=size)
+        return is_4k_satisfying(q_str, size=size, source=source)
 
     async def _step_multisource() -> None:
         """Tier: direct-file extractors via the Multi-Source manager."""
@@ -716,7 +716,7 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     if res_p:
                         _poster_cache[series_slug] = res_p
                 ms_sz = ms_res.get("size_mb") or ms_res.get("size")
-                ms_is_4k = await _is_4k_stream_ok(ms_q, size=ms_sz, url=ms_res.get("url", "")) if is_4k else False
+                ms_is_4k = await _is_4k_stream_ok(ms_q, size=ms_sz, url=ms_res.get("url", ""), source=ms_res.get("source", "")) if is_4k else False
                 if (is_4k and ms_is_4k) or (not is_4k and ms_q == quality_pref.lower()):
                     candidates.insert(0, (ms_srv, ms_srv.qualities[0]))
                     has_exact = True
@@ -1107,9 +1107,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                 pass
         return False
 
-    def _is_4k_satisfying(q_str: str, size: str | int | float | None = None) -> bool:
+    def _is_4k_satisfying(q_str: str, size: str | int | float | None = None, source: str = "") -> bool:
         from utils.anime_match import is_4k_satisfying
-        return is_4k_satisfying(q_str, size=size)
+        return is_4k_satisfying(q_str, size=size, source=source)
 
     def _needs_next() -> bool:
         return (not candidates) or (not has_exact) or (is_4k and not found_4k)
@@ -1242,7 +1242,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                         poster_url = res_p
                         _poster_cache[movie_slug] = poster_url
                 ms_sz = ms_res.get("size_mb") or ms_res.get("size")
-                ms_is_4k = await _is_4k_stream_ok(ms_q, size=ms_sz, url=ms_res.get("url", "")) if is_4k else False
+                ms_is_4k = await _is_4k_stream_ok(ms_q, size=ms_sz, url=ms_res.get("url", ""), source=ms_res.get("source", "")) if is_4k else False
                 if (is_4k and ms_is_4k) or (not is_4k and ms_q == quality_pref.lower()):
                     if ad_default and has_exact and not is_4k:
                         candidates.append((ms_srv, ms_srv.qualities[0]))

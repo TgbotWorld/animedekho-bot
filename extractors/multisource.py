@@ -476,11 +476,11 @@ class MultiSourceManager:
             got_norm = normalize_quality(got_q)
             got_sz = res.get("size") or res.get("size_mb")
             from utils.anime_match import qualities_match
-            if want_norm != "auto" and got_norm != "Unknown" and not qualities_match(quality_pref, got_q, size=got_sz):
+            if want_norm != "auto" and got_norm != "Unknown" and not qualities_match(quality_pref, got_q, size=got_sz, source=name):
                 log.info("Source '%s' returned [%s] for [%s] request — skipping (V3 #2 exact-only)", name, got_q, quality_pref)
                 return None, f"{name}: {got_q} ≠ {quality_pref} → skipped", "skip"
 
-            if want_norm == "4K" and qualities_match(quality_pref, got_q, size=got_sz):
+            if want_norm == "4K" and qualities_match(quality_pref, got_q, size=got_sz, source=name):
                 got_q = "4K"
                 got_norm = "4K"
                 res["quality"] = "4K"

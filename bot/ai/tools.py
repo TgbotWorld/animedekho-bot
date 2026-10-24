@@ -1041,9 +1041,9 @@ async def tool_download_anime_episode(
 
         is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
 
-        def _is_4k_satisfying(q_str: str, size: str | int | float | None = None) -> bool:
+        def _is_4k_satisfying(q_str: str, size: str | int | float | None = None, source: str = "") -> bool:
             from utils.anime_match import is_4k_satisfying
-            return is_4k_satisfying(q_str, size=size)
+            return is_4k_satisfying(q_str, size=size, source=source)
 
         # V2 #3: direct-file sources FIRST, AnimeDekho LAST.
         # Order: MultiSource (AnimeDubHindi/ToonWorld4All/...) → AnimeDrive
@@ -1067,7 +1067,7 @@ async def tool_download_anime_episode(
                 )
                 if ms_res and ms_res.get("url"):
                     ms_sz = ms_res.get("size_mb") or ms_res.get("size")
-                    if is_4k and not _is_4k_satisfying(ms_res.get("quality", ""), size=ms_sz):
+                    if is_4k and not _is_4k_satisfying(ms_res.get("quality", ""), size=ms_sz, source=ms_res.get("source", "")):
                         notes.append(f"MultiSource {ms_res.get('quality')} is not 4K — continuing cascade")
                     else:
                         stream_url = ms_res["url"]
