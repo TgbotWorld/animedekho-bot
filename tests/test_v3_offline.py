@@ -262,7 +262,7 @@ def main() -> int:
             normalize_source, get_default_source, set_default_source,
             DEFAULT_SOURCE, SOURCE_CATALOG,
         )
-        ok &= check("src default is AnimeDekho", DEFAULT_SOURCE == "AnimeDekho")
+        ok &= check("src default is 4KHDHub", DEFAULT_SOURCE == "4KHDHub")
         ok &= check("src tolerant name matching",
                     normalize_source("ANIME DRIVE") == "AnimeDrive"
                     and normalize_source("adk") == "AnimeDekho"
@@ -275,7 +275,7 @@ def main() -> int:
                         "AnimeDekho", "AnimeDubHindi", "ToonWorld4All", "RareAnimes",
                         "DeadToons", "TOONo", "ToonAnime", "AnimeDrive", "ToonFlix",
                         "4KHDHub"})
-        ok &= check("src default w/o db", _ai.run(get_default_source()) == "AnimeDekho")
+        ok &= check("src default w/o db", _ai.run(get_default_source()) == "4KHDHub")
         try:
             _ai.run(set_default_source("definitely-not-a-source"))
             ok &= check("src rejects unknown source", False)

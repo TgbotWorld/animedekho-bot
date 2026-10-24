@@ -5,9 +5,9 @@ searches or requests a download. It is persisted in the DB ``config`` collection
 the ``default_source`` key, so changing it takes effect immediately for
 every worker without a restart.
 
-Default is ``AnimeDekho`` (the official catalog API). Every other known
-extractor can be promoted with ``/source <name>`` and the original order
-can be restored with ``/source animedekho``.
+Default is ``4KHDHub`` (the anime 4K-tier source: high-bitrate 1080p H.264
+that stands in for 4K). Any other known extractor can be promoted with
+``/source <name>``, and ``/source animedekho`` restores the official catalog API.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import time
 
 log = logging.getLogger(__name__)
 
-DEFAULT_SOURCE = "AnimeDekho"
+DEFAULT_SOURCE = "4KHDHub"
 
 # (name, one-line description) — displayed by /source. Keep names in sync
 # with MultiSourceManager.sources (extractors/multisource.py).

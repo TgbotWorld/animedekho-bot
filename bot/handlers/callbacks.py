@@ -767,6 +767,45 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     def _needs_next_tier() -> bool:
         return (not candidates) or (not has_exact) or (is_4k and not found_match)
 
+    async def _step_4khdhub() -> None:
+        """Primary 4K tier: 4KHDHub (its 1080p H.264 counts as 4K)."""
+        nonlocal candidates, has_exact, found_match
+        if any("4khdhub" in (s.name or "").lower() for s, _ in candidates):
+            return
+        try:
+            from extractors.fourkhdhub import fourkhdhub
+            log.info("Checking 4KHDHub for '%s' S%dE%d [%s]", series_title, season, ep_num, quality_pref)
+            fk_res = await fourkhdhub.resolve_episode(series_title, season=season, episode=ep_num, quality_pref=quality_pref)
+            if fk_res and fk_res.get("url"):
+                fk_srv = VideoServer(
+                    name="4KHDHub",
+                    server_id=0,
+                    player_url=fk_res["url"],
+                    qualities=[Quality(resolution=fk_res.get("quality"), url=fk_res["url"])],
+                )
+                if series_slug and not _poster_cache.get(series_slug):
+                    from utils.anilist import resolve_best_poster
+                    res_p = await resolve_best_poster(series_title, fk_res.get("poster"))
+                    if res_p:
+                        _poster_cache[series_slug] = res_p
+                fk_q = fk_res.get("quality", "").lower()
+                fk_sz = fk_res.get("size_mb") or fk_res.get("size")
+                fk_is_4k = await _is_4k_stream_ok(fk_q, size=fk_sz, url=fk_res.get("url", ""), source="4KHDHub") if is_4k else False
+                if ((is_4k and fk_is_4k) or (not is_4k and fk_q == quality_pref.lower())) and not has_exact:
+                    candidates.insert(0, (fk_srv, fk_srv.qualities[0]))
+                    has_exact = True
+                    found_match = True
+                    log.info("4KHDHub provided exact/4K stream [%s] for '%s' S%dE%d", fk_res.get("quality"), series_title, season, ep_num)
+                    diag_steps.append(f"4KHDHub: exact {fk_res.get('quality')} ✓")
+                else:
+                    candidates.append((fk_srv, fk_srv.qualities[0]))
+                    diag_steps.append(f"4KHDHub: {fk_res.get('quality')} (appended)")
+            else:
+                diag_steps.append("4KHDHub: no result")
+        except Exception as e:
+            log.warning("4KHDHub resolution error: %s", e)
+            diag_steps.append(f"4KHDHub: error {str(e)[:80]}")
+
     async def _step_animedrive() -> None:
         nonlocal candidates, has_exact, found_match
         if any("animedrive" in (s.name or "").lower() for s, _ in candidates):
@@ -882,8 +921,11 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             diag_steps.append(f"ToonFlix: error {str(e)[:80]}")
 
     if is_4k:
-        # Dedicated 4K system: AnimeDrive and ToonAnime (and ToonFlix) resolve first!
-        await _step_animedrive()
+        # Dedicated 4K system: 4KHDHub first (its 1080p H.264 counts as 4K),
+        # then AnimeDrive and the remaining 4K tiers as fallback.
+        await _step_4khdhub()
+        if _needs_next_tier():
+            await _step_animedrive()
         if _needs_next_tier():
             await _step_toonanime()
         if _needs_next_tier():
@@ -1114,6 +1156,41 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     def _needs_next() -> bool:
         return (not candidates) or (not has_exact) or (is_4k and not found_4k)
 
+    async def _step_4khdhub() -> None:
+        """Primary 4K tier for movies: 4KHDHub (its 1080p H.264 counts as 4K)."""
+        nonlocal candidates, has_exact, found_4k, poster_url
+        if any("4khdhub" in (s.name or "").lower() for s, _ in candidates):
+            return
+        try:
+            from extractors.fourkhdhub import fourkhdhub
+            log.info("Checking 4KHDHub for movie '%s' [%s]", title, quality_pref)
+            fk_res = await fourkhdhub.resolve_episode(title, season=1, episode=1, quality_pref=quality_pref)
+            if fk_res and fk_res.get("url"):
+                if not poster_url:
+                    from utils.anilist import resolve_best_poster
+                    res_p = await resolve_best_poster(title, fk_res.get("poster"))
+                    if res_p:
+                        poster_url = res_p
+                        _poster_cache[movie_slug] = poster_url
+                fk_q = fk_res.get("quality", "").lower()
+                fk_srv = VideoServer(
+                    name="4KHDHub",
+                    server_id=0,
+                    player_url=fk_res["url"],
+                    qualities=[Quality(resolution=fk_res.get("quality"), url=fk_res["url"])],
+                )
+                fk_sz = fk_res.get("size_mb") or fk_res.get("size")
+                fk_is_4k = await _is_4k_stream_ok(fk_q, size=fk_sz, url=fk_res.get("url", ""), source="4KHDHub") if is_4k else False
+                if (is_4k and fk_is_4k) or (not is_4k and fk_q == quality_pref.lower()):
+                    candidates.insert(0, (fk_srv, fk_srv.qualities[0]))
+                    has_exact = True
+                    found_4k = True
+                    log.info("4KHDHub provided 4K-tier movie stream [%s] for '%s'", fk_res.get("quality"), title)
+                else:
+                    candidates.append((fk_srv, fk_srv.qualities[0]))
+        except Exception as e:
+            log.warning("4KHDHub movie resolution error: %s", e)
+
     async def _step_animedrive() -> None:
         nonlocal candidates, has_exact, found_4k, poster_url
         if any("animedrive" in (s.name or "").lower() for s, _ in candidates):
@@ -1280,7 +1357,9 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             log.warning("AnimeDekho movie fallback resolution error: %s", ad_err)
 
     if is_4k:
-        await _step_animedrive()
+        await _step_4khdhub()
+        if _needs_next():
+            await _step_animedrive()
         if _needs_next():
             await _step_toonanime()
         if _needs_next():
@@ -1498,6 +1577,9 @@ def _extractor_refresh(kind: str, series_title: str, season: int, episode: int, 
             if kind == "animedrive":
                 from extractors.animedrive import animedrive as _ad
                 r = await _ad.resolve_episode(series_title, season=season, episode=episode, quality_pref=quality_pref)
+            elif kind == "fourkhdhub":
+                from extractors.fourkhdhub import fourkhdhub as _fk
+                r = await _fk.resolve_episode(series_title, season=season, episode=episode, quality_pref=quality_pref)
             elif kind == "toonanime":
                 from extractors.toonanime import toonanime as _ta
                 r = await _ta.resolve_episode(series_title, season=season, episode=episode, quality_pref=quality_pref)
@@ -1600,25 +1682,47 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                 break
 
             if is_4k:
-                # 4K Batch: AnimeDrive is default for 4K and enhanced 1080p HQ tiers
+                # 4K Batch: 4KHDHub first (its 1080p H.264 counts as 4K),
+                # then AnimeDrive and the remaining 4K tiers as fallback.
                 try:
-                    from extractors.animedrive import animedrive
-                    ad_res = await animedrive.resolve_episode(series.title, season=season, episode=ep.number, quality_pref="4K")
-                    if ad_res and ad_res.get("url"):
-                        chosen_q = Quality(resolution=ad_res.get("quality", "4K"), url=ad_res["url"])
+                    from extractors.fourkhdhub import fourkhdhub
+                    fk_res = await fourkhdhub.resolve_episode(series.title, season=season, episode=ep.number, quality_pref="4K")
+                    if fk_res and fk_res.get("url"):
+                        chosen_q = Quality(resolution=fk_res.get("quality", "4K"), url=fk_res["url"])
                         filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
                         success, sent_msg = await download_and_upload(
-                            chat_id, ad_res["url"], chosen_q.resolution,
+                            chat_id, fk_res["url"], chosen_q.resolution,
                             filename,
                             f"{series.title} S{season}E{ep.number}",
                             ep_msg, client,
-                                                        refresh_url=_extractor_refresh("animedrive", series.title, season, ep.number, "4K"),
-                            referer=ad_res.get("referer", "https://hubcloud.ist/"),
-                            poster_url=series.poster or ad_res.get("poster", ""),
+                            refresh_url=_extractor_refresh("fourkhdhub", series.title, season, ep.number, "4K"),
+                            referer=fk_res.get("referer", "https://4khdhub.one/"),
+                            poster_url=series.poster or fk_res.get("poster", ""),
                             destination_channel_id=dest_channel_id,
                         )
                 except Exception as e:
-                    log.warning("Batch AnimeDrive 4K error for ep %s: %s", ep.slug, e)
+                    log.warning("Batch 4KHDHub 4K error for ep %s: %s", ep.slug, e)
+
+                if not success:
+                    # Fallback for 4K: AnimeDrive
+                    try:
+                        from extractors.animedrive import animedrive
+                        ad_res = await animedrive.resolve_episode(series.title, season=season, episode=ep.number, quality_pref="4K")
+                        if ad_res and ad_res.get("url"):
+                            chosen_q = Quality(resolution=ad_res.get("quality", "4K"), url=ad_res["url"])
+                            filename = make_episode_filename(series.title, season, ep.number, chosen_q.resolution)
+                            success, sent_msg = await download_and_upload(
+                                chat_id, ad_res["url"], chosen_q.resolution,
+                                filename,
+                                f"{series.title} S{season}E{ep.number}",
+                                ep_msg, client,
+                                refresh_url=_extractor_refresh("animedrive", series.title, season, ep.number, "4K"),
+                                referer=ad_res.get("referer", "https://hubcloud.ist/"),
+                                poster_url=series.poster or ad_res.get("poster", ""),
+                                destination_channel_id=dest_channel_id,
+                            )
+                    except Exception as e:
+                        log.warning("Batch AnimeDrive 4K error for ep %s: %s", ep.slug, e)
 
                 if not success:
                     # Secondary for 4K: ToonAnime
