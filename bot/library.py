@@ -69,12 +69,182 @@ def _get_lock(key: str) -> asyncio.Lock:
     return _locks[key]
 
 
+def _album_episode_label(episodes: list[str], is_movie: bool = False) -> str:
+    """Build a compact, accurate episode range for captions and hero artwork."""
+    if is_movie:
+        return "FEATURE FILM"
+
+    seasons: dict[int, set[int]] = {}
+    for episode in episodes or []:
+        match = re.match(r"S(\d+)E(\d+)", str(episode), re.IGNORECASE)
+        if match:
+            seasons.setdefault(int(match.group(1)), set()).add(int(match.group(2)))
+    if not seasons:
+        count = len(episodes or []) or 1
+        return f"EPISODE {count:02d}" if count == 1 else f"EPISODES 01–{count:02d}"
+
+    parts = []
+    for season, numbers in sorted(seasons.items()):
+        ordered = sorted(numbers)
+        if len(ordered) == 1:
+            span = f"EPISODE {ordered[0]:02d}"
+        else:
+            ranges = []
+            start = previous = ordered[0]
+            for number in ordered[1:]:
+                if number == previous + 1:
+                    previous = number
+                    continue
+                ranges.append(f"{start:02d}" if start == previous else f"{start:02d}–{previous:02d}")
+                start = previous = number
+            ranges.append(f"{start:02d}" if start == previous else f"{start:02d}–{previous:02d}")
+            span = f"EPISODES {', '.join(ranges)}"
+        parts.append(f"S{season:02d} · {span}")
+    return " / ".join(parts)
+
+
+def _album_thumbnail_episode_line(episodes: list[str], is_movie: bool = False) -> str:
+    """Build the compact season/count line used on full-bleed hero artwork."""
+    if is_movie:
+        return "FEATURE FILM"
+    seasons: dict[int, set[int]] = {}
+    for episode in episodes or []:
+        match = re.match(r"S(\d+)E(\d+)", str(episode), re.IGNORECASE)
+        if match:
+            seasons.setdefault(int(match.group(1)), set()).add(int(match.group(2)))
+    if seasons:
+        parts = []
+        for season, numbers in sorted(seasons.items()):
+            count = len(numbers)
+            noun = "EPISODE" if count == 1 else "EPISODES"
+            parts.append(f"SEASON {season:02d} · {count:02d} {noun}")
+        return " / ".join(parts)
+    count = len(episodes or []) or 1
+    return f"{count:02d} EPISODE" if count == 1 else f"{count:02d} EPISODES"
+
+
+def _album_audio_label(language: str | None) -> str:
+    """Normalize channel language labels without adding a duplicate Dub tag."""
+    audio = " ".join(str(language or "Hindi").split()).strip() or "Hindi"
+    if re.search(r"\b(?:dub|dubbed|sub|subbed|audio)\b", audio, re.IGNORECASE):
+        return audio
+    return f"{audio} Dub"
+
+
+_ALBUM_SYNOPSIS_CACHE: dict[str, str] = {}
+
+
+async def _resolve_album_synopsis(title: str) -> str:
+    """Return a short AniList synopsis for the album, failing quickly and safely."""
+    if not title:
+        return ""
+    cache_key = " ".join(title.casefold().split())
+    if cache_key in _ALBUM_SYNOPSIS_CACHE:
+        return _ALBUM_SYNOPSIS_CACHE[cache_key]
+    try:
+        from utils.anilist import get_anilist_metadata
+        metadata = await asyncio.wait_for(get_anilist_metadata(title), timeout=5.5)
+        synopsis = str((metadata or {}).get("description") or "")
+        if synopsis:
+            if len(_ALBUM_SYNOPSIS_CACHE) >= 256:
+                _ALBUM_SYNOPSIS_CACHE.pop(next(iter(_ALBUM_SYNOPSIS_CACHE)))
+            _ALBUM_SYNOPSIS_CACHE[cache_key] = synopsis
+        return synopsis
+    except Exception as e:
+        log.debug("Album synopsis unavailable for '%s': %s", title, e)
+        return ""
+
+
 class LibraryManager:
     def __init__(self, client: Client, db: Database, main_channel: int, bot_username: str):
         self.client = client
         self.db = db
         self.channel = main_channel
         self.bot_username = bot_username
+
+    def _generate_album_art(
+        self,
+        title: str,
+        episodes: list[str],
+        qualities: list[str],
+        is_movie: bool,
+        poster_path: str,
+        template: str | None = None,
+        language: str | None = None,
+        synopsis: str = "",
+    ) -> str | None:
+        """Render the widescreen anime hero card used by album posts."""
+        try:
+            from bot.thumbnail import generate_thumbnail
+            synopsis = synopsis or _ALBUM_SYNOPSIS_CACHE.get(" ".join(title.casefold().split()), "")
+            return generate_thumbnail(
+                title=title,
+                episode_info=_album_thumbnail_episode_line(episodes, is_movie),
+                quality=(qualities[-1] if qualities else "HD"),
+                audio=_album_audio_label(language),
+                poster_path=poster_path,
+                template=template,
+                is_movie=is_movie,
+                synopsis=synopsis,
+            )
+        except Exception as e:
+            log.debug("Album hero-card generation skipped for '%s': %s", title, e)
+            return None
+
+    async def _refresh_album_media(
+        self,
+        target_channel_id: int,
+        message_id: int,
+        title: str,
+        episodes: list[str],
+        qualities: list[str],
+        is_movie: bool,
+        poster_url: str | None,
+        mapping: dict | None,
+        post_style: str,
+        caption: str,
+        markup: InlineKeyboardMarkup,
+    ) -> bool:
+        """Regenerate an existing album photo when its visible metadata changes."""
+        if not poster_url:
+            return False
+        poster_path = None
+        card_path = None
+        try:
+            auto_thumb_on = await self.db.get_auto_thumb() if self.db else True
+            if not (auto_thumb_on or post_style == "modern"):
+                return False
+            poster_path = await _download_poster(poster_url)
+            if not poster_path:
+                return False
+            template = await self.db.get_thumb_template() if self.db else "streaming"
+            card_path = self._generate_album_art(
+                title, episodes, qualities, is_movie, poster_path,
+                template, (mapping or {}).get("language"),
+            )
+            if not card_path or not os.path.exists(card_path):
+                return False
+            from bot.telegram.types import InputMediaPhoto
+            await self.client.edit_message_media(
+                chat_id=target_channel_id,
+                message_id=message_id,
+                media=InputMediaPhoto(
+                    card_path, caption=caption[:CAPTION_LIMIT],
+                    parse_mode=enums.ParseMode.HTML,
+                ),
+                reply_markup=markup,
+            )
+            return True
+        except Exception as e:
+            log.debug("Album media refresh skipped for '%s': %s", title, e)
+            return False
+        finally:
+            for path in (card_path, poster_path):
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
 
     def _target_channel(self, mapping: dict | None) -> int:
         """V3 #14: album create/edit/update/delete always target
@@ -301,9 +471,11 @@ class LibraryManager:
         post_style = await self.db.get_post_style()
 
         # Build caption & buttons
+        synopsis = await _resolve_album_synopsis(series_title)
         caption = self._format_album_caption(
             series_title, sorted_eps, sorted_qualities, is_movie, poster_url,
             channel_mapping=mapping, series_slug=series_slug, post_style=post_style,
+            synopsis=synopsis,
         )
         markup = self._build_album_buttons(
             series_slug, sorted_eps, sorted_qualities, is_movie, channel_mapping=mapping, album_mode=album_mode,
@@ -326,13 +498,25 @@ class LibraryManager:
             else:
                 try:
                     if entry.get("has_poster"):
-                        await self.client.edit_message_caption(
-                            chat_id=target_channel_id,
-                            message_id=msg_id,
-                            caption=caption[:CAPTION_LIMIT],
-                            parse_mode=enums.ParseMode.HTML,
-                            reply_markup=markup,
+                        inventory_changed = (
+                            entry.get("episode_count") != len(sorted_eps)
+                            or entry.get("qualities") != sorted_qualities
                         )
+                        media_updated = False
+                        if inventory_changed:
+                            media_updated = await self._refresh_album_media(
+                                target_channel_id, msg_id, series_title, sorted_eps,
+                                sorted_qualities, is_movie, poster_url, mapping,
+                                post_style, caption, markup,
+                            )
+                        if not media_updated:
+                            await self.client.edit_message_caption(
+                                chat_id=target_channel_id,
+                                message_id=msg_id,
+                                caption=caption[:CAPTION_LIMIT],
+                                parse_mode=enums.ParseMode.HTML,
+                                reply_markup=markup,
+                            )
                     else:
                         await self.client.edit_message_text(
                             chat_id=target_channel_id,
@@ -395,20 +579,15 @@ class LibraryManager:
                 display_photo = poster_path
                 temp_card_path = None
                 try:
-                    from bot.thumbnail import generate_thumbnail
                     auto_thumb_on = await self.db.get_auto_thumb() if self.db else True
                     if auto_thumb_on or post_style == "modern":
                         # Issue #33: one streaming-card style serves both
                         # movies and series (legacy templates retired).
                         template_choice = await self.db.get_thumb_template() if self.db else "streaming"
-                        gen_card = generate_thumbnail(
-                            title=series_title,
-                            quality="HD",
-                            season=1,
-                            episode=len(sorted_eps) or 1,
-                            poster_path=poster_path,
-                            template=template_choice,
-                            is_movie=is_movie,
+                        gen_card = self._generate_album_art(
+                            series_title, sorted_eps, sorted_qualities, is_movie,
+                            poster_path, template_choice,
+                            (mapping or {}).get("language"),
                         )
                         if gen_card and os.path.exists(gen_card):
                             display_photo = gen_card
@@ -539,6 +718,7 @@ class LibraryManager:
             caption = self._format_album_caption(
                 series_title, sorted_eps, sorted_qualities, is_movie, poster_url,
                 channel_mapping=mapping, series_slug=series_slug, post_style=post_style,
+                synopsis=await _resolve_album_synopsis(series_title),
             )
             markup = self._build_album_buttons(
                 series_slug, sorted_eps, sorted_qualities, is_movie, channel_mapping=mapping, album_mode=album_mode,
@@ -554,13 +734,25 @@ class LibraryManager:
                 target_msg_id = msg_id
                 try:
                     if entry.get("has_poster"):
-                        await self.client.edit_message_caption(
-                            chat_id=target_channel_id,
-                            message_id=msg_id,
-                            caption=caption[:CAPTION_LIMIT],
-                            parse_mode=enums.ParseMode.HTML,
-                            reply_markup=markup,
+                        inventory_changed = (
+                            entry.get("episode_count") != len(sorted_eps)
+                            or entry.get("qualities") != sorted_qualities
                         )
+                        media_updated = False
+                        if inventory_changed:
+                            media_updated = await self._refresh_album_media(
+                                target_channel_id, msg_id, series_title, sorted_eps,
+                                sorted_qualities, is_movie, poster_url, mapping,
+                                post_style, caption, markup,
+                            )
+                        if not media_updated:
+                            await self.client.edit_message_caption(
+                                chat_id=target_channel_id,
+                                message_id=msg_id,
+                                caption=caption[:CAPTION_LIMIT],
+                                parse_mode=enums.ParseMode.HTML,
+                                reply_markup=markup,
+                            )
                     else:
                         poster_path = None
                         if poster_url:
@@ -619,16 +811,33 @@ class LibraryManager:
 
                 try:
                     if poster_path:
+                        display_photo = poster_path
+                        temp_card_path = None
                         try:
+                            auto_thumb_on = await self.db.get_auto_thumb() if self.db else True
+                            if auto_thumb_on or post_style == "modern":
+                                template_choice = await self.db.get_thumb_template() if self.db else "streaming"
+                                gen_card = self._generate_album_art(
+                                    series_title, sorted_eps, sorted_qualities, is_movie,
+                                    poster_path, template_choice, (mapping or {}).get("language"),
+                                )
+                                if gen_card and os.path.exists(gen_card):
+                                    display_photo = gen_card
+                                    temp_card_path = gen_card
                             msg = await self.client.send_photo(
                                 chat_id=target_channel_id,
-                                photo=poster_path,
+                                photo=display_photo,
                                 caption=caption[:CAPTION_LIMIT],
                                 parse_mode=enums.ParseMode.HTML,
                                 reply_markup=markup,
                             )
                             has_poster = True
                         finally:
+                            if temp_card_path and os.path.exists(temp_card_path):
+                                try:
+                                    os.remove(temp_card_path)
+                                except Exception:
+                                    pass
                             try:
                                 os.remove(poster_path)
                             except Exception:
@@ -680,41 +889,13 @@ class LibraryManager:
         channel_mapping: dict | None = None,
         series_slug: str = "",
         post_style: str = "classic",
+        synopsis: str = "",
     ) -> str:
-        """
-        Format clean channel post caption per Issue #20 Bug 33:
-        <b><blockquote>• Episodes,- | S0
-        • Audio track,-  Dub | #Official 
-        • Quality - 
-        ━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote></b> 
-        <b>➥ @Channel</b>
-        """
-        # Extract season and episodes info
-        s_num = 1
-        ep_numbers = []
-        for ep in episodes:
-            m = re.match(r"S(\d+)E(\d+)", ep, re.IGNORECASE)
-            if m:
-                s_num = int(m.group(1))
-                ep_numbers.append(int(m.group(2)))
-
-        if is_movie:
-            ep_part = "01 | Movie"
-        elif ep_numbers:
-            ep_numbers.sort()
-            if len(ep_numbers) > 1:
-                ep_part = f"{ep_numbers[0]:02d}-{ep_numbers[-1]:02d} | S{s_num:02d}"
-            else:
-                ep_part = f"{ep_numbers[0]:02d} | S{s_num:02d}"
-        else:
-            ep_part = f"{len(episodes) or 1:02d} | S{s_num:02d}"
-
-        # Audio track
-        audio_name = (channel_mapping.get("language") if channel_mapping else "") or "Hindi"
-        audio_display = f"{audio_name.capitalize()} Dub"
-
-        # Quality display
-        quality_display = ", ".join(qualities) if qualities else "480p, 720p, 1080p"
+        """Format a readable Telegram album caption matching the cinematic card."""
+        del post_style  # Retained in the signature for existing callers/configs.
+        audio_display = _album_audio_label((channel_mapping or {}).get("language"))
+        episode_display = _album_episode_label(episodes, is_movie)
+        quality_display = " · ".join(qualities) if qualities else "480p · 720p · 1080p"
 
         # Channel handle / branding
         from config import Config
@@ -727,25 +908,24 @@ class LibraryManager:
             chan_tag = f"@{self.bot_username}"
 
         import html as htmlmod
-        if post_style == "modern":
-            caption = (
-                f"🎬 <b>{htmlmod.escape(title)}</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>✦ Season:</b> S{s_num:02d}\n"
-                f"<b>✦ Episodes:</b> {ep_part}\n"
-                f"<b>✦ Audio:</b> {audio_display}\n"
-                f"<b>✦ Qualities:</b> {quality_display}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"<b>➥ {chan_tag}</b>"
-            )
-        else:
-            caption = (
-                f"<b><blockquote>• Episodes,- {ep_part}\n"
-                f"• Audio track,- {audio_display} | #Official\n"
-                f"• Quality - {quality_display}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━</blockquote></b>\n"
-                f"<b>➥ {chan_tag}</b>"
-            )
+        clean_synopsis = re.sub(r"<br\s*/?>", " ", str(synopsis or ""), flags=re.IGNORECASE)
+        clean_synopsis = re.sub(r"<[^>]+>", " ", clean_synopsis)
+        clean_synopsis = htmlmod.unescape(clean_synopsis)
+        clean_synopsis = " ".join(clean_synopsis.split()).strip()
+        if len(clean_synopsis) > 280:
+            cut = clean_synopsis[:277].rsplit(" ", 1)[0]
+            clean_synopsis = (cut or clean_synopsis[:277]) + "…"
+
+        caption = (
+            f"<blockquote><b>{htmlmod.escape(title)}</b></blockquote>\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🎧 <b>Language</b> · {htmlmod.escape(audio_display)}\n"
+            f"🎞 <b>Quality</b> · {htmlmod.escape(quality_display)}\n"
+            f"📺 <b>Episode</b> · {htmlmod.escape(episode_display)}"
+        )
+        if clean_synopsis:
+            caption += f"\n\n<blockquote>{htmlmod.escape(clean_synopsis)}</blockquote>"
+        caption += f"\n\n<b>↗ {htmlmod.escape(chan_tag)}</b>"
         return caption
 
     async def _album_gate_kwargs(self, episodes, is_movie: bool = False) -> dict:
@@ -799,7 +979,7 @@ class LibraryManager:
             uname = (str(getattr(Config, "BOT_USERNAME", "") or "").lstrip("@") or self.bot_username or "").lstrip("@")
             return InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    "⬇️ DOWNLOAD",
+                    "⬇️ DOWNLOAD HERE",
                     url=f"https://t.me/{uname}?start={encode_gate_param(series_slug, season)}",
                 )
             ]])
@@ -885,9 +1065,49 @@ class LibraryManager:
                 caption = self._format_album_caption(
                     series_title, sorted_eps, sorted_qualities, is_movie, poster_url,
                     channel_mapping=mapping, series_slug=slug, post_style=post_style,
+                    synopsis=await _resolve_album_synopsis(series_title),
                 )
 
-                if a.get("has_poster"):
+                media_updated = False
+                if a.get("has_poster") and poster_url:
+                    poster_path = await _download_poster(poster_url)
+                    if poster_path:
+                        temp_card_path = None
+                        try:
+                            auto_thumb_on = await self.db.get_auto_thumb() if self.db else True
+                            if auto_thumb_on or post_style == "modern":
+                                template_choice = await self.db.get_thumb_template() if self.db else "streaming"
+                                gen_card = self._generate_album_art(
+                                    series_title, sorted_eps, sorted_qualities, is_movie,
+                                    poster_path, template_choice, (mapping or {}).get("language"),
+                                )
+                                display_photo = gen_card if gen_card and os.path.exists(gen_card) else poster_path
+                                temp_card_path = gen_card if display_photo != poster_path else None
+                                from bot.telegram.types import InputMediaPhoto
+                                await self.client.edit_message_media(
+                                    chat_id=target_channel_id,
+                                    message_id=msg_id,
+                                    media=InputMediaPhoto(
+                                        display_photo, caption=caption[:CAPTION_LIMIT],
+                                        parse_mode=enums.ParseMode.HTML,
+                                    ),
+                                    reply_markup=markup,
+                                )
+                                media_updated = True
+                        except Exception as e:
+                            log.debug("Album artwork refresh skipped for %s: %s", slug, e)
+                        finally:
+                            if temp_card_path and os.path.exists(temp_card_path):
+                                try:
+                                    os.remove(temp_card_path)
+                                except Exception:
+                                    pass
+                            try:
+                                os.remove(poster_path)
+                            except Exception:
+                                pass
+
+                if a.get("has_poster") and not media_updated:
                     await self.client.edit_message_caption(
                         chat_id=target_channel_id,
                         message_id=msg_id,

@@ -2134,7 +2134,7 @@ async def download_and_upload(
                 auto_thumb_on = await db.get_auto_thumb()
             if auto_thumb_on:
                 try:
-                    from bot.thumbnail import generate_auto_thumbnail
+                    from bot.thumbnail import enhance_custom_thumbnail, generate_auto_thumbnail
                     bot_uname = getattr(getattr(client, "me", None), "username", None) or "AnimeDekhoBot"
                     aud_tag = "Hindi Dub" if "hindi" in title.lower() or "hindi" in language.lower() else "Multi Audio"
                     ep_m = re.search(r"S(\d+)E(\d+)", filename, re.I)
@@ -2155,8 +2155,20 @@ async def download_and_upload(
                         is_movie=is_mov,
                     )
                     if gen_thumb and os.path.exists(gen_thumb):
-                        thumb_path = gen_thumb
                         tracked_temp_files.add(gen_thumb)
+                        video_thumb_file = str(
+                            _TEMP_BASE / f"video_thumb_{int(time.time())}_{uuid.uuid4().hex[:6]}.jpg"
+                        )
+                        try:
+                            video_thumb = enhance_custom_thumbnail(gen_thumb, video_thumb_file)
+                        except Exception as vte:
+                            log.debug("Compact video-thumbnail conversion skipped: %s", vte)
+                            video_thumb = None
+                        if video_thumb and os.path.exists(video_thumb):
+                            thumb_path = video_thumb
+                            tracked_temp_files.add(video_thumb)
+                        else:
+                            thumb_path = gen_thumb
                         log.info("Applied generated Auto Thumbnail for %s", filename)
                 except Exception as ate:
                     log.warning("Auto thumbnail generation failed: %s", ate)

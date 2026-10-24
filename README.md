@@ -41,7 +41,7 @@
 
 ```diff
 + 🔎  Watches AnimeDekho for new episode & movie drops
-+ 🖼️  Auto-generates Netflix-style 1280×720 streaming-card thumbnails (own logo + handle)
++ 🖼️  Auto-generates full-bleed 1280×720 anime cards (own logo + handle)
 + 🎞️  Downloads multi-quality streams — 480p → 720p → 1080p → 4K
 + 🎚️  Multi-source resolver — AnimeDekho-first default, switchable live via /source
 + 🩺  Per-stage diagnostics & health probes on every download
@@ -59,7 +59,7 @@
   <tr>
     <td width="50%">
       <h3>🎨 Auto Thumbnail Studio</h3>
-      <p>One Netflix-style 1280×720 key-art card, stamped with your own handle and PNG logo.</p>
+      <p>One full-bleed 1280×720 anime card, stamped with your own handle and PNG logo.</p>
     </td>
     <td width="50%">
       <h3>📚 Smart Library Engine</h3>
@@ -100,16 +100,21 @@
 
 ### 🎨 Thumbnail Template
 
-One style — a Netflix/streaming key-art card, auto-generated at 1280×720 for every upload.
+One reference-inspired style: full-bleed anime artwork, a dark left text rail, a bold title,
+compact metadata, a short synopsis, and a single red **WATCH NOW** action.
 
-| Piece                  | What it shows                                                        |
-|------------------------|-----------------------------------------------------------------------|
-| **Brand lockup**       | Your PNG logo (or a gradient monogram tile) + your channel handle      |
-| **Eyebrow + rule**     | `ANIME • HINDI DUB` / `MOVIE • …` in wide-tracked caps                 |
-| **Oversized title**    | Up to 3 auto-scaled lines, white on a soft shadow                      |
-| **Metadata bullets**   | `EPISODES: 12 \| S01` · `AUDIO TRACK:` · `QUALITY:` (mirrors the post) |
-| **CTA + quality pills**| Gradient `DOWNLOAD` button and the resolved tier (`1080P • FULL HD`)   |
-| **Watermark**          | `@yourhandle` bottom-right over the feathered key art                  |
+| Piece                  | What it shows                                                                  |
+|------------------------|---------------------------------------------------------------------------------|
+| **Artwork**            | Full-bleed anime art; portrait covers retain a sharp character crop on the right |
+| **Brand lockup**       | Your PNG logo (or a gradient monogram tile) + your channel handle                |
+| **Title + metadata**   | Bold title, season/episode count, audio, and quality                              |
+| **Synopsis**           | Short AniList summary, when available                                              |
+| **Single CTA**         | One red **WATCH NOW** action                                                      |
+| **Watermark**          | `@yourhandle` bottom-right over the key art                                        |
+
+Album cards are exported as 1280×720 high-quality JPEGs (up to 1.8 MB) to avoid the
+previous aggressive 285 KB cap. Video-message preview images are separate 320×180 JPEGs
+under 200 KB, matching Telegram's video-thumbnail requirements.
 
 <code>THUMB_TEMPLATE</code> still accepts the retired names (`modern`, `cinematic`,
 `movie_gold`, `neon_cyber`, `minimal`) — they all resolve to this one style, so
@@ -126,9 +131,9 @@ Set your own branding (owner-only):
 
 <div align="center">
 
-<img src="assets/thumb_showcase.jpg" alt="Solo Leveling — streaming card thumbnail preview" width="75%">
+<img src="assets/thumb_showcase_redesign.jpg" alt="Anime album thumbnail — redesigned full-bleed card with Watch Now action" width="75%">
 
-<p><sub><b>Example:</b> <i>Solo Leveling</i> · <code>streaming</code> template · auto-generated at 1280×720 for every upload</sub></p>
+<p><sub><b>Example:</b> <i>The Cold Sato-san Is Only Sweet to Me</i> · album card · 1280×720</sub></p>
 
 </div>
 

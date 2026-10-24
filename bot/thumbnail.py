@@ -1,11 +1,9 @@
 """
 Auto Thumbnail Generator for AnimeDekho Bot — Modular Multi-Template Architecture.
 
-Issue #33 retired the five older styles in favour of ONE Netflix/streaming
-key-art card (issue #33 reference screenshots):
-- 'streaming': brand lockup (optional PNG logo + channel handle), wide-tracked
-  eyebrow, oversized title, metadata bullets, DOWNLOAD + quality pills, and a
-  handle watermark over feathered key art.
+ Issue #33 retired the five older styles in favour of one full-bleed anime
+ hero card: compact channel mark, oversized title, short synopsis, and one red
+ WATCH NOW action over darkened artwork.
 
 Legacy template names ('modern', 'cinematic', 'movie_gold', 'neon_cyber',
 'minimal') are aliased to 'streaming' so old configs keep rendering.
@@ -17,10 +15,12 @@ ensuring razor-sharp text, proper 16:9 framing, and Telegram video player optimi
 from __future__ import annotations
 
 import logging
+import html
 import math
 import os
 import random
 import re
+import shutil
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Dict, Type
@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 
 CANVAS_WIDTH = 1280
 CANVAS_HEIGHT = 720
+PHOTO_EXPORT_MAX_KB = 1800
+VIDEO_THUMB_MAX_KB = 190
 
 ASSETS_FONT_DIR = Path(__file__).parent.parent / "assets" / "fonts"
 
@@ -289,8 +291,8 @@ def _format_episode_tag(episode_info: str, is_movie: bool) -> str:
     return "COMPLETE SERIES • ALL EPISODES"
 
 
-def _save_optimized_jpeg(img: Image.Image, output_path: str, max_kb: int = 285) -> str:
-    """Save image with optimal quality, unsharp mask, and ensure size is strictly under Telegram's limit."""
+def _save_optimized_jpeg(img: Image.Image, output_path: str, max_kb: int = PHOTO_EXPORT_MAX_KB) -> str:
+    """Save a high-quality photo JPEG within the configured export budget."""
     final = img.convert("RGB")
     final = ImageEnhance.Contrast(final).enhance(1.05)
     final = ImageEnhance.Color(final).enhance(1.04)
@@ -323,19 +325,14 @@ def _save_optimized_jpeg(img: Image.Image, output_path: str, max_kb: int = 285) 
 def enhance_custom_thumbnail(
     input_path: str,
     output_path: str | None = None,
-    target_width: int = 1280,
-    target_height: int = 720,
+    target_width: int = 320,
+    target_height: int = 180,
 ) -> str | None:
     """
-    Transform ANY custom uploaded image into a high-end, razor-sharp 1280x720 video thumbnail.
-    
-    Solves low quality & unreadable text issues on custom thumbnails:
-    - Aspect Ratio Fix: Non-16:9 images (portraits, squares) are framed onto a 16:9 canvas
-      with a cinema-grade blurred ambient background and subtle drop shadow (no stretching/cropping).
-    - Clarity Enhancement: UnsharpMask filtering and contrast/color boosting make all text glyphs,
-      logos, and episode labels crisp and easily legible on both mobile and desktop screens.
-    - Lossless Chroma Subsampling: Saved with `subsampling=0` (4:4:4) to eliminate JPEG edge-blur on text.
-    - Size Optimization: Kept strictly under 285 KB to prevent Telegram server recompression artifacts.
+    Prepare a Telegram-sized video thumbnail, preserving valid JPEGs unchanged.
+
+    Video thumbnail uploads are limited to 320 px per side and 200 KB. Full-size
+    album cards use :func:`generate_thumbnail` and remain 1280×720.
     """
     if not input_path or not os.path.exists(input_path):
         return None
@@ -348,10 +345,22 @@ def enhance_custom_thumbnail(
 
     try:
         with Image.open(input_path) as im:
-            im = im.convert("RGBA")
             w, h = im.size
             if w <= 0 or h <= 0:
                 return None
+
+            # Avoid a second lossy encode when an input already matches the
+            # platform's size, format, and file-size requirements.
+            if (
+                im.format == "JPEG"
+                and im.size == (target_width, target_height)
+                and os.path.getsize(input_path) < VIDEO_THUMB_MAX_KB * 1024
+            ):
+                if os.path.abspath(input_path) != os.path.abspath(output_path):
+                    shutil.copyfile(input_path, output_path)
+                return output_path
+
+            im = im.convert("RGBA")
 
             aspect = w / h
 
@@ -405,13 +414,13 @@ def enhance_custom_thumbnail(
                 canvas.paste(fg_resized, (fg_x, fg_y), fg_resized)
                 canvas = canvas.convert("RGB")
 
-            # High-Impact Clarity & Readability Enhancements
-            canvas = ImageEnhance.Contrast(canvas).enhance(1.08)
-            canvas = ImageEnhance.Color(canvas).enhance(1.06)
-            canvas = ImageEnhance.Sharpness(canvas).enhance(1.25)
-            canvas = canvas.filter(ImageFilter.UnsharpMask(radius=1.3, percent=130, threshold=2))
+            # Keep color and edge treatment subtle to avoid over-processing.
+            canvas = ImageEnhance.Contrast(canvas).enhance(1.03)
+            canvas = ImageEnhance.Color(canvas).enhance(1.02)
+            canvas = ImageEnhance.Sharpness(canvas).enhance(1.05)
+            canvas = canvas.filter(ImageFilter.UnsharpMask(radius=0.8, percent=70, threshold=3))
 
-            # Optimize JPEG file size strictly for Telegram with progressive 4:4:4
+            # Telegram video-thumbnail requirements: JPEG, <200 KB, <=320 px.
             q = 96
             while q >= 75:
                 canvas.save(
@@ -424,7 +433,7 @@ def enhance_custom_thumbnail(
                     dpi=(300, 300),
                 )
                 try:
-                    if os.path.getsize(output_path) <= 285 * 1024:
+                    if os.path.getsize(output_path) < VIDEO_THUMB_MAX_KB * 1024:
                         break
                 except Exception:
                     break
@@ -468,6 +477,7 @@ class BaseThumbnailTemplate:
         is_movie: bool = False,
         brand_username: str = "",
         logo_path: str = "",
+        synopsis: str = "",
     ) -> str | None:
         raise NotImplementedError
 
@@ -600,15 +610,10 @@ def _load_logo_image(logo_path: str) -> Image.Image | None:
 
 @register_template("streaming")
 class StreamingCardTemplate(BaseThumbnailTemplate):
-    """Netflix-style key-art hero: art bleeds on the right, info rail on the left.
-
-    Mirrors the reference art in issue #33: brand lockup + wide-tracked eyebrow
-    on top, oversized title, metadata bullets, CTA + quality pills, handle
-    watermark over the art.
-    """
+    """Full-bleed anime hero with a compact left-side title and action rail."""
     name = "streaming"
     display_name = "Streaming Card"
-    description = "Netflix-style key-art hero with info rail, brand lockup and quality pills."
+    description = "Full-bleed anime art, oversized title, compact metadata, and watch actions."
 
     # Violet → pink → cyan signature, used for the underline, eyebrow and CTA.
     ACCENT = [
@@ -617,9 +622,9 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
         (1.0, (34, 211, 238, 255)),
     ]
 
-    # Left info rail geometry.
+    # Left info rail geometry; artwork remains visible beneath the scrim.
     RAIL_X = 72
-    RAIL_W = 566
+    RAIL_W = 690
     PANEL = (13, 11, 24, 255)
 
     def generate(
@@ -634,64 +639,83 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
         is_movie: bool = False,
         brand_username: str = "",
         logo_path: str = "",
+        synopsis: str = "",
     ) -> str | None:
         try:
             W, H = CANVAS_WIDTH, CANVAS_HEIGHT
             canvas = Image.new("RGBA", (W, H), self.PANEL)
 
-            # ── 1. Key art on the right, feathered into the panel ──────────
+            # ── 1. Full-bleed key art with an editorial dark scrim ─────────
             art = _resolve_poster_image(poster_path)
             if art:
-                # Enhance key art clarity, vibrancy, and contrast
                 art = ImageEnhance.Color(art).enhance(1.08)
                 art = ImageEnhance.Contrast(art).enhance(1.06)
                 art = art.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=2))
+                if art.width / max(1, art.height) < 1.30:
+                    # Portrait cover art cannot fill 16:9 without losing faces.
+                    # Blur it behind a sharper right-side crop for a full-bleed
+                    # composition that still preserves the anime character.
+                    backdrop = art.copy()
+                    scale = max(W / backdrop.width, H / backdrop.height)
+                    nw, nh = max(1, int(backdrop.width * scale)), max(1, int(backdrop.height * scale))
+                    backdrop = backdrop.resize((nw, nh), Image.Resampling.LANCZOS)
+                    bx = max(0, (backdrop.width - W) // 2)
+                    by = max(0, int((backdrop.height - H) * 0.20)) if backdrop.height > H else 0
+                    backdrop = backdrop.crop((bx, by, bx + W, by + H))
+                    backdrop = ImageEnhance.Brightness(backdrop.filter(
+                        ImageFilter.GaussianBlur(radius=22)
+                    )).enhance(0.62)
+                    canvas = backdrop.convert("RGBA")
 
-                ART_X = 460
-                box_w, box_h = W - ART_X, H
-                scale = max(box_w / art.width, box_h / art.height)
-                nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
-                art = art.resize((nw, nh), Image.Resampling.LANCZOS)
-                ox = max(0, (art.width - box_w) // 2)
-                # Keep portrait focal point (character heads/faces) in frame
-                oy = max(0, int((art.height - box_h) * 0.25)) if art.height > box_h else 0
-                art = art.crop((ox, oy, ox + box_w, oy + box_h))
-
-                # Smooth, cinematic feather into the panel
-                mask = Image.new("L", (W, H), 0)
-                md = ImageDraw.Draw(mask)
-                ramp_start, ramp_end = 480, 820
-                for x in range(W):
-                    if x < ramp_start:
-                        a = 0
-                    elif x > ramp_end:
-                        a = 255
-                    else:
-                        a = int(255 * ((x - ramp_start) / (ramp_end - ramp_start)) ** 0.9)
-                    md.line([(x, 0), (x, H - 1)], fill=a)
-                layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                layer.paste(art, (ART_X, 0))
-                canvas.paste(layer, (0, 0), mask)
+                    box_w = int(W * 0.64)
+                    art_x = W - box_w
+                    scale = max(box_w / art.width, H / art.height)
+                    nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
+                    sharp = art.resize((nw, nh), Image.Resampling.LANCZOS)
+                    ox = max(0, (sharp.width - box_w) // 2)
+                    oy = max(0, int((sharp.height - H) * 0.20)) if sharp.height > H else 0
+                    sharp = sharp.crop((ox, oy, ox + box_w, oy + H))
+                    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                    layer.paste(sharp, (art_x, 0))
+                    mask = Image.new("L", (W, H), 0)
+                    md = ImageDraw.Draw(mask)
+                    ramp_start, ramp_end = art_x - 260, art_x + 180
+                    for x in range(W):
+                        if x < ramp_start:
+                            alpha = 0
+                        elif x > ramp_end:
+                            alpha = 255
+                        else:
+                            alpha = int(255 * (x - ramp_start) / max(1, ramp_end - ramp_start))
+                        md.line([(x, 0), (x, H - 1)], fill=alpha)
+                    canvas.paste(layer, (0, 0), mask)
+                else:
+                    scale = max(W / art.width, H / art.height)
+                    nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
+                    art = art.resize((nw, nh), Image.Resampling.LANCZOS)
+                    ox = max(0, (art.width - W) // 2)
+                    oy = max(0, int((art.height - H) * 0.20)) if art.height > H else 0
+                    art = art.crop((ox, oy, ox + W, oy + H))
+                    canvas = art.convert("RGBA")
             else:
-                # No art — keep the panel and add a rich ambient radial glow
                 canvas.alpha_composite(_radial_glow((W, H), (1030, 360), 470, (167, 139, 250), 44))
 
-            # Vertical scrim on the art so bottom watermark stays legible
+            # The dark left rail keeps text crisp; the artwork fades in on the right.
+            canvas.alpha_composite(_multi_gradient((W, H), [
+                (0.0, (5, 6, 13, 248)),
+                (0.38, (5, 6, 13, 244)),
+                (0.64, (5, 6, 13, 210)),
+                (0.86, (5, 6, 13, 56)),
+                (1.0, (5, 6, 13, 0)),
+            ]))
+
+            # Gentle lower vignette keeps the watermark visible over busy art.
             scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             sd = ImageDraw.Draw(scrim)
             for y in range(int(H * 0.60), H):
-                a = int(140 * ((y - H * 0.60) / (H * 0.40)))
+                a = int(150 * ((y - H * 0.60) / (H * 0.40)))
                 sd.line([(0, y), (W, y)], fill=(5, 4, 12, a))
             canvas.alpha_composite(scrim)
-
-            # Left panel gradient edge: guarantees 100% readability of typography
-            edge = _multi_gradient((W, H), [
-                (0.0, (13, 11, 24, 255)),
-                (0.42, (13, 11, 24, 255)),
-                (0.62, (13, 11, 24, 0)),
-                (1.0, (13, 11, 24, 0)),
-            ])
-            canvas.alpha_composite(edge)
 
             draw = ImageDraw.Draw(canvas)
             # Translucent strokes go on this layer: ImageDraw writes alpha
@@ -713,71 +737,73 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             brand = (brand_username or bot_username or "AnimeDekhoBot").lstrip("@").strip()
             handle = f"@{brand}" if brand else "@AnimeDekhoBot"
 
-            # ── 2. Brand lockup: logo tile (or monogram) + wide-tracked name ─
-            by = 52
+            # ── 2. Small channel mark, kept out of the title’s way ─────────
+            by = 38
             logo = _load_logo_image(logo_path)
             if logo:
                 try:
-                    side = 60
+                    side = 34
                     lg = logo.copy()
-                    # cover-crop to a square, then round the corners
                     s = max(side / lg.width, side / lg.height)
                     lg = lg.resize((max(1, int(lg.width * s)), max(1, int(lg.height * s))),
                                    Image.Resampling.LANCZOS)
                     lg = lg.crop(((lg.width - side) // 2, (lg.height - side) // 2,
                                   (lg.width - side) // 2 + side, (lg.height - side) // 2 + side))
-                    lg = _round_corners(lg, radius=14)
-                    sh = Image.new("RGBA", (side + 30, side + 30), (0, 0, 0, 0))
-                    ImageDraw.Draw(sh).rounded_rectangle(
-                        (15, 15, side + 15, side + 15), radius=16, fill=(0, 0, 0, 190))
-                    canvas.alpha_composite(sh.filter(ImageFilter.GaussianBlur(radius=10)), (x0 - 15, by - 15))
+                    lg = _round_corners(lg, radius=7)
                     canvas.paste(lg, (x0, by), lg)
-                    draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=14,
-                                           outline=(255, 255, 255, 80), width=2)
-                    tx_logo = x0 + side + 20
+                    draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=7,
+                                           outline=(255, 255, 255, 100), width=1)
+                    tx_logo = x0 + side + 11
                 except Exception as le:
                     log.debug("Logo paste failed: %s", le)
                     tx_logo = x0
             else:
-                # Monogram tile — same footprint as the logo version.
-                side = 60
+                side = 34
                 canvas.alpha_composite(_rounded_gradient_layer(
-                    (W, H), (x0, by, x0 + side, by + side), 14, self.ACCENT))
-                draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=14,
-                                       outline=(255, 255, 255, 90), width=2)
+                    (W, H), (x0, by, x0 + side, by + side), 7, self.ACCENT))
+                draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=7,
+                                       outline=(255, 255, 255, 110), width=1)
                 mono = (brand[:2] or "AD").upper()
-                font_mono = _get_font(26, bold=True, weight="extrabold")
+                font_mono = _get_font(15, bold=True, weight="extrabold")
                 mb = draw.textbbox((0, 0), mono, font=font_mono)
                 draw.text(
                     (x0 + side // 2 - (mb[2] - mb[0]) // 2 - mb[0],
                      by + side // 2 - (mb[3] - mb[1]) // 2 - mb[1]),
                     mono, font=font_mono, fill=(255, 255, 255, 255),
                 )
-                tx_logo = x0 + side + 20
+                tx_logo = x0 + side + 11
 
-            font_brand = _get_font(27, bold=True, weight="extrabold")
-            nb = draw.textbbox((0, 0), brand.upper(), font=font_brand)
-            draw.text((tx_logo, by + 6), brand.upper(), font=font_brand, fill=(255, 255, 255, 255))
-            # Gradient underline beneath the brand name.
-            canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (tx_logo, by + 44, tx_logo + max(40, nb[2] - nb[0]), by + 49), 3, self.ACCENT))
+            font_brand = _get_font(17, bold=True, weight="bold")
+            brand_label = brand.upper()
+            if len(brand_label) > 22:
+                brand_label = brand_label[:20] + "…"
+            nb = draw.textbbox((0, 0), brand_label, font=font_brand)
+            draw.text((tx_logo, by + 8), brand_label, font=font_brand, fill=(255, 255, 255, 235))
+            draw.rounded_rectangle(
+                (tx_logo, by + 30, tx_logo + max(34, nb[2] - nb[0]), by + 32),
+                radius=1, fill=(236, 72, 153, 255),
+            )
 
             # ── 3. Rule + wide-tracked eyebrow ─────────────────────────────
-            ry = by + 76
+            ry = by + 66
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), (x0, ry, right, ry + 2), 1,
                 [(0.0, (255, 255, 255, 90)), (1.0, (255, 255, 255, 12))],
             ))
 
-            eyebrow = ("MOVIE" if is_movie else "ANIME") + "  •  " + _format_audio_tag(audio)
-            font_eye = _get_font(19, bold=True, weight="bold")
-            _tracked_text(draw, (x0, ry + 24), eyebrow, font_eye,
-                          (196, 181, 253, 255), tracking=4)
+            eyebrow = ("MOVIE FEATURE" if is_movie else "ANIME SERIES")
+            font_eye = _get_font(17, bold=True, weight="bold")
+            _tracked_text(draw, (x0, ry + 17), eyebrow, font_eye,
+                          (255, 255, 255, 235), tracking=2)
 
             # ── 4. Oversized title ─────────────────────────────────────────
-            ty = ry + 66
+            ty = ry + 53
+            clean_title = _clean_text(title).upper()
+            title_max_lines = 2 if len(clean_title) <= 46 else 3
+            title_width = min(W - x0 - 64, 900)
             title_lines, font_title, line_h = _wrap_and_fit_title(
-                draw, title, max_w=self.RAIL_W, base_size=64, min_size=40, max_lines=3,
+                draw, clean_title, max_w=title_width,
+                base_size=70, min_size=44, max_lines=title_max_lines,
             )
             for line in title_lines:
                 # White with smooth Gaussian blurred shadow for depth & legibility
@@ -796,67 +822,83 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 ty += line_h
             ty += 20
 
-            # ── 5. Metadata bullets (matches the channel post format) ───────
-            font_meta = _get_font(21, bold=False, weight="medium")
-            meta_lines = []
-            if is_movie:
-                meta_lines.append(("QUALITY", (quality or "HD").upper()))
-            else:
-                if episode_info:
-                    # episode_info often already reads "Episodes: 12 | S01"
-                    # (the channel-post format) — don't prefix a second label.
-                    raw_ep = _clean_text(episode_info).strip()
-                    if re.match(r"(?i)^episodes?\b", raw_ep):
-                        meta_lines.append((None, raw_ep.upper()))
-                    else:
-                        meta_lines.append(("EPISODE", raw_ep.upper()))
-                meta_lines.append(("AUDIO TRACK", _format_audio_tag(audio)))
-                meta_lines.append(("QUALITY", (quality or "HD").upper()))
-            for label, value in meta_lines:
-                dot_x = x0
-                draw.ellipse((dot_x, ty + 8, dot_x + 8, ty + 16), fill=(236, 72, 153, 255))
-                if label is None:
-                    draw.text((dot_x + 20, ty), value, font=font_meta, fill=(226, 232, 240, 255))
-                    ty += 34
-                    continue
-                lb = draw.textbbox((0, 0), f"{label}: ", font=font_meta)
-                draw.text((dot_x + 20, ty), f"{label}:", font=font_meta, fill=(148, 163, 184, 255))
-                draw.text((dot_x + 20 + (lb[2] - lb[0]) + 4, ty), value,
-                          font=font_meta, fill=(226, 232, 240, 255))
-                ty += 34
-            ty += 16
+            # ── 5. Compact episode line, audio/quality, and short synopsis ─
+            q_label, _q_color = _get_quality_pill(quality)
+            episode_line = _clean_text(episode_info).strip().upper()
+            if not episode_line:
+                episode_line = _format_episode_tag("", is_movie)
+            font_meta = _get_font(20, bold=True, weight="semibold")
+            draw.text((x0, ty), episode_line, font=font_meta, fill=(255, 255, 255, 245))
+            ty += 34
 
-            # ── 6. CTA + quality pills ─────────────────────────────────────
-            font_pill = _get_font(20, bold=True, weight="bold")
-            # Primary "DOWNLOAD" pill (gradient fill + ambient shadow).
-            cta = "DOWNLOAD"
+            details_line = f"{_format_audio_tag(audio)}  •  {(quality or 'HD').upper()}"
+            font_details = _get_font(17, bold=False, weight="medium")
+            draw.text((x0, ty), details_line, font=font_details, fill=(226, 232, 240, 235))
+            ty += 29
+
+            synopsis_text = re.sub(r"<[^>]+>", " ", str(synopsis or ""))
+            synopsis_text = _clean_text(html.unescape(synopsis_text))
+            if synopsis_text:
+                synopsis_text = " ".join(synopsis_text.split())
+                font_synopsis = _get_font(15, bold=False, weight="regular")
+                synopsis_lines = []
+                current_line = ""
+                words = synopsis_text.split()
+                truncated = False
+                for index, word in enumerate(words):
+                    candidate = f"{current_line} {word}".strip()
+                    width = draw.textbbox((0, 0), candidate, font=font_synopsis)[2]
+                    if width <= self.RAIL_W:
+                        current_line = candidate
+                        continue
+                    if current_line:
+                        synopsis_lines.append(current_line)
+                    current_line = word
+                    if len(synopsis_lines) >= 2:
+                        truncated = True
+                        break
+                    if index < len(words) - 1 and len(synopsis_lines) == 2:
+                        truncated = True
+                        break
+                if current_line and len(synopsis_lines) < 3:
+                    synopsis_lines.append(current_line)
+                if len(synopsis_lines) > 3:
+                    synopsis_lines = synopsis_lines[:3]
+                    truncated = True
+                if truncated and synopsis_lines:
+                    last = synopsis_lines[-1].rstrip(" .")
+                    while last and draw.textbbox((0, 0), last + "…", font=font_synopsis)[2] > self.RAIL_W:
+                        last = last.rsplit(" ", 1)[0] if " " in last else ""
+                    synopsis_lines[-1] = (last + "…") if last else "…"
+                for line in synopsis_lines[:3]:
+                    draw.text((x0, ty), line, font=font_synopsis, fill=(235, 238, 244, 225))
+                    ty += 21
+            ty += 17
+
+            # ── 6. Single streaming action (visual treatment only) ──────────
+            font_pill = _get_font(18, bold=True, weight="bold")
+            # Primary "WATCH NOW" pill (gradient fill + ambient shadow).
+            cta = "WATCH NOW"
             cb = draw.textbbox((0, 0), cta, font=font_pill)
-            cw, chh = (cb[2] - cb[0]) + 56, 54
+            cw, chh = (cb[2] - cb[0]) + 58, 46
             sh_cta = Image.new("RGBA", (cw + 24, chh + 24), (0, 0, 0, 0))
             ImageDraw.Draw(sh_cta).rounded_rectangle((12, 12, cw + 12, chh + 12), radius=14, fill=(0, 0, 0, 160))
             canvas.alpha_composite(sh_cta.filter(ImageFilter.GaussianBlur(radius=8)), (x0 - 12, ty - 12 + 3))
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), (x0, ty, x0 + cw, ty + chh), 14,
-                [(0.0, _shade_rgba(self.ACCENT[0][1], 1.0)), (1.0, _shade_rgba(self.ACCENT[1][1], 1.0))],
+                [(0.0, (230, 0, 58, 255)), (1.0, (247, 28, 73, 255))],
             ))
-            draw.text((x0 + (cw - (cb[2] - cb[0])) // 2 - cb[0], ty + (chh - (cb[3] - cb[1])) // 2 - cb[1]), cta, font=font_pill, fill=(255, 255, 255, 255))
-            # Secondary outline pill: quality tier.
-            q_label, q_color = _get_quality_pill(quality)
-            qb = draw.textbbox((0, 0), q_label, font=font_pill)
-            qx = x0 + cw + 16
-            qw = (qb[2] - qb[0]) + 44
-            # Translucent fill → overlay (see note above), then flush so the
-            # label is painted on top of it rather than under it.
-            od.rounded_rectangle((qx, ty, qx + qw, ty + chh), radius=14,
-                                 fill=(255, 255, 255, 28), outline=(255, 255, 255, 130), width=2)
-            _flush_overlay()
-            draw.text((qx + 22, ty + (chh - (qb[3] - qb[1])) // 2 - qb[1]), q_label, font=font_pill, fill=(241, 245, 249, 255))
-            # Dot accent in the pill's tier color.
-            draw.ellipse((qx + qw - 20, ty + chh // 2 - 5, qx + qw - 10, ty + chh // 2 + 5),
-                         fill=q_color[:3] + (255,))
-
+            play_x, play_y = x0 + 18, ty + chh // 2
+            draw.polygon(
+                [(play_x, play_y - 7), (play_x, play_y + 7), (play_x + 12, play_y)],
+                fill=(255, 255, 255, 255),
+            )
+            draw.text(
+                (x0 + 38, ty + (chh - (cb[3] - cb[1])) // 2 - cb[1]),
+                cta, font=font_pill, fill=(255, 255, 255, 255),
+            )
             # ── 7. Watermarks: handle bottom-right, brand note bottom-left ──
-            font_wm = _get_font(22, bold=True, weight="bold")
+            font_wm = _get_font(16, bold=True, weight="bold")
             wm = handle.upper()
             wb = draw.textbbox((0, 0), wm, font=font_wm)
             ww = wb[2] - wb[0]
@@ -867,18 +909,14 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             _flush_overlay()
             draw.text((wmx, wmy), wm, font=font_wm, fill=(255, 255, 255, 235))
             canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (wmx, wmy + 30, wmx + ww, wmy + 33), 2, self.ACCENT))
+                (W, H), (wmx, wmy + 22, wmx + ww, wmy + 24), 1, self.ACCENT))
 
-            # Small HD/quality tag on the art, top-right.
+            # Small top-right quality label, without a bulky badge.
             tag = q_label.split(" • ")[0]
-            font_tag = _get_font(20, bold=True, weight="extrabold")
+            font_tag = _get_font(15, bold=True, weight="bold")
             tb = draw.textbbox((0, 0), tag, font=font_tag)
-            tw = (tb[2] - tb[0]) + 30
-            tx = W - 64 - tw
-            od.rounded_rectangle((tx, 52, tx + tw, 52 + 42), radius=11,
-                                 fill=(10, 9, 18, 210), outline=(255, 255, 255, 110), width=2)
-            _flush_overlay()
-            draw.text((tx + 15, 62), tag, font=font_tag, fill=(255, 255, 255, 240))
+            tx = W - 64 - (tb[2] - tb[0])
+            draw.text((tx, 54), tag, font=font_tag, fill=(255, 255, 255, 225))
 
             _flush_overlay()  # nothing pending — guarantees no stroke is lost
 
@@ -934,6 +972,7 @@ def generate_auto_thumbnail(
     is_movie: bool = False,
     brand_username: str = "",
     logo_path: str = "",
+    synopsis: str = "",
 ) -> str | None:
     """
     Generate a 1280x720 professional YouTube/Telegram video thumbnail using the selected template.
@@ -991,6 +1030,7 @@ def generate_auto_thumbnail(
             is_movie=is_movie,
             brand_username=brand_username,
             logo_path=logo_path,
+            synopsis=synopsis,
         )
         return result
     except Exception as e:
@@ -1026,5 +1066,6 @@ def generate_thumbnail(
         bot_username=bot_username,
         template_name=template or template_name,
         is_movie=is_movie,
+        synopsis=str(kwargs.get("synopsis") or ""),
         **{k: kwargs[k] for k in ("brand_username", "logo_path") if k in kwargs},
     )
