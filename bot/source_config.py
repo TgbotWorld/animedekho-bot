@@ -33,6 +33,7 @@ SOURCE_CATALOG: list[tuple[str, str]] = [
     ("ToonAnime", "ToonAnime mirrors"),
     ("AnimeDrive", "AnimeDrive link pages → HubCloud storage"),
     ("ToonFlix", "ToonFlix seasons → GDrive worker proxy"),
+    ("4KHDHub", "BluRay / Multi-Audio High-Bitrate 1080p"),
 ]
 
 # Sources supported for live recent releases browsing (/browser_source)
@@ -41,6 +42,7 @@ BROWSE_SOURCES: list[tuple[str, str, str]] = [
     ("DeadToons", "Hindi & Multi-Audio Direct Streams", "💀"),
     ("ToonFlix", "High Speed & 4K Streams", "⚡"),
     ("AnimeDrive", "Direct & HubCloud Streams", "🚗"),
+    ("4KHDHub", "BluRay & Multi-Audio", "🎬"),
     ("AnimeDubHindi", "Multi-Audio Dubs & DDL", "🎙️"),
     ("ToonWorld4All", "TW4All Catalog Releases", "🌍"),
     ("TOONo", "Anime Series Collection", "🎭"),
@@ -66,6 +68,9 @@ _ALIASES = {
     "animedrive": "AnimeDrive",
     "ad": "AnimeDrive",
     "toonflix": "ToonFlix",
+    "4khdhub": "4KHDHub",
+    "4khd": "4KHDHub",
+    "khdhub": "4KHDHub",
 }
 
 _CACHE_TTL = 30.0

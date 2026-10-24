@@ -55,6 +55,7 @@ def browse_source_menu(sources: list[str] | list[tuple[str, str, str]]) -> Inlin
         "RareAnimes": "💎",
         "TOONo": "🎭",
         "ToonAnime": "📺",
+        "4KHDHub": "🎬",
     }
     row = []
     for item in sources:

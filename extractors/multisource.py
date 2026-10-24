@@ -16,6 +16,7 @@ from extractors.deadtoons import deadtoons
 from extractors.toonworld4all import toonworld4all
 from extractors.toono import toono
 from extractors.toonanime import toonanime
+from extractors.fourkhdhub import fourkhdhub
 from extractors.resolver import resolve_player_url
 from extractors.shortener import is_shortener, detect_and_bypass, is_valid_media_destination
 
@@ -49,6 +50,7 @@ class MultiSourceManager:
             ("RareAnimes", rareanimes),
             ("TOONo", toono),
             ("ToonAnime", toonanime),
+            ("4KHDHub", fourkhdhub),
         ]
         self._slug_registry: dict[str, dict] = {}
 

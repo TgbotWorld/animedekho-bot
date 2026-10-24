@@ -8,6 +8,7 @@ from .toonworld4all import toonworld4all
 from .toono import toono
 from .animedubhindi import animedubhindi
 from .toonanime import toonanime
+from .fourkhdhub import fourkhdhub
 from .multisource import multi_source_manager
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "toono",
     "animedubhindi",
     "toonanime",
+    "fourkhdhub",
     "multi_source_manager",
     "is_playable_media_url",
 ]

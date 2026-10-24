@@ -43,6 +43,7 @@ KNOWN_ALTERNATES: dict[str, list[str]] = {
     "deadtoons": ["https://deadtoons.sbs"],
     "toonworld4all": ["https://toonworld4all.me"],
     "animedubhindi": ["https://www.animedubhindi.link"],
+    "4khdhub": ["https://4khdhub.one"],
 }
 
 #: Hosts/paths that mean "this mirror is parked/squatted" — never select them.

@@ -40,6 +40,7 @@ SUPPORTED_SOURCES: dict[str, str] = {
     "toono.app": "TOONo",
     "animedrive": "AnimeDrive",
     "toonflix": "ToonFlix",
+    "4khdhub": "4KHDHub",
 }
 
 

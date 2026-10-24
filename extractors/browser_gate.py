@@ -253,3 +253,118 @@ async def fetch_watch_unlocked(
 async def shutdown() -> None:
     """Close the shared browser (call on bot shutdown)."""
     await _holder.close()
+
+
+# ── Ad-mediator unlock (4KHDHub & friends) ───────────────────────────────
+# A "mediator" page (e.g. greenmotors.club/?id=<blob>) is an ad-gate that,
+# after a verify click, opens the real HubCloud/drive URL. We drive it in the
+# same kind of non-headless browser and return the first real link.
+
+_MEDIATOR_TARGET_HINTS = (
+    "hubcloud", "gamerxyt", "hubdrive", "gdflix", "gdflink", "fsl",
+    "workers.dev", "storage.googleapis", "cloudflarestorage", "pixeldrain",
+)
+#: Ad networks the mediator opens first — never treat these as the target.
+_MEDIATOR_AD_HINTS = (
+    "werefilledwit", "google-analytics", "googletagmanager", "doubleclick",
+    "adservice", "popads", "propellerads", "onclick", "mgid",
+)
+
+
+def _looks_like_mediator_target(url: str) -> bool:
+    if not url or not url.startswith("http"):
+        return False
+    u = url.lower()
+    if any(a in u for a in _MEDIATOR_AD_HINTS):
+        return False
+    return any(h in u for h in _MEDIATOR_TARGET_HINTS)
+
+
+def unlock_mediator_sync(mediator_url: str, *, referer: str = "",
+                        timeout: float = 60.0) -> str | None:
+    """Clear an ad-mediator page and return the real drive URL (sync).
+
+    Runs the Playwright **sync** API, so it must be called from a plain worker
+    thread (e.g. inside ``run_in_executor``) — never from the event loop thread.
+    Returns ``None`` when no target link can be recovered.
+    """
+    if not browser_available():
+        return None
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return None
+
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    try:
+        with sync_playwright() as pw:
+            has_display = bool(os.environ.get("DISPLAY"))
+            browser = pw.chromium.launch(headless=not has_display, args=_CHROMIUM_ARGS)
+            try:
+                ctx = browser.new_context(user_agent=_UA,
+                                          viewport={"width": 1366, "height": 768},
+                                          locale="en-US")
+                ctx.add_init_script(
+                    "window.__opens=[];const _o=window.open;"
+                    "window.open=function(u){try{window.__opens.push(u)}catch(e){};"
+                    "try{return _o.call(window,u)}catch(e){return null}};"
+                )
+                page = ctx.new_page()
+                try:
+                    page.goto(mediator_url, wait_until="domcontentloaded",
+                              timeout=45000, referer=referer or None)
+                except Exception:
+                    pass
+
+                def _collect() -> str | None:
+                    # 1) navigated popups / new tabs
+                    for p in ctx.pages:
+                        if p is not page and _looks_like_mediator_target(p.url):
+                            return p.url
+                    # 2) window.open targets
+                    try:
+                        for u in page.evaluate("() => window.__opens || []"):
+                            if _looks_like_mediator_target(u):
+                                return u
+                    except Exception:
+                        pass
+                    # 3) anchors injected into the DOM
+                    try:
+                        for u in page.evaluate(
+                            "() => [...document.querySelectorAll('a')].map(a=>a.href)"
+                        ):
+                            if _looks_like_mediator_target(u):
+                                return u
+                    except Exception:
+                        pass
+                    return None
+
+                # wait for the verify button, clicking it a few times as the
+                # gate re-renders (it often needs the click after its timer).
+                while _time.monotonic() < deadline:
+                    found = _collect()
+                    if found:
+                        log.info("Browser mediator: unlocked %s → %s",
+                                 mediator_url[:60], found[:80])
+                        return found
+                    for sel in ("#verify_btn", "a.get-link", "button:has-text('Continue')",
+                                "a:has-text('CONTINUE')", "button:has-text('CLICK')"):
+                        try:
+                            el = page.query_selector(sel)
+                            if el is not None:
+                                el.click(timeout=2000)
+                                break
+                        except Exception:
+                            continue
+                    page.wait_for_timeout(2500)
+                log.warning("Browser mediator: no target link found for %s", mediator_url[:60])
+                return None
+            finally:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning("Browser mediator: error for %s: %s", mediator_url[:60], e)
+        return None

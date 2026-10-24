@@ -256,12 +256,14 @@ def main() -> int:
                     normalize_source("ANIME DRIVE") == "AnimeDrive"
                     and normalize_source("adk") == "AnimeDekho"
                     and normalize_source("toonflix") == "ToonFlix"
+                    and normalize_source("4khdhub") == "4KHDHub"
                     and normalize_source("bogus") is None
                     and normalize_source("") is None)
         ok &= check("src catalog covers all extractors",
                     set(n for n, _ in SOURCE_CATALOG) == {
                         "AnimeDekho", "AnimeDubHindi", "ToonWorld4All", "RareAnimes",
-                        "DeadToons", "TOONo", "ToonAnime", "AnimeDrive", "ToonFlix"})
+                        "DeadToons", "TOONo", "ToonAnime", "AnimeDrive", "ToonFlix",
+                        "4KHDHub"})
         ok &= check("src default w/o db", _ai.run(get_default_source()) == "AnimeDekho")
         try:
             _ai.run(set_default_source("definitely-not-a-source"))
@@ -1035,7 +1037,7 @@ def main() -> int:
                     _first3 == ["AnimeDrive", "ToonFlix", "AnimeDubHindi"],
                     str(_first3))
         ok &= check("i34 no source was dropped",
-                    len(_msmgr.sources) == 8, str(len(_msmgr.sources)))
+                    len(_msmgr.sources) == 9, str(len(_msmgr.sources)))
 
         # ── functional: a good candidate must not wait for the stragglers ──
         import time as _time5
