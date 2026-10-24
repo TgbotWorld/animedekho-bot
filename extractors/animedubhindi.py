@@ -43,6 +43,8 @@ class AnimeDubHindiExtractor:
 
     def _sync_search(self, query: str) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "animedubhindi", attr="base_url")
         # Clean season suffix and special chars for WordPress search so all seasons are retrieved
         clean = re.sub(
             r"(?i)\s*(—|-|season\s*\d+|s\d+|hindi|dubbed|multi-audio|tamil|telugu|uncensored|episodes).*$",
@@ -116,6 +118,8 @@ class AnimeDubHindiExtractor:
 
     def _sync_get_recent(self, page: int = 1) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "animedubhindi", attr="base_url")
         url = f"{self.base_url}/page/{page}/" if page > 1 else self.base_url
         try:
             r = s.get(url, timeout=12)

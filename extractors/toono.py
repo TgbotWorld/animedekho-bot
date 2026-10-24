@@ -37,6 +37,8 @@ class ToonoExtractor:
 
     def _sync_search(self, query: str) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "toono")
         clean = re.sub(
             r"(?i)\s*(season\s*\d+|s\d+|hindi|dubbed|multi-audio|tamil|telugu).*$",
             "",
@@ -117,6 +119,8 @@ class ToonoExtractor:
 
     def _sync_get_recent(self, page: int = 1) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "toono")
         url = f"{self._base_url}/series/page/{page}/" if page > 1 else f"{self._base_url}/series/"
         try:
             r = s.get(url, timeout=12)

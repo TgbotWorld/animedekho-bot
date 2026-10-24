@@ -36,6 +36,8 @@ class RareAnimesExtractor:
 
     def _sync_search(self, query: str) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "rareanimes")
         clean = re.sub(
             r"(?i)\s*(season\s*\d+|s\d+|hindi|dubbed|multi-audio|tamil|telugu).*$",
             "",

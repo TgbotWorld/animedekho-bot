@@ -39,6 +39,8 @@ class DeadToonsExtractor:
 
     def _sync_search(self, query: str) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "deadtoons")
         clean = re.sub(
             r"(?i)\s*(season\s*\d+|s\d+|hindi|dubbed|multi-audio|tamil|telugu).*$",
             "",
@@ -107,6 +109,8 @@ class DeadToonsExtractor:
 
     def _sync_get_recent(self, page: int = 1) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "deadtoons")
         url = f"{self._base_url}/?page={page}" if page > 1 else self._base_url
         try:
             r = s.get(url, timeout=12)

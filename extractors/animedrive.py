@@ -72,6 +72,8 @@ class AnimeDriveExtractor:
 
     def _sync_search(self, query: str) -> list[dict]:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "animedrive")
         clean = re.sub(
             r"(?i)\s*(season\s*\d+|s\d+|hindi|dubbed|multi-audio|tamil|telugu|uncensored|episodes).*$",
             "",
@@ -121,6 +123,8 @@ class AnimeDriveExtractor:
 
     def _sync_get_recent(self, page: int = 1) -> list[dict]:
         s = self._get_scraper()
+        from extractors import domains
+        domains.live_base(self, "animedrive")
         for base in [self._base_url, self._fallback_url]:
             url = f"{base}/page/{page}/" if page > 1 else base
             try:
@@ -241,6 +245,8 @@ class AnimeDriveExtractor:
         quality_pref: str,
     ) -> dict | None:
         s = _get_scraper()
+        from extractors import domains
+        domains.live_base(self, "animedrive")
 
         # Step 1: Search catalog
         search_results = self._sync_search(anime_title)
