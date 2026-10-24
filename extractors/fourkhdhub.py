@@ -61,6 +61,40 @@ _SEASON_EP_RE = re.compile(r"(?i)\bS(\d{1,2})E(\d{1,3})\b")
 _QUALITY_RE = re.compile(r"(?i)\b(2160p|1440p|1080p|720p|480p|4k|uhd)\b")
 _SIZE_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*(GB|MB)")
 
+#: Size bands that rank 4KHDHub releases. The site carries no native 2160p, so
+#: its de-facto "4K-quality" tier is a high-bitrate **1080p H.264** encode of
+#: roughly 1–2 GB per episode; older self-upscaled releases sit near 500–600 MB.
+#: 2000 MB is also the Telegram bot upload ceiling, so anything larger is
+#: deprioritised (it cannot be delivered as a single episode upload).
+_SIZE_BANDS = ((1000.0, 2000.0), (450.0, 650.0))
+_TG_UPLOAD_CAP_MB = 2000.0
+
+
+def _size_band_tier(size_mb: float | None) -> int:
+    """3 = preferred 1–2 GB band, 2 = ~500–600 MB band, 1 = any other
+    deliverable size, 0 = unknown or over the Telegram upload cap."""
+    if size_mb is None:
+        return 0
+    if _SIZE_BANDS[0][0] <= size_mb <= _SIZE_BANDS[0][1]:
+        return 3
+    if _SIZE_BANDS[1][0] <= size_mb <= _SIZE_BANDS[1][1]:
+        return 2
+    if size_mb <= _TG_UPLOAD_CAP_MB:
+        return 1
+    return 0
+
+
+def _codec_tier(fname: str) -> int:
+    """Prefer H.264/AVC (3), then H.265/HEVC (2), then AV1 (1)."""
+    f = (fname or "").lower()
+    if any(k in f for k in ("h.264", "h264", "x264", "avc")):
+        return 3
+    if any(k in f for k in ("h.265", "h265", "x265", "hevc")):
+        return 2
+    if "av1" in f:
+        return 1
+    return 2
+
 
 class FourKHDHubExtractor:
     """Anime-only extractor for 4khdhub.one (high-bitrate 1080p / multi-audio)."""
@@ -189,50 +223,66 @@ class FourKHDHubExtractor:
         """Choose the best mediator link for (season, episode, quality).
 
         Returns ``(mediator_url, detected_quality, size_mb)``.
+
+        Ranking, highest first:
+          1. files with an explicit matching ``SxxEyy`` tag beat season packs;
+          2. exact requested quality (for 4K, 1080p H.264 in the 1–2 GB band is
+             the accepted stand-in — the site carries no native 2160p);
+          3. the preferred size band (1–2 GB, then ~500–600 MB);
+          4. H.264 > H.265 > AV1.
+
+        Releases larger than the Telegram bot upload cap (2 GB) are only used
+        when nothing deliverable exists, so a 6.5 GB BluRay REMUX pack can
+        never shadow a sub-2 GB episode file.
         """
         from utils.anime_match import qualities_match, parse_size_mb
-        want  = (quality_pref or "").lower()
+        want = (quality_pref or "").lower()
         is_4k = want in ("4k", "2160p", "2160", "uhd")
 
-        best = (None, "", None, -1)
+        candidates: list[tuple[int, int, str, float | None, str]] = []
         for item in soup_page.select(".episode-download-item"):
             title_el = item.select_one(".episode-file-title")
             fname = title_el.get_text(" ", strip=True) if title_el else ""
             if not fname:
                 continue
+            info_el = item.select_one(".episode-file-info")
+            info = info_el.get_text(" ", strip=True) if info_el else ""
+            blob = f"{fname} {info}"
+
             m = _SEASON_EP_RE.search(fname)
             if m:
                 if int(m.group(1)) != season or int(m.group(2)) != episode:
                     continue
+                explicit = True
             else:
-                # Pack file (complete season) — accept only for episode 1.
+                # No SxxEyy → this is a complete-season pack. It is only a
+                # last resort for episode 1, and always ranks below an
+                # explicit episode file.
                 if episode != 1:
                     continue
-            qm = _QUALITY_RE.search(fname)
+                explicit = False
+
+            qm = _QUALITY_RE.search(blob)
             q = qm.group(1) if qm else ""
             if q.lower() in ("4k", "uhd", "2160p"):
                 q = "4K"
-            size = parse_size_mb(fname)
-            if size is None:
-                info = item.select_one(".episode-file-info")
-                if info:
-                    sm = _SIZE_RE.search(info.get_text(" ", strip=True))
-                    if sm:
-                        try:
-                            size = float(sm.group(1)) * (1024 if sm.group(2).upper() == "GB" else 1)
-                        except Exception:
-                            size = None
-            # Score: exact quality match wins, then larger size.
-            score = 0
+            size = parse_size_mb(blob)
+
             if is_4k:
-                score = 1000 if q == "4K" else -1
+                if q == "4K":
+                    qok = 2
+                elif qualities_match(quality_pref, q, size=size) or q in ("1080p", "1080"):
+                    qok = 1
+                else:
+                    continue
             else:
                 if qualities_match(quality_pref, q, size=size):
-                    score = 1000
+                    qok = 2
                 elif q:
-                    score = 10
-            if score < 0:
-                continue
+                    qok = 1
+                else:
+                    qok = 0
+
             link = None
             for a in item.find_all("a", href=True):
                 if "hubcloud" in a.get_text(" ", strip=True).lower() or "hubcloud" in a["href"].lower():
@@ -243,10 +293,20 @@ class FourKHDHubExtractor:
                 link = a["href"] if a else None
             if not link:
                 continue
-            composite = score * 10000 + (size or 0)
-            if composite > best[3]:
-                best = (link, q, size, composite)
-        return best[0], best[1], best[2]
+
+            composite = ((10_000 if explicit else 0)
+                         + qok * 1_000
+                         + _size_band_tier(size) * 100
+                         + _codec_tier(blob) * 10)
+            candidates.append((composite, 0 if explicit else 1, q, size, link))
+
+        if not candidates:
+            return None, "", None
+
+        deliverable = [c for c in candidates if c[3] is None or c[3] <= _TG_UPLOAD_CAP_MB]
+        pool = deliverable or candidates
+        best = max(pool, key=lambda c: c[0])
+        return best[4], best[2], best[3]
 
     def _sync_resolve(self, anime_title: str, season: int, episode: int,
                       quality_pref: str) -> dict | None:
