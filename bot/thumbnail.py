@@ -29,8 +29,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 log = logging.getLogger(__name__)
 
-CANVAS_WIDTH = 1280
-CANVAS_HEIGHT = 720
+CANVAS_WIDTH = 1200
+CANVAS_HEIGHT = 630
 PHOTO_EXPORT_MAX_KB = 1800
 VIDEO_THUMB_MAX_KB = 190
 
@@ -156,7 +156,7 @@ def _round_corners(img: Image.Image, radius: int) -> Image.Image:
 
 
 def _prepare_blurred_bg(poster_path: str, blur_radius: int = 34) -> Image.Image | None:
-    """Scale, center-crop, and blur a poster to cover the 1280x720 canvas."""
+    """Scale, center-crop, and blur a poster to cover the 1200x630 canvas."""
     target_path = poster_path
     if not target_path or not os.path.exists(target_path):
         banner_fallback = Path(__file__).parent.parent / "assets" / "banner.png"
@@ -332,7 +332,7 @@ def enhance_custom_thumbnail(
     Prepare a Telegram-sized video thumbnail, preserving valid JPEGs unchanged.
 
     Video thumbnail uploads are limited to 320 px per side and 200 KB. Full-size
-    album cards use :func:`generate_thumbnail` and remain 1280×720.
+    album cards use :func:`generate_thumbnail` and remain 1200×630.
     """
     if not input_path or not os.path.exists(input_path):
         return None
@@ -622,9 +622,10 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
         (1.0, (34, 211, 238, 255)),
     ]
 
-    # Left info rail geometry; artwork remains visible beneath the scrim.
-    RAIL_X = 72
-    RAIL_W = 690
+    # Left info rail geometry. Kept intentionally narrow so the artwork
+    # stays the hero of the frame (issue: art-first thumbnails).
+    RAIL_X = 64
+    RAIL_W = 596
     PANEL = (13, 11, 24, 255)
 
     def generate(
@@ -667,7 +668,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     )).enhance(0.62)
                     canvas = backdrop.convert("RGBA")
 
-                    box_w = int(W * 0.64)
+                    box_w = int(W * 0.70)
                     art_x = W - box_w
                     scale = max(box_w / art.width, H / art.height)
                     nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
@@ -679,7 +680,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     layer.paste(sharp, (art_x, 0))
                     mask = Image.new("L", (W, H), 0)
                     md = ImageDraw.Draw(mask)
-                    ramp_start, ramp_end = art_x - 260, art_x + 180
+                    ramp_start, ramp_end = art_x - 210, art_x + 150
                     for x in range(W):
                         if x < ramp_start:
                             alpha = 0
@@ -700,20 +701,23 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             else:
                 canvas.alpha_composite(_radial_glow((W, H), (1030, 360), 470, (167, 139, 250), 44))
 
-            # The dark left rail keeps text crisp; the artwork fades in on the right.
+            # The dark left rail keeps text crisp; the artwork fades back in
+            # early so the key visual dominates the frame. The scrim is
+            # effectively gone past ~66% of the width.
             canvas.alpha_composite(_multi_gradient((W, H), [
-                (0.0, (5, 6, 13, 248)),
-                (0.38, (5, 6, 13, 244)),
-                (0.64, (5, 6, 13, 210)),
-                (0.86, (5, 6, 13, 56)),
+                (0.0, (5, 6, 13, 246)),
+                (0.30, (5, 6, 13, 232)),
+                (0.48, (5, 6, 13, 168)),
+                (0.66, (5, 6, 13, 40)),
+                (0.80, (5, 6, 13, 0)),
                 (1.0, (5, 6, 13, 0)),
             ]))
 
             # Gentle lower vignette keeps the watermark visible over busy art.
             scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             sd = ImageDraw.Draw(scrim)
-            for y in range(int(H * 0.60), H):
-                a = int(150 * ((y - H * 0.60) / (H * 0.40)))
+            for y in range(int(H * 0.72), H):
+                a = int(120 * ((y - H * 0.72) / (H * 0.28)))
                 sd.line([(0, y), (W, y)], fill=(5, 4, 12, a))
             canvas.alpha_composite(scrim)
 
@@ -803,7 +807,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             title_width = min(W - x0 - 64, 900)
             title_lines, font_title, line_h = _wrap_and_fit_title(
                 draw, clean_title, max_w=title_width,
-                base_size=70, min_size=44, max_lines=title_max_lines,
+                base_size=62, min_size=40, max_lines=title_max_lines,
             )
             for line in title_lines:
                 # White with smooth Gaussian blurred shadow for depth & legibility
@@ -862,15 +866,15 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                         break
                 if current_line and len(synopsis_lines) < 3:
                     synopsis_lines.append(current_line)
-                if len(synopsis_lines) > 3:
-                    synopsis_lines = synopsis_lines[:3]
+                if len(synopsis_lines) > 2:
+                    synopsis_lines = synopsis_lines[:2]
                     truncated = True
                 if truncated and synopsis_lines:
                     last = synopsis_lines[-1].rstrip(" .")
                     while last and draw.textbbox((0, 0), last + "…", font=font_synopsis)[2] > self.RAIL_W:
                         last = last.rsplit(" ", 1)[0] if " " in last else ""
                     synopsis_lines[-1] = (last + "…") if last else "…"
-                for line in synopsis_lines[:3]:
+                for line in synopsis_lines[:2]:
                     draw.text((x0, ty), line, font=font_synopsis, fill=(235, 238, 244, 225))
                     ty += 21
             ty += 17
@@ -975,7 +979,7 @@ def generate_auto_thumbnail(
     synopsis: str = "",
 ) -> str | None:
     """
-    Generate a 1280x720 professional YouTube/Telegram video thumbnail using the selected template.
+    Generate a 1200x630 professional YouTube/Telegram video thumbnail using the selected template.
     Template resolution:
     1. Explicit `template_name` argument if provided.
     2. Config `RANDOM_THUMB_TEMPLATE` or DB `random_thumb_template` if enabled.

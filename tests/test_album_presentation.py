@@ -53,7 +53,7 @@ def test_streaming_thumbnail_renders_a_mobile_widescreen_card(tmp_path: Path):
 
     assert result == str(output_path)
     with Image.open(output_path) as card:
-        assert card.size == (1280, 720)
+        assert card.size == (1200, 630)
         assert card.format == "JPEG"
     assert output_path.stat().st_size > 20_000
 
