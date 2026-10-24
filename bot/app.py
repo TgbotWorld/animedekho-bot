@@ -324,6 +324,12 @@ async def _on_stop(client: Client):
         client._auto_refresh_albums_task = None
     from utils.http import http_client
     await http_client.close()
+    # 2026-10: release the DGT gate-unlock browser if it was started.
+    try:
+        from extractors import browser_gate
+        await browser_gate.shutdown()
+    except Exception as e:
+        log.debug("browser_gate shutdown skipped: %s", e)
     from bot.database import db
     if db:
         db.close()

@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
 # Install system dependencies
+# xvfb: virtual display for the non-headless Playwright browser used to clear
+# the AnimeDekho ad-gate (headless Chromium is served a CF challenge instead).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -8,6 +10,7 @@ RUN apt-get update && \
     ca-certificates \
     python3-pip \
     libicu-dev \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Install N_m3u8DL-RE binary (primary download engine)
@@ -30,6 +33,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Playwright Chromium + its OS deps (for the DGT gate unlock browser).
+RUN python -m playwright install --with-deps chromium
+
 # Copy the rest of the app
 COPY . .
 
@@ -43,4 +49,11 @@ ENV DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION=1
 ENV COMPlus_EnableDiagnostics=0
 ENV DOTNET_EnableDiagnostics=0
 
-CMD ["python", "main.py"]
+# Gate-unlock tunables (browser unlock is skipped gracefully if these fail)
+ENV DGT_GATE_BROWSER=auto
+ENV DGT_GATE_WAIT=42
+ENV DGT_GATE_TIMEOUT=150
+
+# Run under a virtual display so the non-headless Chromium can start without a
+# real X server. Falls back to plain python if xvfb-run is unavailable.
+CMD ["sh", "-c", "xvfb-run -a --server-args='-screen 0 1366x768x24' python main.py || python main.py"]

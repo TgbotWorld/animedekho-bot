@@ -23,6 +23,29 @@ log = logging.getLogger(__name__)
 cfg = settings.site
 
 
+async def _unlock_gated_watch(base_url: str, page_url: str, post_id, episode_id) -> dict | None:
+    """2026-10: unlock the site's ad-verification gate in a real browser.
+
+    Returns watch JSON with ``sources`` when the gate is cleared, else ``None``.
+    Imports lazily so a deployment without Playwright/Xvfb keeps working (the
+    helper simply returns None and the caller keeps the gated response).
+    """
+    try:
+        from extractors.browser_gate import fetch_watch_unlocked, browser_available
+    except Exception as e:  # pragma: no cover - import guard
+        log.debug("browser_gate unavailable: %s", e)
+        return None
+    if not browser_available():
+        log.info(
+            "DGT watch gated for %s but browser unlock is unavailable "
+            "(set DGT_GATE_BROWSER=on and install playwright chromium)",
+            page_url,
+        )
+        return None
+    log.info("DGT watch gated for %s — attempting browser unlock", page_url)
+    return await fetch_watch_unlocked(base_url, page_url, post_id, episode_id)
+
+
 class AnimeDekhoAPI:
     """All site interactions go through here."""
 
@@ -400,6 +423,16 @@ class AnimeDekhoAPI:
         if dgt_pid and episode.dgt_episode_id:
             try:
                 watch_data = await self._fetch_watch_data(dgt_pid, episode.dgt_episode_id)
+                # 2026-10: the site gated /watch behind an ad-verification step.
+                # When the plain path comes back gated, unlock it in a real
+                # browser context (non-headless under Xvfb) and retry.
+                if watch_data.get("gated") and not watch_data.get("sources"):
+                    unlocked = await _unlock_gated_watch(
+                        cfg.base_url, episode.page_url or f"{cfg.base_url}{cfg.episode_path}/{ep_slug}/",
+                        dgt_pid, episode.dgt_episode_id,
+                    )
+                    if unlocked:
+                        watch_data = unlocked
                 dgt_sources = watch_data.get("sources", [])
                 dgt_servers = self._parse_dgt_sources(dgt_sources)
                 if dgt_servers:
@@ -525,6 +558,13 @@ class AnimeDekhoAPI:
         if movie_post_id:
             try:
                 watch_data = await self._fetch_watch_data(movie_post_id, 0)
+                if watch_data.get("gated") and not watch_data.get("sources"):
+                    unlocked = await _unlock_gated_watch(
+                        cfg.base_url, movie.page_url or f"{cfg.base_url}{cfg.movies_path}/{slug}/",
+                        movie_post_id, 0,
+                    )
+                    if unlocked:
+                        watch_data = unlocked
                 dgt_sources = watch_data.get("sources", [])
                 dgt_servers = self._parse_dgt_sources(dgt_sources)
                 if dgt_servers:

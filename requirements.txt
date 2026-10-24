@@ -7,3 +7,5 @@ cloudscraper>=1.2.71
 psutil>=5.9.0
 python-dotenv>=1.0.0
 Pillow>=10.0.0
+# 2026-10: real-browser DGT gate unlock (non-headless; needs a virtual display).
+playwright>=1.40.0
