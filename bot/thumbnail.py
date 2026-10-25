@@ -25,7 +25,7 @@ from pathlib import Path
 from tempfile import gettempdir
 from typing import Dict, Type
 
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 log = logging.getLogger(__name__)
 
@@ -566,6 +566,74 @@ def _radial_glow(canvas_size, center, radius: int, color, max_alpha: int = 60) -
     return layer.filter(ImageFilter.GaussianBlur(radius=28))
 
 
+def _cinematic_color_grade(image: Image.Image) -> Image.Image:
+    """Boost contrast, split-tone shadows/highlights, and add restrained bloom."""
+    graded = ImageEnhance.Contrast(image.convert("RGB")).enhance(1.30)
+    graded = ImageEnhance.Color(graded).enhance(1.24)
+
+    luminance = ImageOps.grayscale(graded)
+    split_tone = ImageOps.colorize(luminance, black=(12, 18, 40), white=(255, 224, 196))
+    graded = Image.blend(graded, split_tone, 0.24)
+
+    luminance = ImageOps.grayscale(graded)
+    highlight_mask = luminance.point(lambda p: max(0, min(255, (p - 178) * 255 // 77)))
+    highlights = Image.new("RGB", graded.size, (0, 0, 0))
+    highlights.paste(graded, mask=highlight_mask)
+    bloom = highlights.filter(ImageFilter.GaussianBlur(radius=max(8, int(min(graded.size) * 0.026))))
+    graded = Image.blend(graded, ImageChops.screen(graded, bloom), 0.28)
+    return ImageEnhance.Sharpness(graded).enhance(1.10)
+
+
+def _build_edge_vignette(size, max_alpha: int = 54) -> Image.Image:
+    """Softly darken the outer frame while preserving a clear center for the poster."""
+    w, h = max(1, size[0]), max(1, size[1])
+    mask = Image.new("L", (w, h), max(0, min(255, max_alpha)))
+    margin_x, margin_y = int(w * 0.12), int(h * 0.12)
+    ImageDraw.Draw(mask).ellipse((margin_x, margin_y, w - margin_x, h - margin_y), fill=0)
+    mask = mask.filter(ImageFilter.GaussianBlur(radius=max(8, int(min(w, h) * 0.10))))
+    layer = Image.new("RGBA", (w, h), (4, 6, 18, 0))
+    layer.putalpha(mask)
+    return layer
+
+
+def _particle_overlay(size, seed: int) -> Image.Image:
+    """Scatter restrained, repeatable light flecks over the artwork side only."""
+    w, h = max(1, size[0]), max(1, size[1])
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if w < 24 or h < 32:
+        return layer
+    rng = random.Random(int(seed) & 0xFFFFFFFF)
+    draw = ImageDraw.Draw(layer)
+    palette = ((236, 244, 255), (255, 194, 211), (157, 221, 255), (255, 223, 169))
+    count = max(20, int((w * h) / 7000))
+    x_min = min(w - 16, int(w * 0.50))
+    y_min, y_max = 16, max(17, h - 68)
+    for index in range(count):
+        x = rng.randint(x_min, w - 16)
+        y = rng.randint(y_min, y_max)
+        radius = rng.choices((1, 2, 3), weights=(52, 38, 10), k=1)[0]
+        alpha = rng.randint(46, 120)
+        color = rng.choice(palette) + (alpha,)
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+        if index % 15 == 0:
+            draw.line((x - 7, y, x + 7, y), fill=color[:3] + (alpha // 2,), width=1)
+            draw.line((x, y - 7, x, y + 7), fill=color[:3] + (alpha // 2,), width=1)
+    return layer
+
+
+def _apply_film_grain(image: Image.Image, seed: int, opacity: float = 0.10) -> Image.Image:
+    """Blend a subtle deterministic grain texture into the image, not the typography."""
+    rgb = image.convert("RGB")
+    w, h = rgb.size
+    grain_size = (max(1, w // 3), max(1, h // 3))
+    rng = random.Random((int(seed) ^ 0x9E3779B9) & 0xFFFFFFFF)
+    grain = Image.new("L", grain_size)
+    grain.putdata([rng.randint(88, 168) for _ in range(grain_size[0] * grain_size[1])])
+    grain = grain.resize((w, h), Image.Resampling.BICUBIC)
+    grain_rgb = Image.merge("RGB", (grain, grain, grain))
+    return Image.blend(rgb, grain_rgb, max(0.0, min(1.0, opacity)))
+
+
 def _shade_rgba(color, factor: float) -> tuple:
     """Lighten (>1.0) or darken (<1.0) an RGBA color toward white/black."""
     if len(color) == 3:
@@ -626,8 +694,11 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
     RAIL_X = 72
     RAIL_W = 520
     ART_BOX_RATIO = 0.72
-    TITLE_BASE_SIZE = 52
-    TITLE_MIN_SIZE = 34
+    TITLE_BASE_SIZE = 56
+    TITLE_MIN_SIZE = 38
+    EPISODE_SEASON_SIZE = 18
+    EPISODE_COUNT_SIZE = 23
+    EPISODE_CHIP_HEIGHT = 40
     SYNOPSIS_MAX_LINES = 2
     PANEL = (13, 11, 24, 255)
 
@@ -648,12 +719,13 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
         try:
             W, H = CANVAS_WIDTH, CANVAS_HEIGHT
             canvas = Image.new("RGBA", (W, H), self.PANEL)
+            seed_text = _clean_text(str(title or "")).casefold()
+            effect_seed = sum((index + 1) * ord(char) for index, char in enumerate(seed_text)) & 0xFFFFFFFF
 
             # ── 1. Full-bleed key art with an editorial dark scrim ─────────
             art = _resolve_poster_image(poster_path)
             if art:
-                art = ImageEnhance.Color(art).enhance(1.08)
-                art = ImageEnhance.Contrast(art).enhance(1.06)
+                art = _cinematic_color_grade(art)
                 art = art.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=2))
                 if art.width / max(1, art.height) < 1.30:
                     # Portrait cover art cannot fill 16:9 without losing faces.
@@ -704,6 +776,26 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             else:
                 canvas.alpha_composite(_radial_glow((W, H), (1030, 360), 470, (167, 139, 250), 44))
 
+            # Warm bloom, cool fill, and a restrained lens streak light the art side.
+            canvas.alpha_composite(_radial_glow(
+                (W, H), (int(W * 0.83), int(H * 0.22)), int(H * 0.31), (255, 185, 124), 78,
+            ))
+            canvas.alpha_composite(_radial_glow(
+                (W, H), (int(W * 0.76), int(H * 0.62)), int(H * 0.23), (130, 164, 255), 42,
+            ))
+            flare = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            flare_draw = ImageDraw.Draw(flare)
+            flare_x, flare_y = int(W * 0.82), int(H * 0.18)
+            flare_draw.line(
+                (int(W * 0.68), flare_y, int(W * 0.96), flare_y),
+                fill=(255, 235, 207, 120), width=2,
+            )
+            flare_draw.ellipse(
+                (flare_x - 3, flare_y - 3, flare_x + 3, flare_y + 3),
+                fill=(255, 246, 223, 245),
+            )
+            canvas.alpha_composite(flare.filter(ImageFilter.GaussianBlur(radius=5)))
+
             # Keep the copy rail compact and let the artwork read through behind it.
             canvas.alpha_composite(_multi_gradient((W, H), [
                 (0.0, (5, 6, 13, 232)),
@@ -718,9 +810,12 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             sd = ImageDraw.Draw(scrim)
             for y in range(int(H * 0.60), H):
-                a = int(150 * ((y - H * 0.60) / (H * 0.40)))
+                a = int(105 * ((y - H * 0.60) / (H * 0.40)))
                 sd.line([(0, y), (W, y)], fill=(5, 4, 12, a))
             canvas.alpha_composite(scrim)
+            canvas.alpha_composite(_build_edge_vignette((W, H), max_alpha=76))
+            canvas = _apply_film_grain(canvas, effect_seed).convert("RGBA")
+            canvas.alpha_composite(_particle_overlay((W, H), effect_seed))
 
             draw = ImageDraw.Draw(canvas)
             # Translucent strokes go on this layer: ImageDraw writes alpha
@@ -769,7 +864,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=7,
                                        outline=(255, 255, 255, 110), width=1)
                 mono = (brand[:2] or "AD").upper()
-                font_mono = _get_font(15, bold=True, weight="extrabold")
+                font_mono = _get_font(16, bold=True, weight="extrabold")
                 mb = draw.textbbox((0, 0), mono, font=font_mono)
                 draw.text(
                     (x0 + side // 2 - (mb[2] - mb[0]) // 2 - mb[0],
@@ -778,7 +873,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 )
                 tx_logo = x0 + side + 11
 
-            font_brand = _get_font(17, bold=True, weight="bold")
+            font_brand = _get_font(18, bold=True, weight="bold")
             brand_label = brand.upper()
             if len(brand_label) > 22:
                 brand_label = brand_label[:20] + "…"
@@ -797,7 +892,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             ))
 
             eyebrow = ("MOVIE FEATURE" if is_movie else "ANIME SERIES")
-            font_eye = _get_font(17, bold=True, weight="bold")
+            font_eye = _get_font(18, bold=True, weight="bold")
             _tracked_text(draw, (x0, ry + 17), eyebrow, font_eye,
                           (255, 255, 255, 235), tracking=2)
 
@@ -827,18 +922,98 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 canvas.alpha_composite(txt, (x0 - pad_s, ty - pad_s))
                 ty += line_h
             ty += 20
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (x0, ty - 2, x0 + 96, ty + 1), 2, self.ACCENT,
+            ))
+            ty += 7
 
             # ── 5. Compact episode line, audio/quality, and short synopsis ─
             q_label, _q_color = _get_quality_pill(quality)
             episode_line = _clean_text(episode_info).strip().upper()
             if not episode_line:
                 episode_line = _format_episode_tag("", is_movie)
-            font_meta = _get_font(17, bold=True, weight="semibold")
-            draw.text((x0, ty), episode_line, font=font_meta, fill=(255, 255, 255, 245))
-            ty += 29
+            episode_parts = re.split(r"\s*[·•]\s*", episode_line, maxsplit=1)
+            split_badge = (
+                len(episode_parts) == 2
+                and episode_parts[0].startswith("SEASON ")
+                and not re.search(r"\s/\s*SEASON\s", episode_parts[1])
+            )
+
+            def _measure(text, font):
+                bbox = draw.textbbox((0, 0), text, font=font)
+                return bbox[2] - bbox[0]
+
+            if split_badge:
+                season_label, episode_label = episode_parts
+                episode_match = re.match(r"^(\d+)\s+(.+)$", episode_label)
+                count_text, suffix_text = episode_match.groups() if episode_match else ("", "")
+                season_size = self.EPISODE_SEASON_SIZE
+                count_size = self.EPISODE_COUNT_SIZE
+                while True:
+                    font_season = _get_font(season_size, bold=True, weight="semibold")
+                    season_width = _measure(season_label, font_season)
+                    if count_text:
+                        font_count = _get_font(count_size, bold=True, weight="extrabold")
+                        font_suffix = _get_font(max(16, count_size - 4), bold=True, weight="semibold")
+                        episode_width = _measure(count_text, font_count) + 5 + _measure(suffix_text, font_suffix)
+                    else:
+                        font_episode = _get_font(count_size, bold=True, weight="extrabold")
+                        episode_width = _measure(episode_label, font_episode)
+                    meta_width = season_width + 24 + episode_width
+                    if meta_width <= self.RAIL_W - 30 or count_size <= 16:
+                        break
+                    count_size -= 1
+                    season_size = max(16, season_size - 1)
+            else:
+                season_label = episode_label = count_text = suffix_text = ""
+                meta_size = self.EPISODE_COUNT_SIZE
+                font_meta = _get_font(meta_size, bold=True, weight="extrabold")
+                meta_width = _measure(episode_line, font_meta)
+                while meta_width > self.RAIL_W - 30 and meta_size > 13:
+                    meta_size -= 1
+                    font_meta = _get_font(meta_size, bold=True, weight="extrabold")
+                    meta_width = _measure(episode_line, font_meta)
+
+            chip_height = self.EPISODE_CHIP_HEIGHT
+            chip_top, chip_bottom = ty - 5, ty + chip_height - 5
+            chip_box = (x0, chip_top, x0 + min(self.RAIL_W, meta_width + 30), chip_bottom)
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), chip_box, 13,
+                [(0.0, (18, 25, 47, 242)), (0.55, (35, 27, 54, 238)), (1.0, (15, 35, 49, 240))],
+            ))
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (x0, chip_top, x0 + 5, chip_bottom), 2, self.ACCENT,
+            ))
+            od.rounded_rectangle(chip_box, radius=13, outline=(255, 255, 255, 110), width=1)
+
+            def _center_y(text, font):
+                bbox = draw.textbbox((0, 0), text, font=font)
+                return chip_top + (chip_height - (bbox[3] - bbox[1])) // 2 - bbox[1]
+
+            if split_badge:
+                text_x = x0 + 15
+                draw.text((text_x, _center_y(season_label, font_season)), season_label,
+                          font=font_season, fill=(226, 237, 250, 255))
+                divider_x = text_x + season_width + 10
+                draw.line((divider_x, chip_top + 10, divider_x, chip_bottom - 10),
+                          fill=(236, 72, 153, 235), width=2)
+                episode_x = divider_x + 11
+                if count_text:
+                    count_width = _measure(count_text, font_count)
+                    draw.text((episode_x, _center_y(count_text, font_count)), count_text,
+                              font=font_count, fill=(111, 237, 255, 255))
+                    draw.text((episode_x + count_width + 5, _center_y(suffix_text, font_suffix)),
+                              suffix_text, font=font_suffix, fill=(255, 255, 255, 255))
+                else:
+                    draw.text((episode_x, _center_y(episode_label, font_episode)), episode_label,
+                              font=font_episode, fill=(255, 255, 255, 255))
+            else:
+                draw.text((x0 + 15, _center_y(episode_line, font_meta)), episode_line,
+                          font=font_meta, fill=(255, 255, 255, 255))
+            ty += chip_height + 7
 
             details_line = f"{_format_audio_tag(audio)}  •  {(quality or 'HD').upper()}"
-            font_details = _get_font(15, bold=False, weight="medium")
+            font_details = _get_font(16, bold=False, weight="medium")
             draw.text((x0, ty), details_line, font=font_details, fill=(226, 232, 240, 235))
             ty += 24
 
@@ -846,7 +1021,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             synopsis_text = _clean_text(html.unescape(synopsis_text))
             if synopsis_text:
                 synopsis_text = " ".join(synopsis_text.split())
-                font_synopsis = _get_font(14, bold=False, weight="regular")
+                font_synopsis = _get_font(15, bold=False, weight="regular")
                 synopsis_lines = []
                 current_line = ""
                 words = synopsis_text.split()
@@ -875,11 +1050,11 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     synopsis_lines[-1] = (last + "…") if last else "…"
                 for line in synopsis_lines[:self.SYNOPSIS_MAX_LINES]:
                     draw.text((x0, ty), line, font=font_synopsis, fill=(235, 238, 244, 225))
-                    ty += 19
+                    ty += 20
             ty += 12
 
             # ── 6. Single streaming action (visual treatment only) ──────────
-            font_pill = _get_font(16, bold=True, weight="bold")
+            font_pill = _get_font(17, bold=True, weight="bold")
             # Primary "WATCH NOW" pill (gradient fill + ambient shadow).
             cta = "WATCH NOW"
             cb = draw.textbbox((0, 0), cta, font=font_pill)
@@ -887,10 +1062,19 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             sh_cta = Image.new("RGBA", (cw + 24, chh + 24), (0, 0, 0, 0))
             ImageDraw.Draw(sh_cta).rounded_rectangle((12, 12, cw + 12, chh + 12), radius=14, fill=(0, 0, 0, 160))
             canvas.alpha_composite(sh_cta.filter(ImageFilter.GaussianBlur(radius=8)), (x0 - 12, ty - 12 + 3))
+            cta_glow = Image.new("RGBA", (cw + 36, chh + 36), (0, 0, 0, 0))
+            ImageDraw.Draw(cta_glow).rounded_rectangle(
+                (18, 18, cw + 18, chh + 18), radius=18, fill=(255, 18, 83, 98),
+            )
+            canvas.alpha_composite(cta_glow.filter(ImageFilter.GaussianBlur(radius=11)), (x0 - 18, ty - 18 + 2))
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), (x0, ty, x0 + cw, ty + chh), 14,
                 [(0.0, (230, 0, 58, 255)), (1.0, (247, 28, 73, 255))],
             ))
+            od.rounded_rectangle(
+                (x0, ty, x0 + cw, ty + chh), radius=14,
+                outline=(255, 255, 255, 88), width=1,
+            )
             play_x, play_y = x0 + 18, ty + chh // 2
             draw.polygon(
                 [(play_x, play_y - 7), (play_x, play_y + 7), (play_x + 12, play_y)],
@@ -914,11 +1098,18 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), (wmx, wmy + 22, wmx + ww, wmy + 24), 1, self.ACCENT))
 
-            # Small top-right quality label, without a bulky badge.
+            # Small top-right quality badge; keep the label readable but quiet.
             tag = q_label.split(" • ")[0]
-            font_tag = _get_font(15, bold=True, weight="bold")
+            font_tag = _get_font(16, bold=True, weight="bold")
             tb = draw.textbbox((0, 0), tag, font=font_tag)
-            tx = W - 64 - (tb[2] - tb[0])
+            tag_width = tb[2] - tb[0]
+            tx = W - 64 - tag_width
+            tag_box = (tx - 10, 46, tx + tag_width + 10, 78)
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), tag_box, 11,
+                [(0.0, (14, 20, 38, 205)), (1.0, (43, 34, 61, 195))],
+            ))
+            od.rounded_rectangle(tag_box, radius=11, outline=(255, 255, 255, 72), width=1)
             draw.text((tx, 54), tag, font=font_tag, fill=(255, 255, 255, 225))
 
             _flush_overlay()  # nothing pending — guarantees no stroke is lost

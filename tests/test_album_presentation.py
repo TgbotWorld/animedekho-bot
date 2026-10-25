@@ -3,7 +3,14 @@ from pathlib import Path
 from PIL import Image
 
 from bot.library import LibraryManager, _album_episode_label, _album_thumbnail_episode_line
-from bot.thumbnail import StreamingCardTemplate, enhance_custom_thumbnail, generate_auto_thumbnail
+from bot.thumbnail import (
+    StreamingCardTemplate,
+    _build_edge_vignette,
+    _cinematic_color_grade,
+    _particle_overlay,
+    enhance_custom_thumbnail,
+    generate_auto_thumbnail,
+)
 
 
 def test_album_episode_label_formats_seasons_and_movies():
@@ -101,5 +108,22 @@ def test_video_thumbnail_is_telegram_sized_and_preserves_valid_jpeg(tmp_path: Pa
 def test_thumbnail_layout_reserves_more_space_for_poster_art():
     assert StreamingCardTemplate.RAIL_W == 520
     assert StreamingCardTemplate.ART_BOX_RATIO == 0.72
-    assert StreamingCardTemplate.TITLE_BASE_SIZE == 52
+    assert StreamingCardTemplate.TITLE_BASE_SIZE == 56
+    assert StreamingCardTemplate.EPISODE_COUNT_SIZE == 23
+    assert StreamingCardTemplate.EPISODE_CHIP_HEIGHT == 40
     assert StreamingCardTemplate.SYNOPSIS_MAX_LINES == 2
+
+
+def test_cinematic_effect_layers_apply_grade_vignette_and_repeatable_particles():
+    source = Image.new("RGB", (96, 54), (120, 100, 140))
+    graded = _cinematic_color_grade(source)
+    assert graded.size == source.size
+    assert graded.tobytes() != source.tobytes()
+
+    vignette = _build_edge_vignette((128, 72), max_alpha=48).getchannel("A")
+    assert vignette.getpixel((0, 0)) > vignette.getpixel((64, 36))
+
+    particles_a = _particle_overlay((128, 72), seed=417).getchannel("A")
+    particles_b = _particle_overlay((128, 72), seed=417).getchannel("A")
+    assert particles_a.tobytes() == particles_b.tobytes()
+    assert particles_a.getbbox() is not None

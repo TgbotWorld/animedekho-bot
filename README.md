@@ -100,16 +100,18 @@
 
 ### 🎨 Thumbnail Template
 
-One poster-first style keeps anime artwork dominant: full-bleed art, a compact left-side
-title and metadata rail, a short two-line synopsis, and one red **WATCH NOW** action.
+One poster-first style keeps anime artwork dominant with high-contrast cool shadows and
+warm highlights, soft bloom, a restrained edge vignette, and subtle dust/grain texture.
+Compact typography and minimal UI preserve the image area while keeping key details readable.
 
 | Piece                  | What it shows                                                                  |
 |------------------------|---------------------------------------------------------------------------------|
-| **Artwork**            | Full-bleed art occupies most of the card, with the sharp poster favored on the right |
+| **Artwork**            | Full-bleed graded art with gentle bloom, flare, and edge darkening                  |
+| **Texture**            | Subtle repeatable light particles and fine film grain                              |
 | **Brand lockup**       | Your PNG logo (or a gradient monogram tile) + your channel handle                |
-| **Title + metadata**   | Smaller title, season/episode count, audio, and quality                            |
+| **Title + metadata**   | Compact title, a clear season/count chip, audio, and a discreet quality badge   |
 | **Synopsis**           | A short AniList summary, capped at two lines when available                        |
-| **Single CTA**         | One red **WATCH NOW** action                                                      |
+| **Single CTA**         | One red **WATCH NOW** action with a light UI rim                                  |
 | **Watermark**          | `@yourhandle` bottom-right over the key art                                        |
 
 Album cards are exported as 1280×720 high-quality JPEGs (up to 1.8 MB) to avoid the
@@ -131,7 +133,7 @@ Set your own branding (owner-only):
 
 <div align="center">
 
-<img src="assets/thumb_showcase_redesign.jpg" alt="Poster-first anime thumbnail with compact text and expanded artwork" width="75%">
+<img src="assets/thumb_showcase_redesign.jpg" alt="Poster-first anime thumbnail with cinematic color grading, glow, particles, and compact UI" width="75%">
 
 <p><sub><b>Example:</b> <i>The Cold Sato-san Is Only Sweet to Me</i> · album card · 1280×720</sub></p>
 
