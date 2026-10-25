@@ -912,20 +912,20 @@ class LibraryManager:
         clean_synopsis = re.sub(r"<[^>]+>", " ", clean_synopsis)
         clean_synopsis = htmlmod.unescape(clean_synopsis)
         clean_synopsis = " ".join(clean_synopsis.split()).strip()
-        if len(clean_synopsis) > 280:
-            cut = clean_synopsis[:277].rsplit(" ", 1)[0]
-            clean_synopsis = (cut or clean_synopsis[:277]) + "…"
+        if len(clean_synopsis) > 220:
+            cut = clean_synopsis[:217].rsplit(" ", 1)[0]
+            clean_synopsis = (cut or clean_synopsis[:217]) + "…"
 
         caption = (
             f"<blockquote><b>{htmlmod.escape(title)}</b></blockquote>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎧 <b>Language</b> · {htmlmod.escape(audio_display)}\n"
-            f"🎞 <b>Quality</b> · {htmlmod.escape(quality_display)}\n"
-            f"📺 <b>Episode</b> · {htmlmod.escape(episode_display)}"
+            f"🌐 <b>LANGUAGE</b> · <code>{htmlmod.escape(audio_display)}</code>\n"
+            f"🎞 <b>QUALITY</b> · <code>{htmlmod.escape(quality_display)}</code>\n"
+            f"📺 <b>EPISODES</b> · <code>{htmlmod.escape(episode_display)}</code>"
         )
         if clean_synopsis:
-            caption += f"\n\n<blockquote>{htmlmod.escape(clean_synopsis)}</blockquote>"
-        caption += f"\n\n<b>↗ {htmlmod.escape(chan_tag)}</b>"
+            caption += f"\n\n📝 <b>ABOUT</b>\n<blockquote>{htmlmod.escape(clean_synopsis)}</blockquote>"
+        caption += f"\n\n━━━━━━━━━━━━━━━━━━━━\n📡 <b>More anime:</b> {htmlmod.escape(chan_tag)}"
         return caption
 
     async def _album_gate_kwargs(self, episodes, is_movie: bool = False) -> dict:

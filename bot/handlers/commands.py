@@ -9,6 +9,7 @@ from bot.telegram.types import Message
 
 from bot.keyboards import main_menu
 from bot.auth import require_approved, require_owner
+from bot.presentation import format_episode_post_caption
 import bot.logger
 
 log = logging.getLogger(__name__)
@@ -680,7 +681,9 @@ async def _handle_file_request(client: Client, message: Message, param: str):
             ep_key = f["episode_key"]
             file_id = f["file_id"]
             q_label = f.get("quality", quality)
-            caption = f"📺 {htmlmod.escape(title)} [{q_label}] — {ep_key}"
+            caption = format_episode_post_caption(
+                title, q_label, ep_key, is_movie=str(ep_key).lower() == "movie",
+            )
             sent_msg = None
             if upload_mode == "document":
                 try:
@@ -719,9 +722,9 @@ async def _handle_file_request(client: Client, message: Message, param: str):
         upload_mode = await db.get_upload_mode() if db else "video"
         is_mov = bool(episode_key.lower() == "movie")
         media_icon = get_emoji("movie", "🎬") if is_mov else get_emoji("tv", "📺")
-        caption = f"{media_icon} {htmlmod.escape(title)} [{quality}]"
-        if not is_mov:
-            caption += f" — {episode_key}"
+        caption = format_episode_post_caption(
+            title, quality, episode_key, is_movie=is_mov, media_icon=media_icon,
+        )
 
         if upload_mode == "document":
             try:

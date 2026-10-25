@@ -3,6 +3,7 @@ from pathlib import Path
 from PIL import Image
 
 from bot.library import LibraryManager, _album_episode_label, _album_thumbnail_episode_line
+from bot.presentation import format_episode_post_caption
 from bot.thumbnail import (
     StreamingCardTemplate,
     _build_edge_vignette,
@@ -34,11 +35,26 @@ def test_album_caption_has_reference_metadata_and_safe_synopsis():
     )
 
     assert "The Cold Sato-san &amp; Me" in caption
-    assert "<b>Language</b> · Japanese [English-Sub]" in caption
-    assert "<b>Quality</b> · 480p · 720p · 1080p" in caption
-    assert "<b>Episode</b> · S01 · EPISODES 01–02" in caption
+    assert "🌐 <b>LANGUAGE</b> · <code>Japanese [English-Sub]</code>" in caption
+    assert "🎞 <b>QUALITY</b> · <code>480p · 720p · 1080p</code>" in caption
+    assert "📺 <b>EPISODES</b> · <code>S01 · EPISODES 01–02</code>" in caption
+    assert "📝 <b>ABOUT</b>" in caption
     assert "A quiet school life &amp; a surprising smile." in caption
+    assert "📡 <b>More anime:</b>" in caption
     assert "<i>" not in caption
+
+
+def test_individual_episode_caption_separates_audio_quality_and_episode():
+    caption = format_episode_post_caption(
+        "Smoking Behind the Supermarket with You & Friends (Hindi Dubbed)",
+        "1080p",
+        "S1E01",
+    )
+
+    assert "📺 <b>Smoking Behind the Supermarket with You &amp; Friends</b>" in caption
+    assert "🌐 <b>Hindi Dubbed</b>" in caption
+    assert "🎞 <b>1080P</b>" in caption
+    assert "📺 <code>S01 · EP 01</code>" in caption
 
 
 def test_streaming_thumbnail_renders_a_mobile_widescreen_card(tmp_path: Path):
