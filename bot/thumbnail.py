@@ -40,6 +40,31 @@ VIDEO_THUMB_MAX_KB = 190
 #: sharpening pass beats letting each template resize blur it a second time.
 ART_UPSCALE_MIN_WIDTH = CANVAS_WIDTH
 
+# ── Colour-grade / overlay tunables ─────────────────────────────────────
+# The full-bleed card darkens and split-tones the key art so the copy rail
+# stays legible. On high-quality sources (TMDB originals) the defaults can
+# read as a colour/contrast crush, so they live here as one adjustable set.
+GRADE_CONTRAST = 1.06
+GRADE_SATURATION = 1.06
+GRADE_SPLIT_TONE = 0.05
+GRADE_SPLIT_BLACK = (12, 18, 40)
+GRADE_SPLIT_WHITE = (255, 224, 196)
+GRADE_BLOOM = 0.10
+GRADE_SHARPNESS = 1.06
+#: Left copy-rail scrim: (position, (r,g,b,alpha)) stops.
+SCRIM_STOPS = [
+    (0.0, (5, 6, 13, 214)),
+    (0.30, (5, 6, 13, 196)),
+    (0.40, (5, 6, 13, 120)),
+    (0.52, (5, 6, 13, 40)),
+    (0.66, (5, 6, 13, 8)),
+    (0.80, (5, 6, 13, 0)),
+]
+LOWER_VIGNETTE_ALPHA = 56
+EDGE_VIGNETTE_ALPHA = 34
+WARM_GLOW_ALPHA = 34
+COOL_GLOW_ALPHA = 18
+
 ASSETS_FONT_DIR = Path(__file__).parent.parent / "assets" / "fonts"
 
 # System and bundled fonts priority
@@ -598,20 +623,20 @@ def _radial_glow(canvas_size, center, radius: int, color, max_alpha: int = 60) -
 
 def _cinematic_color_grade(image: Image.Image) -> Image.Image:
     """Boost contrast, split-tone shadows/highlights, and add restrained bloom."""
-    graded = ImageEnhance.Contrast(image.convert("RGB")).enhance(1.30)
-    graded = ImageEnhance.Color(graded).enhance(1.24)
+    graded = ImageEnhance.Contrast(image.convert("RGB")).enhance(GRADE_CONTRAST)
+    graded = ImageEnhance.Color(graded).enhance(GRADE_SATURATION)
 
     luminance = ImageOps.grayscale(graded)
-    split_tone = ImageOps.colorize(luminance, black=(12, 18, 40), white=(255, 224, 196))
-    graded = Image.blend(graded, split_tone, 0.24)
+    split_tone = ImageOps.colorize(luminance, black=GRADE_SPLIT_BLACK, white=GRADE_SPLIT_WHITE)
+    graded = Image.blend(graded, split_tone, GRADE_SPLIT_TONE)
 
     luminance = ImageOps.grayscale(graded)
     highlight_mask = luminance.point(lambda p: max(0, min(255, (p - 178) * 255 // 77)))
     highlights = Image.new("RGB", graded.size, (0, 0, 0))
     highlights.paste(graded, mask=highlight_mask)
     bloom = highlights.filter(ImageFilter.GaussianBlur(radius=max(8, int(min(graded.size) * 0.026))))
-    graded = Image.blend(graded, ImageChops.screen(graded, bloom), 0.28)
-    return ImageEnhance.Sharpness(graded).enhance(1.10)
+    graded = Image.blend(graded, ImageChops.screen(graded, bloom), GRADE_BLOOM)
+    return ImageEnhance.Sharpness(graded).enhance(GRADE_SHARPNESS)
 
 
 def _build_edge_vignette(size, max_alpha: int = 54) -> Image.Image:
@@ -808,10 +833,10 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
 
             # Warm bloom, cool fill, and a restrained lens streak light the art side.
             canvas.alpha_composite(_radial_glow(
-                (W, H), (int(W * 0.83), int(H * 0.22)), int(H * 0.31), (255, 185, 124), 78,
+                (W, H), (int(W * 0.83), int(H * 0.22)), int(H * 0.31), (255, 185, 124), WARM_GLOW_ALPHA,
             ))
             canvas.alpha_composite(_radial_glow(
-                (W, H), (int(W * 0.76), int(H * 0.62)), int(H * 0.23), (130, 164, 255), 42,
+                (W, H), (int(W * 0.76), int(H * 0.62)), int(H * 0.23), (130, 164, 255), COOL_GLOW_ALPHA,
             ))
             flare = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             flare_draw = ImageDraw.Draw(flare)
@@ -827,23 +852,16 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             canvas.alpha_composite(flare.filter(ImageFilter.GaussianBlur(radius=5)))
 
             # Keep the copy rail compact and let the artwork read through behind it.
-            canvas.alpha_composite(_multi_gradient((W, H), [
-                (0.0, (5, 6, 13, 232)),
-                (0.32, (5, 6, 13, 220)),
-                (0.46, (5, 6, 13, 184)),
-                (0.64, (5, 6, 13, 82)),
-                (0.82, (5, 6, 13, 20)),
-                (1.0, (5, 6, 13, 0)),
-            ]))
+            canvas.alpha_composite(_multi_gradient((W, H), SCRIM_STOPS))
 
             # Gentle lower vignette keeps the watermark visible over busy art.
             scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             sd = ImageDraw.Draw(scrim)
             for y in range(int(H * 0.60), H):
-                a = int(105 * ((y - H * 0.60) / (H * 0.40)))
+                a = int(LOWER_VIGNETTE_ALPHA * ((y - H * 0.60) / (H * 0.40)))
                 sd.line([(0, y), (W, y)], fill=(5, 4, 12, a))
             canvas.alpha_composite(scrim)
-            canvas.alpha_composite(_build_edge_vignette((W, H), max_alpha=76))
+            canvas.alpha_composite(_build_edge_vignette((W, H), max_alpha=EDGE_VIGNETTE_ALPHA))
             canvas = _apply_film_grain(canvas, effect_seed).convert("RGBA")
             canvas.alpha_composite(_particle_overlay((W, H), effect_seed))
 
