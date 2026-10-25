@@ -34,6 +34,12 @@ CANVAS_HEIGHT = 720
 PHOTO_EXPORT_MAX_KB = 1800
 VIDEO_THUMB_MAX_KB = 190
 
+#: Art narrower than this is explicitly upscaled (see :func:`_upscale_art`).
+#: Metadata providers cap covers near 460px (AniList extraLarge), so on a
+#: 1280px canvas the art is interpolated regardless; doing it once here with a
+#: sharpening pass beats letting each template resize blur it a second time.
+ART_UPSCALE_MIN_WIDTH = CANVAS_WIDTH
+
 ASSETS_FONT_DIR = Path(__file__).parent.parent / "assets" / "fonts"
 
 # System and bundled fonts priority
@@ -181,6 +187,30 @@ def _prepare_blurred_bg(poster_path: str, blur_radius: int = 34) -> Image.Image 
         return None
 
 
+def _upscale_art(im: Image.Image, min_width: int = ART_UPSCALE_MIN_WIDTH) -> Image.Image:
+    """Upscale small poster art toward the canvas with a sharpening pass.
+
+    AniList (and similar metadata providers) cap covers near 460px, so a
+    1280px canvas force-scales them ~2x. Doing that here with a stepped
+    LANCZOS resize plus a restrained unsharp mask yields crisper edges than a
+    single large resize. NOTE: this is interpolation — it cannot recover detail
+    the source never had; it only avoids a softer second resample.
+    """
+    if im.width >= min_width:
+        return im
+    step = im
+    # Doubling in stages keeps LANCZOS ringing low on big ratios.
+    while step.width * 2 <= min_width:
+        step = step.resize((step.width * 2, step.height * 2), Image.Resampling.LANCZOS)
+    if step.width != min_width:
+        ratio = min_width / step.width
+        step = step.resize(
+            (min_width, max(1, int(round(step.height * ratio)))),
+            Image.Resampling.LANCZOS,
+        )
+    return step.filter(ImageFilter.UnsharpMask(radius=1.4, percent=85, threshold=3))
+
+
 def _resolve_poster_image(poster_path: str) -> Image.Image | None:
     """Load poster image with fallback to assets/banner.png if missing."""
     target = poster_path
@@ -191,7 +221,7 @@ def _resolve_poster_image(poster_path: str) -> Image.Image | None:
         else:
             return None
     try:
-        return Image.open(target).convert("RGBA")
+        return _upscale_art(Image.open(target).convert("RGBA"))
     except Exception as e:
         log.debug("Failed loading poster image: %s", e)
         return None
