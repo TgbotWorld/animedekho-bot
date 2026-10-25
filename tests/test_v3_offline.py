@@ -548,7 +548,7 @@ def main() -> int:
         ok &= check("i33 streaming thumb renders", bool(_thumb) and os.path.exists(_thumb))
         if _thumb and os.path.exists(_thumb):
             with _PILImage.open(_thumb) as _im:
-                ok &= check("i33 thumb is 1200x630", _im.size == (1200, 630), f"got {_im.size}")
+                ok &= check("i33 thumb is 1280x720", _im.size == (1280, 720), f"got {_im.size}")
             ok &= check("i33 thumb has real content", os.path.getsize(_thumb) > 20000,
                         f"{os.path.getsize(_thumb)}B")
             os.remove(_thumb)

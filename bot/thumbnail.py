@@ -29,8 +29,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 log = logging.getLogger(__name__)
 
-CANVAS_WIDTH = 1200
-CANVAS_HEIGHT = 630
+CANVAS_WIDTH = 1280
+CANVAS_HEIGHT = 720
 PHOTO_EXPORT_MAX_KB = 1800
 VIDEO_THUMB_MAX_KB = 190
 
@@ -156,7 +156,7 @@ def _round_corners(img: Image.Image, radius: int) -> Image.Image:
 
 
 def _prepare_blurred_bg(poster_path: str, blur_radius: int = 34) -> Image.Image | None:
-    """Scale, center-crop, and blur a poster to cover the 1200x630 canvas."""
+    """Scale, center-crop, and blur a poster to cover the 1280x720 canvas."""
     target_path = poster_path
     if not target_path or not os.path.exists(target_path):
         banner_fallback = Path(__file__).parent.parent / "assets" / "banner.png"
@@ -332,7 +332,7 @@ def enhance_custom_thumbnail(
     Prepare a Telegram-sized video thumbnail, preserving valid JPEGs unchanged.
 
     Video thumbnail uploads are limited to 320 px per side and 200 KB. Full-size
-    album cards use :func:`generate_thumbnail` and remain 1200×630.
+    album cards use :func:`generate_thumbnail` and remain 1280×720.
     """
     if not input_path or not os.path.exists(input_path):
         return None
@@ -979,7 +979,7 @@ def generate_auto_thumbnail(
     synopsis: str = "",
 ) -> str | None:
     """
-    Generate a 1200x630 professional YouTube/Telegram video thumbnail using the selected template.
+    Generate a 1280x720 professional YouTube/Telegram video thumbnail using the selected template.
     Template resolution:
     1. Explicit `template_name` argument if provided.
     2. Config `RANDOM_THUMB_TEMPLATE` or DB `random_thumb_template` if enabled.
