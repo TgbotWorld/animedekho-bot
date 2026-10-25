@@ -38,6 +38,16 @@ class Config:
     # Main Bot Token from @BotFather
     BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
+    # ── TMDB (The Movie Database) ─────────────────────────────────────────
+    # Free v3 API key, used to fetch high-resolution portrait posters.
+    # Accepts both the correct spelling and the common 'TMBD_V3' typo.
+    TMDB_API_KEY = (
+        os.environ.get("TMDB_API_KEY")
+        or os.environ.get("TMDB_V3")
+        or os.environ.get("TMBD_V3")
+        or ""
+    )
+
     # ── Bot Owner & Admins ────────────────────────────────────────────────
     # Telegram User ID of the primary owner
     OWNER_ID = int(os.environ.get("OWNER_ID", "0"))

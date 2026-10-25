@@ -11,10 +11,19 @@ import aiohttp
 log = logging.getLogger(__name__)
 
 ANILIST_API_URL = "https://graphql.anilist.co"
+TMDB_API_URL = "https://api.themoviedb.org/3"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
+
+# TMDB portraits are genuinely large (w780 is ~780px wide, original ~2000px),
+# unlike AniList's hard ~460px cover cap. Prefer TMDB when its art is big
+# enough to avoid an upscale on a 1280x720 card.
+TMDB_MIN_POSTER_WIDTH = 640
+TMDB_ORIGINAL_BUDGET_BYTES = 1_200_000
 
 # In-memory LRU-like caches
 _poster_cache: dict[str, str | None] = {}
 _meta_cache: dict[str, dict[str, Any] | None] = {}
+_tmdb_cache: dict[str, tuple[str | None, int]] = {}
 _CACHE_MAX_SIZE = 1000
 
 # Substrings indicating invalid or junk scraped posters (website banners, logos, placeholders)
@@ -274,6 +283,119 @@ async def get_anilist_metadata(title_or_slug: str) -> dict[str, Any] | None:
     return meta_result
 
 
+async def _image_width(session: Any, url: str) -> int:
+    """
+    Read an image's pixel width cheaply: stream only the leading bytes and let
+    PIL parse the header. Avoids downloading multi-megabyte originals just to
+    compare sizes.
+    """
+    try:
+        import io
+        from PIL import Image
+
+        buf = b""
+        async with session.get(
+            url,
+            headers={"Range": "bytes=0-65535", "User-Agent": "AnimeDekhoBot/2.0"},
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as resp:
+            if resp.status not in (200, 206):
+                return 0
+            async for part in resp.content.iter_chunked(32768):
+                buf += part
+                if len(buf) > 65536:
+                    break
+        if not buf:
+            return 0
+        with Image.open(io.BytesIO(buf)) as im:
+            return int(im.width)
+    except Exception as e:
+        log.debug("Image width probe failed for %s: %s", url[:60], e)
+        return 0
+
+
+async def get_tmdb_poster(title_or_slug: str) -> tuple[str | None, int]:
+    """
+    Resolve a high-resolution portrait poster from TMDB.
+
+    TMDB posters are genuinely large (w780 ~ 780px, original ~ 2000px), which
+    fixes the low-resolution stragglers that AniList's ~460px cover cap cannot.
+
+    Searches TV first (anime series map there), then movies. Returns
+    (url_or_None, width_or_0) so callers can compare candidates by resolution.
+    """
+    if not title_or_slug or not title_or_slug.strip():
+        return None, 0
+
+    try:
+        from config import Config
+        api_key = getattr(Config, "TMDB_API_KEY", "") or ""
+    except Exception:
+        api_key = ""
+    if not api_key:
+        return None, 0
+
+    cache_key = title_or_slug.strip().lower()
+    if cache_key in _tmdb_cache:
+        return _tmdb_cache[cache_key]
+
+    candidates = clean_anime_title(title_or_slug)
+    if not candidates:
+        return None, 0
+
+    headers = {"Accept": "application/json", "User-Agent": "AnimeDekhoBot/2.0"}
+    timeout = aiohttp.ClientTimeout(total=10)
+    best_url: str | None = None
+    best_width = 0
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            poster_path: str | None = None
+            for endpoint in ("search/tv", "search/movie"):
+                for cand in candidates:
+                    try:
+                        params = {"api_key": api_key, "query": cand, "include_adult": "false"}
+                        async with session.get(
+                            f"{TMDB_API_URL}/{endpoint}", params=params, headers=headers
+                        ) as resp:
+                            if resp.status == 401:
+                                log.warning("TMDB rejected the API key (401)")
+                                break
+                            if resp.status != 200:
+                                continue
+                            payload = await resp.json()
+                        for hit in (payload.get("results") or []):
+                            pp = hit.get("poster_path")
+                            if pp:
+                                poster_path = pp
+                                break
+                        if poster_path:
+                            break
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                        log.debug("TMDB request failed for '%s': %s", cand, err)
+                        continue
+                if poster_path:
+                    break
+
+            if poster_path:
+                # 'original' is the stored master (~2000px) but can be heavy;
+                # w780 is a sane middle ground (~780px). Probe both, prefer the
+                # larger one that stays within the download budget.
+                for size in ("original", "w780"):
+                    url = f"{TMDB_IMAGE_BASE}/{size}{poster_path}"
+                    width = await _image_width(session, url)
+                    if width > best_width:
+                        best_width, best_url = width, url
+                    if best_width >= 1000:
+                        break
+    except Exception as e:
+        log.warning("TMDB poster resolution error for '%s': %s", title_or_slug, e)
+
+    _evict_cache_if_needed(_tmdb_cache)
+    _tmdb_cache[cache_key] = (best_url, best_width)
+    return best_url, best_width
+
+
 async def resolve_best_poster(
     title: str,
     scraped_poster: str | None = None,
@@ -284,16 +406,24 @@ async def resolve_best_poster(
     """
     Resolve the highest quality, authoritative poster for an anime.
 
-    Policy: the poster ALWAYS comes from AniList first, no matter which
-    download source is configured as the default (/source). The scraped
-    source poster is only a fallback when AniList has no match or errors.
-    1. Query AniList for official high-resolution coverImage (Primary Source).
-    2. Fall back to scraped_poster if AniList has no match or errors,
-       filtering out generic banners/logos/placeholders.
-    3. Fall back to DEFAULT_MOVIE_THUMB or DEFAULT_ANIME_THUMB (from config.py)
-       if fallback_default is True and neither AniList nor scraped poster is valid.
+    Policy: posters come from the highest-resolution authoritative source
+    available, regardless of which download source is the default (/source).
+    1. TMDB portrait poster when it is genuinely high-res (>= 640px wide).
+    2. AniList coverImage.
+    3. scraped_poster, filtering banners/logos/placeholders.
+    4. DEFAULT_MOVIE_THUMB / DEFAULT_ANIME_THUMB (from config.py).
     """
-    # Step 1: Check AniList if network allowed and title present (Primary Source)
+    # Step 1: TMDB first when it has a genuinely large portrait poster.
+    if allow_network and title:
+        try:
+            tmdb_poster, tmdb_width = await get_tmdb_poster(title)
+            if tmdb_poster and tmdb_width >= TMDB_MIN_POSTER_WIDTH:
+                log.info("TMDB: matched '%s' at %dpx wide", title, tmdb_width)
+                return tmdb_poster
+        except Exception as e:
+            log.warning("TMDB poster resolution error for '%s': %s", title, e)
+
+    # Step 2: Check AniList if network allowed and title present.
     if allow_network and title:
         try:
             anilist_poster = await get_anilist_poster(title)
