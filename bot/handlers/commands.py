@@ -10,6 +10,15 @@ from bot.telegram.types import Message
 from bot.keyboards import main_menu
 from bot.auth import require_approved, require_owner
 from bot.presentation import format_episode_post_caption
+from bot.reactions import (
+    REACTION_ACTION_REQUIRED,
+    REACTION_COMPLETE,
+    REACTION_DELIVERED,
+    REACTION_FAILED,
+    REACTION_PARTIAL,
+    REACTION_PROCESSING,
+    react_to_message,
+)
 import bot.logger
 
 log = logging.getLogger(__name__)
@@ -555,11 +564,13 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     Format: get_<slug>_<quality>_<episode_key>
     Example: get_naruto-shippuden_720p_S1E01
     """
+    await react_to_message(message, REACTION_PROCESSING)
     from bot.library import library_manager
     from bot.database import db
 
     if not library_manager:
         await message.reply_text("⚠️ Library not initialized.")
+        await react_to_message(message, REACTION_FAILED)
         return
 
     user = message.from_user
@@ -570,6 +581,7 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     is_sub, f_text, f_markup = await check_fsub(client, user_id, retry_param=param)
     if not is_sub:
         await send_fsub_prompt(message, f_text, f_markup)
+        await react_to_message(message, REACTION_ACTION_REQUIRED)
         return
 
     # Parse: get_<slug>_<quality>_<ep_key>
@@ -616,8 +628,10 @@ async def _handle_file_request(client: Client, message: Message, param: str):
                     parse_mode=enums.ParseMode.HTML,
                     reply_markup=q_markup,
                 )
+                await react_to_message(message, REACTION_ACTION_REQUIRED)
                 return
             await message.reply_text("⚠️ Invalid file link format.")
+            await react_to_message(message, REACTION_FAILED)
             return
 
     try:
@@ -667,6 +681,7 @@ async def _handle_file_request(client: Client, message: Message, param: str):
 
         if not all_files:
             await message.reply_text("❌ No files found for this series.")
+            await react_to_message(message, REACTION_FAILED)
             return
 
         from bot.library import _ep_sort_key
@@ -676,6 +691,7 @@ async def _handle_file_request(client: Client, message: Message, param: str):
         from bot.auto_delete import auto_delete_service
         from utils.helpers import encode_file_param
         upload_mode = await db.get_upload_mode() if db else "video"
+        delivered = 0
 
         for f in all_files:
             ep_key = f["episode_key"]
@@ -702,8 +718,14 @@ async def _handle_file_request(client: Client, message: Message, param: str):
                     except Exception as e:
                         log.error("Failed to send %s: %s", ep_key, e)
 
+            if sent_msg:
+                delivered += 1
             await asyncio.sleep(0.4)
 
+        await react_to_message(
+            message,
+            REACTION_COMPLETE if delivered == len(all_files) else REACTION_PARTIAL if delivered else REACTION_FAILED,
+        )
         await status_msg.delete()
         return
 
@@ -712,10 +734,12 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     file_id = cached.get("file_id") if cached else await library_manager.get_file(series_slug, quality, episode_key)
     if not file_id:
         await message.reply_text("❌ File not found in library.")
+        await react_to_message(message, REACTION_FAILED)
         return
 
     # Send the file
     sent_msg = None
+    delivered = False
     try:
         from bot.emojis import get_emoji
         from utils.helpers import encode_file_param
@@ -753,6 +777,9 @@ async def _handle_file_request(client: Client, message: Message, param: str):
                     parse_mode=enums.ParseMode.HTML,
                 )
 
+        delivered = True
+        await react_to_message(message, REACTION_DELIVERED)
+
         # Log download
         if db and user:
             await db.log_download(
@@ -768,3 +795,4 @@ async def _handle_file_request(client: Client, message: Message, param: str):
     except Exception as e:
         log.error("Failed to send library file: %s", e)
         await message.reply_text("⚠️ Could not deliver file. Please try again.")
+        await react_to_message(message, REACTION_DELIVERED if delivered else REACTION_FAILED)

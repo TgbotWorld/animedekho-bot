@@ -18,6 +18,18 @@ from bot.downloader import (
     download_and_upload, make_episode_filename, make_movie_filename,
     sanitize_filename, download_job_manager,
 )
+from bot.reactions import (
+    REACTION_CANCELLED,
+    REACTION_COMPLETE,
+    REACTION_DELIVERED,
+    REACTION_FAILED,
+    REACTION_PARTIAL,
+    REACTION_PROCESSING,
+    ReactionGroup,
+    callback_request_message,
+    finish_reaction,
+    react_to_message,
+)
 from utils.helpers import esc, truncate, short_slug, extract_series_slug, slug_to_title
 from bot.slug_store import resolve_slug_async, pack_series_slug, parse_season_episode
 
@@ -547,20 +559,28 @@ async def _real_series_title(series_slug: str, fallback: str = "") -> str:
     return fallback or slug_to_title(series_slug)
 
 
-async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str, raw_payload: str = ""):
+async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, ep_slug: str, raw_payload: str = "", reaction_message=None, reaction_group: ReactionGroup | None = None):
     """Handle single episode download — resolves servers and falls back across multi-source chain if needed."""
+    reaction_message = reaction_message or callback_request_message(q)
+    if reaction_group is None:
+        await react_to_message(reaction_message, REACTION_PROCESSING)
     # Multi-quality expansion
     if quality_pref == "all" or "+" in quality_pref:
         if quality_pref == "all":
             qualities = ["480p", "720p", "1080p"]
         else:
             qualities = [x.strip() for x in quality_pref.split("+") if x.strip()]
+        reaction_group = reaction_group or ReactionGroup(reaction_message, len(qualities))
         try:
             await q.answer(f"🚀 Starting download for {len(qualities)} qualities...", show_alert=False)
         except Exception:
             pass
         for single_q in qualities:
-            asyncio.create_task(_handle_download(client, q, single_q, ep_slug, raw_payload=raw_payload))
+            asyncio.create_task(_handle_download(
+                client, q, single_q, ep_slug, raw_payload=raw_payload,
+                reaction_message=reaction_message,
+                reaction_group=reaction_group,
+            ))
             await asyncio.sleep(0.3)
         return
 
@@ -973,9 +993,11 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                 parse_mode=enums.ParseMode.HTML,
             )
         download_job_manager.remove_job(job_id)
+        await finish_reaction(reaction_message, REACTION_FAILED, reaction_group)
         return
 
     if download_job_manager.is_job_cancelled(job_id):
+        await finish_reaction(reaction_message, REACTION_CANCELLED, reaction_group)
         return
 
     primary_server, primary_quality = candidates[0]
@@ -998,6 +1020,7 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
                     lambda: q.message.reply_video(video=cached_fid, caption=_cap, parse_mode=enums.ParseMode.HTML),
                     lambda: q.message.reply_document(document=cached_fid, file_name=filename, caption=_cap, parse_mode=enums.ParseMode.HTML),
                 )
+                await finish_reaction(reaction_message, REACTION_DELIVERED, reaction_group)
                 try:
                     await progress_msg.delete()
                 except Exception:
@@ -1058,24 +1081,33 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             episode_key=episode_key,
             poster_url=poster_url,
             job_id=job_id,
+            reaction_message=reaction_message,
+            reaction_group=reaction_group,
         )
     )
 
 
-async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref: str, movie_slug: str):
+async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref: str, movie_slug: str, reaction_message=None, reaction_group: ReactionGroup | None = None):
     """Handle movie download — resolves servers with multi-server fallback."""
+    reaction_message = reaction_message or callback_request_message(q)
+    if reaction_group is None:
+        await react_to_message(reaction_message, REACTION_PROCESSING)
     # Multi-quality expansion
     if quality_pref == "all" or "+" in quality_pref:
         if quality_pref == "all":
             qualities = ["480p", "720p", "1080p"]
         else:
             qualities = [x.strip() for x in quality_pref.split("+") if x.strip()]
+        reaction_group = reaction_group or ReactionGroup(reaction_message, len(qualities))
         try:
             await q.answer(f"🚀 Starting download for {len(qualities)} qualities...", show_alert=False)
         except Exception:
             pass
         for single_q in qualities:
-            asyncio.create_task(_handle_movie_download(client, q, single_q, movie_slug))
+            asyncio.create_task(_handle_movie_download(
+                client, q, single_q, movie_slug, reaction_message=reaction_message,
+                reaction_group=reaction_group,
+            ))
             await asyncio.sleep(0.3)
         return
 
@@ -1090,6 +1122,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
 
     if not data or not data["servers"]:
         await _safe_edit(q, "⚠️ No servers found. Please go back and try again.")
+        await finish_reaction(reaction_message, REACTION_FAILED, reaction_group)
         return
 
     title = data.get("title", slug_to_title(movie_slug))
@@ -1423,9 +1456,11 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         if not download_job_manager.is_job_cancelled(job_id):
             await progress_msg.edit_text("⚠️ No downloadable URL found on any server.")
         download_job_manager.remove_job(job_id)
+        await finish_reaction(reaction_message, REACTION_FAILED, reaction_group)
         return
 
     if download_job_manager.is_job_cancelled(job_id):
+        await finish_reaction(reaction_message, REACTION_CANCELLED, reaction_group)
         return
 
     primary_server, primary_quality = candidates[0]
@@ -1442,6 +1477,7 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
                     lambda: q.message.reply_video(video=cached_fid, caption=_cap, parse_mode=enums.ParseMode.HTML),
                     lambda: q.message.reply_document(document=cached_fid, file_name=filename, caption=_cap, parse_mode=enums.ParseMode.HTML),
                 )
+                await finish_reaction(reaction_message, REACTION_DELIVERED, reaction_group)
                 try:
                     await progress_msg.delete()
                 except Exception:
@@ -1489,6 +1525,8 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             poster_url=poster_url,
             is_movie=True,
             job_id=job_id,
+            reaction_message=reaction_message,
+            reaction_group=reaction_group,
         )
     )
 
@@ -1504,20 +1542,27 @@ async def _handle_batch_picker(q: CallbackQuery, slug: str, season: int):
     await _safe_edit(q, text, markup)
 
 
-async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, season: int, quality_pref: str):
+async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, season: int, quality_pref: str, reaction_message=None, reaction_group: ReactionGroup | None = None):
     """Execute batch download for an entire season (V3 #6 batch lifecycle)."""
+    reaction_message = reaction_message or callback_request_message(q)
+    if reaction_group is None:
+        await react_to_message(reaction_message, REACTION_PROCESSING)
     # Multi-quality expansion
     if quality_pref == "all" or "+" in quality_pref:
         if quality_pref == "all":
             qualities = ["480p", "720p", "1080p"]
         else:
             qualities = [x.strip() for x in quality_pref.split("+") if x.strip()]
+        reaction_group = reaction_group or ReactionGroup(reaction_message, len(qualities))
         try:
             await q.answer(f"🚀 Starting batch download for {len(qualities)} qualities...", show_alert=False)
         except Exception:
             pass
         for single_q in qualities:
-            await _handle_batch_download(client, q, slug, season, single_q)
+            await _handle_batch_download(
+                client, q, slug, season, single_q, reaction_message=reaction_message,
+                reaction_group=reaction_group,
+            )
             await asyncio.sleep(0.5)
         return
 
@@ -1530,6 +1575,7 @@ async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, se
     s = series.seasons.get(season)
     if not s or not s.episodes:
         await _safe_edit(q, f"⚠️ No episodes found for Season {season}.")
+        await finish_reaction(reaction_message, REACTION_FAILED, reaction_group)
         return
 
     total = len(s.episodes)
@@ -1561,6 +1607,8 @@ async def _handle_batch_download(client: Client, q: CallbackQuery, slug: str, se
         _do_batch_download(
             client, chat_id, series, season, s.episodes,
             quality_pref, progress_msg, user, batch_id, cancel_markup,
+            reaction_message=reaction_message,
+            reaction_group=reaction_group,
         )
     )
     download_job_manager.attach_task(batch_id, task)
@@ -1639,7 +1687,8 @@ def _extractor_refresh(kind: str, series_title: str, season: int, episode: int, 
 
 
 async def _do_batch_download(client: Client, chat_id, series, season, episodes, quality_pref, progress_msg, user,
-                       batch_id: str | None = None, cancel_markup=None):
+                       batch_id: str | None = None, cancel_markup=None, reaction_message=None,
+                       reaction_group: ReactionGroup | None = None):
     """Execute batch download sequentially with multi-server fallback.
 
     V3 #6: persistent cancel button on every progress edit; per-episode
@@ -2084,6 +2133,7 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
                 await bot.logger.bot_logger.log_batch_complete(f"{series.title} (CANCELLED)", season, completed, total)
             except Exception:
                 pass
+        await finish_reaction(reaction_message, REACTION_CANCELLED, reaction_group)
         return
     cache_info = f"\n⚡ {skipped} served from library (instant)" if skipped > 0 else ""
     downloaded = completed - skipped
@@ -2098,6 +2148,12 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
         )
     except Exception:
         pass
+    outcome_reaction = (
+        REACTION_COMPLETE if completed == total and total > 0
+        else REACTION_PARTIAL if completed > 0
+        else REACTION_FAILED
+    )
+    await finish_reaction(reaction_message, outcome_reaction, reaction_group)
     if batch_id:
         download_job_manager.remove_job(batch_id)
 
@@ -2117,8 +2173,10 @@ async def _do_batch_download(client: Client, chat_id, series, season, episodes, 
 async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServer, Quality]],
                        filename, title, progress_msg, user,
                        series_slug="", episode_key="", poster_url=None, is_movie=False,
-                       job_id: str | None = None):
+                       job_id: str | None = None, reaction_message=None,
+                       reaction_group: ReactionGroup | None = None):
     """Background task for single download with multi-server candidate fallback."""
+    success = False
     try:
         if job_id:
             download_job_manager.attach_task(job_id, asyncio.current_task())
@@ -2422,6 +2480,12 @@ async def _do_download(client: Client, chat_id, candidates: list[tuple[VideoServ
         except Exception:
             pass
     finally:
+        outcome_reaction = (
+            REACTION_CANCELLED if download_job_manager.is_job_cancelled(job_id)
+            else REACTION_DELIVERED if success
+            else REACTION_FAILED
+        )
+        await finish_reaction(reaction_message, outcome_reaction, reaction_group)
         download_job_manager.remove_job(job_id)
 
 
