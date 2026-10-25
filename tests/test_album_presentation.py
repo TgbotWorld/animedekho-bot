@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image
 
 from bot.library import LibraryManager, _album_episode_label, _album_thumbnail_episode_line
-from bot.thumbnail import enhance_custom_thumbnail, generate_auto_thumbnail
+from bot.thumbnail import StreamingCardTemplate, enhance_custom_thumbnail, generate_auto_thumbnail
 
 
 def test_album_episode_label_formats_seasons_and_movies():
@@ -96,3 +96,10 @@ def test_video_thumbnail_is_telegram_sized_and_preserves_valid_jpeg(tmp_path: Pa
 
     assert enhance_custom_thumbnail(str(valid_thumb_path), str(unchanged_path)) == str(unchanged_path)
     assert unchanged_path.read_bytes() == original_bytes
+
+
+def test_thumbnail_layout_reserves_more_space_for_poster_art():
+    assert StreamingCardTemplate.RAIL_W == 520
+    assert StreamingCardTemplate.ART_BOX_RATIO == 0.72
+    assert StreamingCardTemplate.TITLE_BASE_SIZE == 52
+    assert StreamingCardTemplate.SYNOPSIS_MAX_LINES == 2

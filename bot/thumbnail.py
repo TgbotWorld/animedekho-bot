@@ -2,8 +2,8 @@
 Auto Thumbnail Generator for AnimeDekho Bot — Modular Multi-Template Architecture.
 
  Issue #33 retired the five older styles in favour of one full-bleed anime
- hero card: compact channel mark, oversized title, short synopsis, and one red
- WATCH NOW action over darkened artwork.
+ hero card: compact channel mark, poster-forward artwork, smaller title, short
+ synopsis, and one red WATCH NOW action.
 
 Legacy template names ('modern', 'cinematic', 'movie_gold', 'neon_cyber',
 'minimal') are aliased to 'streaming' so old configs keep rendering.
@@ -610,10 +610,10 @@ def _load_logo_image(logo_path: str) -> Image.Image | None:
 
 @register_template("streaming")
 class StreamingCardTemplate(BaseThumbnailTemplate):
-    """Full-bleed anime hero with a compact left-side title and action rail."""
+    """Poster-forward anime hero with a compact title and metadata rail."""
     name = "streaming"
     display_name = "Streaming Card"
-    description = "Full-bleed anime art, oversized title, compact metadata, and watch actions."
+    description = "Full-bleed anime art with a compact left rail and one watch action."
 
     # Violet → pink → cyan signature, used for the underline, eyebrow and CTA.
     ACCENT = [
@@ -624,7 +624,11 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
 
     # Left info rail geometry; artwork remains visible beneath the scrim.
     RAIL_X = 72
-    RAIL_W = 690
+    RAIL_W = 520
+    ART_BOX_RATIO = 0.72
+    TITLE_BASE_SIZE = 52
+    TITLE_MIN_SIZE = 34
+    SYNOPSIS_MAX_LINES = 2
     PANEL = (13, 11, 24, 255)
 
     def generate(
@@ -667,7 +671,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     )).enhance(0.62)
                     canvas = backdrop.convert("RGBA")
 
-                    box_w = int(W * 0.64)
+                    box_w = int(W * self.ART_BOX_RATIO)
                     art_x = W - box_w
                     scale = max(box_w / art.width, H / art.height)
                     nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
@@ -679,7 +683,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     layer.paste(sharp, (art_x, 0))
                     mask = Image.new("L", (W, H), 0)
                     md = ImageDraw.Draw(mask)
-                    ramp_start, ramp_end = art_x - 260, art_x + 180
+                    ramp_start, ramp_end = art_x - 240, art_x + 160
                     for x in range(W):
                         if x < ramp_start:
                             alpha = 0
@@ -700,12 +704,13 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             else:
                 canvas.alpha_composite(_radial_glow((W, H), (1030, 360), 470, (167, 139, 250), 44))
 
-            # The dark left rail keeps text crisp; the artwork fades in on the right.
+            # Keep the copy rail compact and let the artwork read through behind it.
             canvas.alpha_composite(_multi_gradient((W, H), [
-                (0.0, (5, 6, 13, 248)),
-                (0.38, (5, 6, 13, 244)),
-                (0.64, (5, 6, 13, 210)),
-                (0.86, (5, 6, 13, 56)),
+                (0.0, (5, 6, 13, 232)),
+                (0.32, (5, 6, 13, 220)),
+                (0.46, (5, 6, 13, 184)),
+                (0.64, (5, 6, 13, 82)),
+                (0.82, (5, 6, 13, 20)),
                 (1.0, (5, 6, 13, 0)),
             ]))
 
@@ -796,14 +801,15 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             _tracked_text(draw, (x0, ry + 17), eyebrow, font_eye,
                           (255, 255, 255, 235), tracking=2)
 
-            # ── 4. Oversized title ─────────────────────────────────────────
+            # ── 4. Compact title; reserve the right side for key art ────────
             ty = ry + 53
             clean_title = _clean_text(title).upper()
             title_max_lines = 2 if len(clean_title) <= 46 else 3
-            title_width = min(W - x0 - 64, 900)
+            title_width = self.RAIL_W
             title_lines, font_title, line_h = _wrap_and_fit_title(
                 draw, clean_title, max_w=title_width,
-                base_size=70, min_size=44, max_lines=title_max_lines,
+                base_size=self.TITLE_BASE_SIZE, min_size=self.TITLE_MIN_SIZE,
+                max_lines=title_max_lines,
             )
             for line in title_lines:
                 # White with smooth Gaussian blurred shadow for depth & legibility
@@ -827,25 +833,25 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             episode_line = _clean_text(episode_info).strip().upper()
             if not episode_line:
                 episode_line = _format_episode_tag("", is_movie)
-            font_meta = _get_font(20, bold=True, weight="semibold")
+            font_meta = _get_font(17, bold=True, weight="semibold")
             draw.text((x0, ty), episode_line, font=font_meta, fill=(255, 255, 255, 245))
-            ty += 34
+            ty += 29
 
             details_line = f"{_format_audio_tag(audio)}  •  {(quality or 'HD').upper()}"
-            font_details = _get_font(17, bold=False, weight="medium")
+            font_details = _get_font(15, bold=False, weight="medium")
             draw.text((x0, ty), details_line, font=font_details, fill=(226, 232, 240, 235))
-            ty += 29
+            ty += 24
 
             synopsis_text = re.sub(r"<[^>]+>", " ", str(synopsis or ""))
             synopsis_text = _clean_text(html.unescape(synopsis_text))
             if synopsis_text:
                 synopsis_text = " ".join(synopsis_text.split())
-                font_synopsis = _get_font(15, bold=False, weight="regular")
+                font_synopsis = _get_font(14, bold=False, weight="regular")
                 synopsis_lines = []
                 current_line = ""
                 words = synopsis_text.split()
                 truncated = False
-                for index, word in enumerate(words):
+                for word in words:
                     candidate = f"{current_line} {word}".strip()
                     width = draw.textbbox((0, 0), candidate, font=font_synopsis)[2]
                     if width <= self.RAIL_W:
@@ -854,33 +860,30 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     if current_line:
                         synopsis_lines.append(current_line)
                     current_line = word
-                    if len(synopsis_lines) >= 2:
+                    if len(synopsis_lines) >= self.SYNOPSIS_MAX_LINES:
                         truncated = True
+                        current_line = ""
                         break
-                    if index < len(words) - 1 and len(synopsis_lines) == 2:
-                        truncated = True
-                        break
-                if current_line and len(synopsis_lines) < 3:
+                if current_line and len(synopsis_lines) < self.SYNOPSIS_MAX_LINES:
                     synopsis_lines.append(current_line)
-                if len(synopsis_lines) > 3:
-                    synopsis_lines = synopsis_lines[:3]
+                elif current_line:
                     truncated = True
                 if truncated and synopsis_lines:
                     last = synopsis_lines[-1].rstrip(" .")
                     while last and draw.textbbox((0, 0), last + "…", font=font_synopsis)[2] > self.RAIL_W:
                         last = last.rsplit(" ", 1)[0] if " " in last else ""
                     synopsis_lines[-1] = (last + "…") if last else "…"
-                for line in synopsis_lines[:3]:
+                for line in synopsis_lines[:self.SYNOPSIS_MAX_LINES]:
                     draw.text((x0, ty), line, font=font_synopsis, fill=(235, 238, 244, 225))
-                    ty += 21
-            ty += 17
+                    ty += 19
+            ty += 12
 
             # ── 6. Single streaming action (visual treatment only) ──────────
-            font_pill = _get_font(18, bold=True, weight="bold")
+            font_pill = _get_font(16, bold=True, weight="bold")
             # Primary "WATCH NOW" pill (gradient fill + ambient shadow).
             cta = "WATCH NOW"
             cb = draw.textbbox((0, 0), cta, font=font_pill)
-            cw, chh = (cb[2] - cb[0]) + 58, 46
+            cw, chh = (cb[2] - cb[0]) + 54, 42
             sh_cta = Image.new("RGBA", (cw + 24, chh + 24), (0, 0, 0, 0))
             ImageDraw.Draw(sh_cta).rounded_rectangle((12, 12, cw + 12, chh + 12), radius=14, fill=(0, 0, 0, 160))
             canvas.alpha_composite(sh_cta.filter(ImageFilter.GaussianBlur(radius=8)), (x0 - 12, ty - 12 + 3))

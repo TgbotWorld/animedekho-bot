@@ -100,15 +100,15 @@
 
 ### 🎨 Thumbnail Template
 
-One reference-inspired style: full-bleed anime artwork, a dark left text rail, a bold title,
-compact metadata, a short synopsis, and a single red **WATCH NOW** action.
+One poster-first style keeps anime artwork dominant: full-bleed art, a compact left-side
+title and metadata rail, a short two-line synopsis, and one red **WATCH NOW** action.
 
 | Piece                  | What it shows                                                                  |
 |------------------------|---------------------------------------------------------------------------------|
-| **Artwork**            | Full-bleed anime art; portrait covers retain a sharp character crop on the right |
+| **Artwork**            | Full-bleed art occupies most of the card, with the sharp poster favored on the right |
 | **Brand lockup**       | Your PNG logo (or a gradient monogram tile) + your channel handle                |
-| **Title + metadata**   | Bold title, season/episode count, audio, and quality                              |
-| **Synopsis**           | Short AniList summary, when available                                              |
+| **Title + metadata**   | Smaller title, season/episode count, audio, and quality                            |
+| **Synopsis**           | A short AniList summary, capped at two lines when available                        |
 | **Single CTA**         | One red **WATCH NOW** action                                                      |
 | **Watermark**          | `@yourhandle` bottom-right over the key art                                        |
 
@@ -131,7 +131,7 @@ Set your own branding (owner-only):
 
 <div align="center">
 
-<img src="assets/thumb_showcase_redesign.jpg" alt="Anime album thumbnail — redesigned full-bleed card with Watch Now action" width="75%">
+<img src="assets/thumb_showcase_redesign.jpg" alt="Poster-first anime thumbnail with compact text and expanded artwork" width="75%">
 
 <p><sub><b>Example:</b> <i>The Cold Sato-san Is Only Sweet to Me</i> · album card · 1280×720</sub></p>
 
