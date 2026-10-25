@@ -63,22 +63,20 @@ _SIZE_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*(GB|MB)")
 
 #: Size bands that rank 4KHDHub releases. The site carries no native 2160p, so
 #: its de-facto "4K-quality" tier is a high-bitrate **1080p H.264** encode of
-#: roughly 1–2 GB per episode; older self-upscaled releases sit near 500–600 MB.
-#: 2000 MB is also the Telegram bot upload ceiling, so anything larger is
-#: deprioritised (it cannot be delivered as a single episode upload).
-_SIZE_BANDS = ((1000.0, 2000.0), (450.0, 650.0))
+#: roughly 900 MB–2 GB per episode; when no H.264 exists there, a 1080p **H.265/
+#: HEVC** file in the same band is used instead. 2000 MB is also the Telegram
+#: bot upload ceiling, so anything larger cannot be delivered as a single upload.
+_SIZE_BANDS = ((900.0, 2000.0),)
 _TG_UPLOAD_CAP_MB = 2000.0
 
 
 def _size_band_tier(size_mb: float | None) -> int:
-    """3 = preferred 1–2 GB band, 2 = ~500–600 MB band, 1 = any other
-    deliverable size, 0 = unknown or over the Telegram upload cap."""
+    """3 = preferred 900 MB–2 GB band, 1 = any other deliverable size,
+    0 = unknown or over the Telegram upload cap."""
     if size_mb is None:
         return 0
     if _SIZE_BANDS[0][0] <= size_mb <= _SIZE_BANDS[0][1]:
         return 3
-    if _SIZE_BANDS[1][0] <= size_mb <= _SIZE_BANDS[1][1]:
-        return 2
     if size_mb <= _TG_UPLOAD_CAP_MB:
         return 1
     return 0
@@ -226,10 +224,12 @@ class FourKHDHubExtractor:
 
         Ranking, highest first:
           1. files with an explicit matching ``SxxEyy`` tag beat season packs;
-          2. exact requested quality (for 4K, 1080p H.264 in the 1–2 GB band is
-             the accepted stand-in — the site carries no native 2160p);
-          3. the preferred size band (1–2 GB, then ~500–600 MB);
-          4. H.264 > H.265 > AV1.
+          2. exact requested quality (for 4K, a 1080p file in the ~900 MB–2 GB
+             band is the accepted stand-in — the site carries no native 2160p);
+          3. for 4K: codec preference **H.264/AVC first, then H.265/HEVC** (an
+             H.264 file beats an H.265 one even if the H.265 is larger);
+          4. the preferred size band (~900 MB–2 GB);
+          5. codec H.264 > H.265 > AV1 (non-4K requests).
 
         Releases larger than the Telegram bot upload cap (2 GB) are only used
         when nothing deliverable exists, so a 6.5 GB BluRay REMUX pack can
@@ -269,10 +269,18 @@ class FourKHDHubExtractor:
             size = parse_size_mb(blob)
 
             if is_4k:
+                codec = _codec_tier(blob)
                 if q == "4K":
                     qok = 2
-                elif qualities_match(quality_pref, q, size=size) or q in ("1080p", "1080"):
+                    codec_pref = codec
+                elif q in ("1080p", "1080") and codec in (3, 2):
+                    # 4K stand-in: 1080p H.264 first, then 1080p H.265/HEVC,
+                    # inside the ~900 MB–2 GB band.
+                    in_band = size is not None and _SIZE_BANDS[0][0] <= size <= _SIZE_BANDS[0][1]
+                    if size is not None and not in_band:
+                        continue  # 1080p outside the accepted band is not the 4K proxy
                     qok = 1
+                    codec_pref = 2 if codec == 3 else 1  # 2 = H.264, 1 = H.265/HEVC
                 else:
                     continue
             else:
@@ -294,10 +302,18 @@ class FourKHDHubExtractor:
             if not link:
                 continue
 
-            composite = ((10_000 if explicit else 0)
-                         + qok * 1_000
-                         + _size_band_tier(size) * 100
-                         + _codec_tier(blob) * 10)
+            if is_4k:
+                # Codec preference (H.264 > H.265/HEVC) outranks size band so the
+                # H.264 stand-in wins over a larger H.265 release.
+                composite = ((10_000 if explicit else 0)
+                             + qok * 1_000
+                             + codec_pref * 100
+                             + _size_band_tier(size) * 10)
+            else:
+                composite = ((10_000 if explicit else 0)
+                             + qok * 1_000
+                             + _size_band_tier(size) * 100
+                             + _codec_tier(blob) * 10)
             candidates.append((composite, 0 if explicit else 1, q, size, link))
 
         if not candidates:

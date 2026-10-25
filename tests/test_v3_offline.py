@@ -82,11 +82,12 @@ def main() -> int:
     ok &= check("V3#4 Unknown ≠ 1080p", qualities_match("1080p", "Unknown") is False)
     ok &= check("V3#4 4K ≡ 2160p", qualities_match("4K", "2160p") is True)
     from utils.anime_match import is_source_4k_proxy, is_4k_satisfying
-    ok &= check("4KHDHub 1080p 1-2GB counts as 4K",
+    ok &= check("4KHDHub 1080p 900MB-2GB counts as 4K",
                 qualities_match("4K", "1080p", size=1392, source="4KHDHub") is True
-                and is_source_4k_proxy("4KHDHub", "1080p", 560) is True)
-    ok &= check("4KHDHub 1080p over 2GB is not 4K",
-                is_source_4k_proxy("4KHDHub", "1080p", 6482) is False)
+                and is_source_4k_proxy("4KHDHub", "1080p", 950) is True)
+    ok &= check("4KHDHub 1080p under 900MB or over 2GB is not 4K",
+                is_source_4k_proxy("4KHDHub", "1080p", 560) is False
+                and is_source_4k_proxy("4KHDHub", "1080p", 6482) is False)
     ok &= check("plain 1080p is not 4K for other sources",
                 qualities_match("4K", "1080p", size=1392) is False
                 and is_source_4k_proxy("ToonFlix", "1080p", 1392) is False)

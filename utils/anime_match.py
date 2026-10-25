@@ -110,11 +110,13 @@ def is_around_1_to_2_gb(val: str | int | float | None) -> bool:
 
 
 #: Sources that ship a plain 1080p release *in lieu of* native 4K — their
-#: de-facto 4K tier. The value is the accepted size bands in MB. 4KHDHub has
+#: de-facto 4K tier. The value is the accepted size band(s) in MB. 4KHDHub has
 #: no native 2160p; per the operator its "4K" deliverable is a high-bitrate
-#: 1080p file of ~1–2 GB, with the older self-upscale tier at ~500–600 MB.
+#: 1080p file of ~900 MB–2 GB. Codec preference (H.264 first, then H.265/HEVC)
+#: is applied when the file is *selected* (see extractors/fourkhdhub.py); both
+#: codecs count as the 4K proxy here.
 SOURCE_4K_PROXIES: dict[str, tuple[tuple[float, float], ...]] = {
-    "4KHDHub": ((1000.0, 2000.0), (450.0, 650.0)),
+    "4KHDHub": ((900.0, 2000.0),),
 }
 
 
@@ -124,7 +126,7 @@ def is_source_4k_proxy(source: str, quality_str: str,
 
     Only applies to sources listed in :data:`SOURCE_4K_PROXIES`, and only for a
     plain (non-native) 1080p label whose size falls in that source's accepted
-    bands. Native 4K is handled by :func:`is_4k_satisfying` before this.
+    band (~900 MB–2 GB). Native 4K is handled by :func:`is_4k_satisfying`.
     """
     bands = SOURCE_4K_PROXIES.get((source or "").strip())
     if not bands:
