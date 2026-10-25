@@ -641,8 +641,10 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
     # (resolve_episode_stream applies it when no button preference exists).
     candidates: list[tuple[VideoServer, Quality]] = []
     has_exact = False
+    requested_quality = quality_pref
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
     found_match = False
+    four_k_unavailable = False
     # V2 #14: rich diagnostics for the failure card.
     diag_steps: list[str] = []
     from bot.source_config import get_default_source, is_source
@@ -921,19 +923,35 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
             diag_steps.append(f"ToonFlix: error {str(e)[:80]}")
 
     if is_4k:
-        # Dedicated 4K system: 4KHDHub first (its 1080p H.264 counts as 4K),
-        # then AnimeDrive and the remaining 4K tiers as fallback.
+        # Dedicated 4K system: ONLY 4KHDHub then AnimeDrive. Other sources are
+        # reserved for 480p/720p/1080p; they must not serve the 4K tier.
         await _step_4khdhub()
         if _needs_next_tier():
             await _step_animedrive()
-        if _needs_next_tier():
+        # 4K not found on the 4K pair -> notify the user, then run a 1080p
+        # rescue pass across the remaining sources. The result is labelled by
+        # its real resolution (never faked as 4K).
+        if not found_match:
+            four_k_unavailable = True
+            if not download_job_manager.is_job_cancelled(job_id):
+                try:
+                    await progress_msg.edit_text(
+                        f"ℹ️ <b>4K not available</b> for {esc(title)}.\n"
+                        f"Trying 1080p from other sources…",
+                        parse_mode=enums.ParseMode.HTML,
+                        reply_markup=cancel_markup,
+                    )
+                except Exception:
+                    pass
+            quality_pref = "1080p"
+            is_4k = False
             await _step_toonanime()
-        if _needs_next_tier():
-            await _step_toonflix()
-        if _needs_next_tier():
-            await _step_multisource()
-        if _needs_next_tier():
-            await _step_animedekho()
+            if _needs_next_tier():
+                await _step_toonflix()
+            if _needs_next_tier():
+                await _step_multisource()
+            if _needs_next_tier():
+                await _step_animedekho()
     elif ad_is_default:
         await _step_animedekho()
         if _needs_next_tier():
@@ -1014,10 +1032,15 @@ async def _handle_download(client: Client, q: CallbackQuery, quality_pref: str, 
 
     # Send progress message
     quality_label = primary_quality.resolution
-    if is_4k and primary_quality.resolution.lower() not in ("4k", "2160p", "2160"):
+    if four_k_unavailable and primary_quality.resolution.lower() in ("4k", "2160p", "2160"):
+        # Rescue pass actually found real 4K after all — label it honestly.
+        quality_label = "4K"
+    elif is_4k and primary_quality.resolution.lower() not in ("4k", "2160p", "2160"):
         quality_label = f"4K [{primary_quality.resolution}]"
-    elif primary_quality.resolution != quality_pref and primary_quality.resolution != "auto":
-        quality_label = f"{primary_quality.resolution} (requested {quality_pref})"
+    elif four_k_unavailable:
+        quality_label = f"{primary_quality.resolution} (requested 4K)"
+    elif primary_quality.resolution != requested_quality and primary_quality.resolution != "auto":
+        quality_label = f"{primary_quality.resolution} (requested {requested_quality})"
 
     try:
         await progress_msg.edit_text(
@@ -1112,11 +1135,13 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
     from bot.source_config import get_default_source, is_source
     ad_default = is_source(await get_default_source(), "AnimeDekho")
 
+    requested_quality = quality_pref
     is_4k = quality_pref.lower() in ("4k", "2160p", "2160")
     resolved = []
     candidates = []
     has_exact = False
     found_4k = False
+    four_k_unavailable = False
 
     async def _is_4k_stream_ok(q_str: str, size: str | int | float | None = None, url: str = "") -> bool:
         from utils.anime_match import is_native_4k, is_enhanced_1080p, is_around_1_to_2_gb, parse_size_mb, is_4k_satisfying
@@ -1357,17 +1382,34 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
             log.warning("AnimeDekho movie fallback resolution error: %s", ad_err)
 
     if is_4k:
+        # Dedicated 4K system: ONLY 4KHDHub then AnimeDrive. Other sources are
+        # reserved for 480p/720p/1080p; they must not serve the 4K tier.
         await _step_4khdhub()
         if _needs_next():
             await _step_animedrive()
-        if _needs_next():
-            await _step_toonanime()
-        if _needs_next():
-            await _step_toonflix()
-        if _needs_next():
-            await _step_multisource()
-        if _needs_next():
-            await _step_animedekho()
+        # 4K not found on the 4K pair -> notify the user, then run a 1080p
+        # rescue pass across the remaining sources, labelled by real res.
+        if not found_4k:
+            four_k_unavailable = True
+            if not download_job_manager.is_job_cancelled(job_id):
+                try:
+                    await progress_msg.edit_text(
+                        f"ℹ️ <b>4K not available</b> for {esc(title)}.\n"
+                        f"Trying 1080p from other sources…",
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+            quality_pref = "1080p"
+            is_4k = False
+            if _needs_next():
+                await _step_toonanime()
+            if _needs_next():
+                await _step_toonflix()
+            if _needs_next():
+                await _step_multisource()
+            if _needs_next():
+                await _step_animedekho()
     elif ad_default:
         await _step_animedekho()
         if _needs_next():
@@ -1421,10 +1463,14 @@ async def _handle_movie_download(client: Client, q: CallbackQuery, quality_pref:
         )
 
     quality_label = primary_quality.resolution
-    if is_4k and primary_quality.resolution.lower() not in ("4k", "2160p", "2160"):
+    if four_k_unavailable and primary_quality.resolution.lower() in ("4k", "2160p", "2160"):
+        quality_label = "4K"
+    elif is_4k and primary_quality.resolution.lower() not in ("4k", "2160p", "2160"):
         quality_label = f"4K [{primary_quality.resolution}]"
-    elif primary_quality.resolution != quality_pref and primary_quality.resolution != "auto":
-        quality_label = f"{primary_quality.resolution} (requested {quality_pref})"
+    elif four_k_unavailable:
+        quality_label = f"{primary_quality.resolution} (requested 4K)"
+    elif primary_quality.resolution != requested_quality and primary_quality.resolution != "auto":
+        quality_label = f"{primary_quality.resolution} (requested {requested_quality})"
 
     try:
         await progress_msg.edit_text(
