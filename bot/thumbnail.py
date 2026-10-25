@@ -43,27 +43,31 @@ ART_UPSCALE_MIN_WIDTH = CANVAS_WIDTH
 # ── Colour-grade / overlay tunables ─────────────────────────────────────
 # The full-bleed card darkens and split-tones the key art so the copy rail
 # stays legible. On high-quality sources (TMDB originals) the defaults can
-# read as a colour/contrast crush, so they live here as one adjustable set.
-GRADE_CONTRAST = 1.06
-GRADE_SATURATION = 1.06
-GRADE_SPLIT_TONE = 0.05
+# read as a colour/contrast crush. Measured abaltion against a TMDB original
+# showed the crush was mostly the *overlays* (radial glows + vignettes) landing
+# on the art box, plus highlight clipping - not the grade itself. So: light
+# grade, and overlays tuned to clear the art box (art_x = 0.28W) entirely.
+GRADE_CONTRAST = 1.03
+GRADE_SATURATION = 1.16
+GRADE_SPLIT_TONE = 0.03
 GRADE_SPLIT_BLACK = (12, 18, 40)
 GRADE_SPLIT_WHITE = (255, 224, 196)
-GRADE_BLOOM = 0.10
+GRADE_BLOOM = 0.05
 GRADE_SHARPNESS = 1.06
-#: Left copy-rail scrim: (position, (r,g,b,alpha)) stops.
+#: Left copy-rail scrim: (position, (r,g,b,alpha)) stops. Clears by 0.33W so
+#: the scrim never lands on the artwork (which starts at 0.28W).
 SCRIM_STOPS = [
-    (0.0, (5, 6, 13, 214)),
-    (0.30, (5, 6, 13, 196)),
-    (0.40, (5, 6, 13, 120)),
-    (0.52, (5, 6, 13, 40)),
-    (0.66, (5, 6, 13, 8)),
-    (0.80, (5, 6, 13, 0)),
+    (0.0, (5, 6, 13, 206)),
+    (0.16, (5, 6, 13, 186)),
+    (0.22, (5, 6, 13, 104)),
+    (0.27, (5, 6, 13, 26)),
+    (0.30, (5, 6, 13, 3)),
+    (0.33, (5, 6, 13, 0)),
 ]
-LOWER_VIGNETTE_ALPHA = 56
-EDGE_VIGNETTE_ALPHA = 34
-WARM_GLOW_ALPHA = 34
-COOL_GLOW_ALPHA = 18
+LOWER_VIGNETTE_ALPHA = 30
+EDGE_VIGNETTE_ALPHA = 12
+WARM_GLOW_ALPHA = 24
+COOL_GLOW_ALPHA = 12
 
 ASSETS_FONT_DIR = Path(__file__).parent.parent / "assets" / "fonts"
 
