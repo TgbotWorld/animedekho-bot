@@ -199,6 +199,43 @@ class Test4KSizeLogic(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_fourkhdhub_labels_1080p_proxy_as_4k(self):
+        """4KHDHub's high-bitrate 1080p H.264/H.265 pick must be labelled
+        4K (the site has no native 2160p), while a 1080p request keeps its
+        real label."""
+        from bs4 import BeautifulSoup
+        from extractors.fourkhdhub import fourkhdhub
+
+        def page(rows):
+            items = "".join(
+                '<div class="episode-download-item">'
+                f'<div class="episode-file-title">{t}</div>'
+                '<div class="episode-file-info">info</div>'
+                f'<a href="{u}">HubCloud</a></div>'
+                for t, u in rows
+            )
+            return BeautifulSoup(f"<html>{items}</html>", "html.parser")
+
+        # H.264 in band wins and is labelled 4K.
+        link, label, size = fourkhdhub._pick_mediator(page([
+            ("Anime.S01E01.1080p.WEB-DL.H.264 [1.4 GB]", "https://m/h264"),
+            ("Anime.S01E01.1080p.WEB-DL.H.265 [1.9 GB]", "https://m/h265"),
+        ]), 1, 1, "4K")
+        self.assertEqual(label, "4K")
+        self.assertEqual(link, "https://m/h264")
+
+        # H.265-only in band is still the 4K tier.
+        _, label, _ = fourkhdhub._pick_mediator(page([
+            ("Anime.S01E01.1080p.WEB-DL.H.265 [1.5 GB]", "https://m/h265b"),
+        ]), 1, 1, "4K")
+        self.assertEqual(label, "4K")
+
+        # A plain 1080p request must not be relabelled.
+        _, label, _ = fourkhdhub._pick_mediator(page([
+            ("Anime.S01E01.1080p.WEB-DL.H.264 [1.4 GB]", "https://m/x"),
+        ]), 1, 1, "1080p")
+        self.assertEqual(label, "1080p")
+
 
 if __name__ == "__main__":
     unittest.main()

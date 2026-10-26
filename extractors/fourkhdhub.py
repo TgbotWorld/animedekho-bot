@@ -235,7 +235,7 @@ class FourKHDHubExtractor:
         when nothing deliverable exists, so a 6.5 GB BluRay REMUX pack can
         never shadow a sub-2 GB episode file.
         """
-        from utils.anime_match import qualities_match, parse_size_mb
+        from utils.anime_match import is_native_4k, qualities_match, parse_size_mb
         want = (quality_pref or "").lower()
         is_4k = want in ("4k", "2160p", "2160", "uhd")
 
@@ -322,7 +322,14 @@ class FourKHDHubExtractor:
         deliverable = [c for c in candidates if c[3] is None or c[3] <= _TG_UPLOAD_CAP_MB]
         pool = deliverable or candidates
         best = max(pool, key=lambda c: c[0])
-        return best[4], best[2], best[3]
+        detected = best[2]
+        if is_4k and detected and not is_native_4k(detected):
+            # The site carries no native 2160p: its high-bitrate 1080p H.264
+            # (then H.265/HEVC) file IS the 4K tier. Report it as "4K" so the
+            # bot labels, names and posts it as what the user requested, not
+            # as a bare 1080p downgrade.
+            detected = "4K"
+        return best[4], detected, best[3]
 
     def _sync_resolve(self, anime_title: str, season: int, episode: int,
                       quality_pref: str) -> dict | None:
