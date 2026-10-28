@@ -100,23 +100,31 @@
 
 ### 🎨 Thumbnail Template
 
-One poster-first style keeps anime artwork dominant with high-contrast cool shadows and
-warm highlights, soft bloom, a restrained edge vignette, and subtle dust/grain texture.
-Compact typography and minimal UI preserve the image area while keeping key details readable.
+The streaming card uses an ink-to-plum text rail, a bold uppercase white-to-lavender title,
+a small coral category label, and a lightly frosted synopsis panel with a mint label. Its
+violet-to-coral action color and soft
+poster-side lighting and fine particles add atmosphere without crowding the copy. Portrait covers
+are fitted whole at their source proportions; only a dark, blurred copy fills the widescreen
+background, so a 460×609 cover is not zoom-cropped or pre-upscaled to 1280px.
+The layout reserves a 45% rail for readable copy and 55% on the poster side. Portrait art
+keeps its original proportions and is centered in that poster zone; for a 460×609 source,
+the sharp image spans about 42% of the canvas. Its blurred support fades by 28%, leaving a
+clear visual lead for the sharp poster. A cyan-on-dark handle badge stays readable over light art.
 
 | Piece                  | What it shows                                                                  |
 |------------------------|---------------------------------------------------------------------------------|
-| **Artwork**            | Full-bleed graded art with gentle bloom, flare, and edge darkening                  |
-| **Texture**            | Subtle repeatable light particles and fine film grain                              |
+| **Artwork**            | Whole portrait centered in the right 55%; sharp image is wider than the 28% blur field       |
+| **Texture**            | Soft poster-edge glow, restrained repeatable particles, and fine film grain        |
 | **Brand lockup**       | Your PNG logo (or a gradient monogram tile) + your channel handle                |
-| **Title + metadata**   | Compact title, a clear season/count chip, audio, and a discreet quality badge   |
-| **Synopsis**           | A short AniList summary, capped at two lines when available                        |
-| **Single CTA**         | One red **WATCH NOW** action with a light UI rim                                  |
-| **Watermark**          | `@yourhandle` bottom-right over the key art                                        |
+| **Title + metadata**   | Large uppercase gradient title, clear season/count chip, audio, and quality badge |
+| **Synopsis**           | A lightly frosted summary panel with an accent marker; capped at two lines         |
+| **Single CTA**         | One violet-to-coral **WATCH NOW** action; no Watch List button                   |
+| **Watermark**          | Cyan `@yourhandle` in an outlined dark badge, visible on both light and dark art     |
 
 Album cards are exported as 1280×720 high-quality JPEGs (up to 1.8 MB) to avoid the
 previous aggressive 285 KB cap. Video-message preview images are separate 320×180 JPEGs
-under 200 KB, matching Telegram's video-thumbnail requirements.
+under 200 KB, matching Telegram's video-thumbnail requirements. Color grading adds punch
+but does not recreate detail absent from the original poster.
 
 <code>THUMB_TEMPLATE</code> still accepts the retired names (`modern`, `cinematic`,
 `movie_gold`, `neon_cyber`, `minimal`) — they all resolve to this one style, so
@@ -133,7 +141,7 @@ Set your own branding (owner-only):
 
 <div align="center">
 
-<img src="assets/thumb_showcase_redesign.jpg" alt="Poster-first anime thumbnail with cinematic color grading, glow, particles, and compact UI" width="75%">
+<img src="assets/thumb_showcase_redesign.jpg" alt="Anime thumbnail with a 45% text rail, narrow faded blur, and full proportional portrait artwork" width="75%">
 
 <p><sub><b>Example:</b> <i>The Cold Sato-san Is Only Sweet to Me</i> · album card · 1280×720</sub></p>
 

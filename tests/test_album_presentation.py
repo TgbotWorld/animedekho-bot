@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from bot.library import LibraryManager, _album_episode_label, _album_thumbnail_episode_line
 from bot.presentation import format_episode_post_caption
@@ -8,7 +8,10 @@ from bot.thumbnail import (
     StreamingCardTemplate,
     _build_edge_vignette,
     _cinematic_color_grade,
+    _horizontal_fade_mask,
     _particle_overlay,
+    _resolve_poster_image,
+    _wrap_and_fit_title,
     enhance_custom_thumbnail,
     generate_auto_thumbnail,
 )
@@ -81,6 +84,41 @@ def test_streaming_thumbnail_renders_a_mobile_widescreen_card(tmp_path: Path):
     assert output_path.stat().st_size > 20_000
 
 
+def test_portrait_poster_stays_source_sized_until_final_composition(tmp_path: Path):
+    poster_path = tmp_path / "portrait-460x609.png"
+    Image.new("RGB", (460, 609), (90, 55, 130)).save(poster_path)
+
+    art = _resolve_poster_image(str(poster_path))
+
+    assert art is not None
+    assert art.size == (460, 609)
+
+
+def test_portrait_card_keeps_top_and_bottom_poster_content(tmp_path: Path):
+    poster_path = tmp_path / "portrait-with-edge-markers.png"
+    output_path = tmp_path / "portrait-card.jpg"
+    poster = Image.new("RGB", (460, 609), (35, 95, 75))
+    draw = ImageDraw.Draw(poster)
+    draw.rectangle((0, 0, 459, 39), fill=(235, 32, 28))
+    draw.rectangle((0, 569, 459, 608), fill=(30, 60, 235))
+    poster.save(poster_path)
+
+    assert generate_auto_thumbnail(
+        title="Portrait Fit Check",
+        episode_info="SEASON 01 · 12 EPISODES",
+        quality="1080p",
+        poster_path=str(poster_path),
+        output_path=str(output_path),
+        template_name="streaming",
+    ) == str(output_path)
+
+    with Image.open(output_path) as card:
+        top = card.convert("RGB").getpixel((1000, 8))
+        bottom = card.convert("RGB").getpixel((1000, 711))
+    assert top[0] > top[2] * 1.5
+    assert bottom[2] > bottom[0] * 1.5
+
+
 def test_detailed_album_card_is_not_forced_under_the_old_285kb_cap(tmp_path: Path):
     poster_path = tmp_path / "detailed-poster.png"
     output_path = tmp_path / "detailed-card.jpg"
@@ -121,13 +159,70 @@ def test_video_thumbnail_is_telegram_sized_and_preserves_valid_jpeg(tmp_path: Pa
     assert unchanged_path.read_bytes() == original_bytes
 
 
+def test_portrait_video_thumbnail_preserves_full_source_edges(tmp_path: Path):
+    poster_path = tmp_path / "portrait-video-source.png"
+    thumb_path = tmp_path / "portrait-video-thumb.jpg"
+    poster = Image.new("RGB", (460, 609), (35, 95, 75))
+    draw = ImageDraw.Draw(poster)
+    draw.rectangle((0, 0, 459, 39), fill=(235, 32, 28))
+    draw.rectangle((0, 569, 459, 608), fill=(30, 60, 235))
+    poster.save(poster_path)
+
+    assert enhance_custom_thumbnail(str(poster_path), str(thumb_path)) == str(thumb_path)
+    with Image.open(thumb_path) as thumb:
+        top = thumb.convert("RGB").getpixel((160, 18))
+        bottom = thumb.convert("RGB").getpixel((160, 163))
+        assert thumb.size == (320, 180)
+    assert top[0] > top[2] * 1.5
+    assert bottom[2] > bottom[0] * 1.5
+
+
 def test_thumbnail_layout_reserves_more_space_for_poster_art():
-    assert StreamingCardTemplate.RAIL_W == 520
-    assert StreamingCardTemplate.ART_BOX_RATIO == 0.72
-    assert StreamingCardTemplate.TITLE_BASE_SIZE == 56
-    assert StreamingCardTemplate.EPISODE_COUNT_SIZE == 23
-    assert StreamingCardTemplate.EPISODE_CHIP_HEIGHT == 40
+    assert StreamingCardTemplate.TEXT_AREA_RATIO == 0.45
+    assert StreamingCardTemplate.POSTER_AREA_RATIO == 0.55
+    assert StreamingCardTemplate.TEXT_AREA_WIDTH == 576
+    assert StreamingCardTemplate.BLUR_AREA_RATIO == 0.28
+    assert StreamingCardTemplate.BLUR_AREA_WIDTH == 358
+    portrait_width = int(720 * 460 / 609)
+    assert portrait_width > StreamingCardTemplate.BLUR_AREA_WIDTH
+    poster_x = StreamingCardTemplate.POSTER_AREA_X + (
+        StreamingCardTemplate.POSTER_AREA_WIDTH - portrait_width
+    ) // 2
+    assert poster_x == 656
+    assert poster_x + portrait_width < 1280
+    assert StreamingCardTemplate.RAIL_X + StreamingCardTemplate.RAIL_W <= StreamingCardTemplate.TEXT_AREA_WIDTH
+    assert StreamingCardTemplate.ART_BOX_RATIO == 0.55
+    assert StreamingCardTemplate.TITLE_BASE_SIZE == 60
+    assert StreamingCardTemplate.EPISODE_COUNT_SIZE == 25
+    assert StreamingCardTemplate.EPISODE_CHIP_HEIGHT == 44
     assert StreamingCardTemplate.SYNOPSIS_MAX_LINES == 2
+
+
+def test_title_fits_completely_in_the_45_percent_text_area():
+    title = "THE COLD SATO-SAN IS ONLY SWEET TO ME"
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    lines, font, _ = _wrap_and_fit_title(
+        draw,
+        title,
+        max_w=StreamingCardTemplate.RAIL_W,
+        base_size=StreamingCardTemplate.TITLE_BASE_SIZE,
+        min_size=StreamingCardTemplate.TITLE_MIN_SIZE,
+        max_lines=3,
+    )
+
+    assert " ".join(lines) == title
+    assert font.size >= 40
+
+
+def test_portrait_blur_fades_well_before_the_sharp_poster():
+    blur_end = StreamingCardTemplate.BLUR_AREA_WIDTH
+    mask = _horizontal_fade_mask((800, 10), fade_start=blur_end - 180, fade_end=blur_end)
+
+    assert mask.getpixel((blur_end - 181, 5)) == 255
+    assert mask.getpixel((blur_end - 180, 5)) == 255
+    assert 120 <= mask.getpixel((blur_end - 90, 5)) <= 130
+    assert mask.getpixel((blur_end, 5)) == 0
+    assert mask.getpixel((StreamingCardTemplate.TEXT_AREA_WIDTH, 5)) == 0
 
 
 def test_cinematic_effect_layers_apply_grade_vignette_and_repeatable_particles():

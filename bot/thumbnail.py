@@ -8,8 +8,8 @@ Auto Thumbnail Generator for AnimeDekho Bot — Modular Multi-Template Architect
 Legacy template names ('modern', 'cinematic', 'movie_gold', 'neon_cyber',
 'minimal') are aliased to 'streaming' so old configs keep rendering.
 
-Also includes `enhance_custom_thumbnail` to fix low-quality / blurry custom thumbnails,
-ensuring razor-sharp text, proper 16:9 framing, and Telegram video player optimization.
+Also includes `enhance_custom_thumbnail` to fit custom images inside Telegram's video
+thumbnail limits while preserving portrait artwork over a softened widescreen backdrop.
 """
 
 from __future__ import annotations
@@ -34,11 +34,9 @@ CANVAS_HEIGHT = 720
 PHOTO_EXPORT_MAX_KB = 1800
 VIDEO_THUMB_MAX_KB = 190
 
-#: Art narrower than this is explicitly upscaled (see :func:`_upscale_art`).
-#: Metadata providers cap covers near 460px (AniList extraLarge), so on a
-#: 1280px canvas the art is interpolated regardless; doing it once here with a
-#: sharpening pass beats letting each template resize blur it a second time.
-ART_UPSCALE_MIN_WIDTH = CANVAS_WIDTH
+#: Keep poster pixels source-native; fit once at the final display size instead
+#: of pre-upscaling a 460px cover to the 1280px canvas.
+ART_UPSCALE_MIN_WIDTH = 0
 
 # ── Colour-grade / overlay tunables ─────────────────────────────────────
 # The full-bleed card darkens and split-tones the key art so the copy rail
@@ -47,15 +45,15 @@ ART_UPSCALE_MIN_WIDTH = CANVAS_WIDTH
 # showed the crush was mostly the *overlays* (radial glows + vignettes) landing
 # on the art box, plus highlight clipping - not the grade itself. So: light
 # grade, and overlays tuned to clear the art box (art_x = 0.28W) entirely.
-GRADE_CONTRAST = 1.03
-GRADE_SATURATION = 1.16
-GRADE_SPLIT_TONE = 0.03
+GRADE_CONTRAST = 1.13
+GRADE_SATURATION = 1.23
+GRADE_SPLIT_TONE = 0.05
 GRADE_SPLIT_BLACK = (12, 18, 40)
 GRADE_SPLIT_WHITE = (255, 224, 196)
-GRADE_BLOOM = 0.05
-GRADE_SHARPNESS = 1.06
-#: Left copy-rail scrim: (position, (r,g,b,alpha)) stops. Clears by 0.33W so
-#: the scrim never lands on the artwork (which starts at 0.28W).
+GRADE_BLOOM = 0.08
+GRADE_SHARPNESS = 1.03
+#: Left copy-rail scrim for full-bleed landscape art. Portrait posters use a
+#: wider rail and their own fade so the blurred fill dies away near the title.
 SCRIM_STOPS = [
     (0.0, (5, 6, 13, 206)),
     (0.16, (5, 6, 13, 186)),
@@ -64,10 +62,25 @@ SCRIM_STOPS = [
     (0.30, (5, 6, 13, 3)),
     (0.33, (5, 6, 13, 0)),
 ]
-LOWER_VIGNETTE_ALPHA = 30
-EDGE_VIGNETTE_ALPHA = 12
-WARM_GLOW_ALPHA = 24
-COOL_GLOW_ALPHA = 12
+PORTRAIT_SCRIM_STOPS = [
+    (0.0, (5, 6, 13, 220)),
+    (0.14, (5, 6, 13, 214)),
+    (0.27, (5, 6, 13, 180)),
+    (0.36, (5, 6, 13, 112)),
+    (0.42, (5, 6, 13, 42)),
+    (0.45, (5, 6, 13, 0)),
+]
+PORTRAIT_PANEL_STOPS = [
+    (0.0, (9, 13, 28, 255)),
+    (0.30, (14, 18, 35, 255)),
+    (0.47, (22, 19, 39, 255)),
+    (0.58, (13, 14, 27, 255)),
+    (1.0, (13, 14, 27, 255)),
+]
+LOWER_VIGNETTE_ALPHA = 36
+EDGE_VIGNETTE_ALPHA = 18
+WARM_GLOW_ALPHA = 34
+COOL_GLOW_ALPHA = 18
 
 ASSETS_FONT_DIR = Path(__file__).parent.parent / "assets" / "fonts"
 
@@ -217,15 +230,8 @@ def _prepare_blurred_bg(poster_path: str, blur_radius: int = 34) -> Image.Image 
 
 
 def _upscale_art(im: Image.Image, min_width: int = ART_UPSCALE_MIN_WIDTH) -> Image.Image:
-    """Upscale small poster art toward the canvas with a sharpening pass.
-
-    AniList (and similar metadata providers) cap covers near 460px, so a
-    1280px canvas force-scales them ~2x. Doing that here with a stepped
-    LANCZOS resize plus a restrained unsharp mask yields crisper edges than a
-    single large resize. NOTE: this is interpolation — it cannot recover detail
-    the source never had; it only avoids a softer second resample.
-    """
-    if im.width >= min_width:
+    """Compatibility shim: avoid pre-upscaling; resize once when composing the card."""
+    if min_width <= 0 or im.width >= min_width:
         return im
     step = im
     # Doubling in stages keeps LANCZOS ringing low on big ratios.
@@ -353,10 +359,10 @@ def _format_episode_tag(episode_info: str, is_movie: bool) -> str:
 def _save_optimized_jpeg(img: Image.Image, output_path: str, max_kb: int = PHOTO_EXPORT_MAX_KB) -> str:
     """Save a high-quality photo JPEG within the configured export budget."""
     final = img.convert("RGB")
-    final = ImageEnhance.Contrast(final).enhance(1.05)
-    final = ImageEnhance.Color(final).enhance(1.04)
-    final = ImageEnhance.Sharpness(final).enhance(1.20)
-    final = final.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=2))
+    final = ImageEnhance.Contrast(final).enhance(1.04)
+    final = ImageEnhance.Color(final).enhance(1.03)
+    final = ImageEnhance.Sharpness(final).enhance(1.06)
+    final = final.filter(ImageFilter.UnsharpMask(radius=0.8, percent=72, threshold=4))
 
     # Progressive JPEG with 4:4:4 chroma subsampling (subsampling=0) and 300 DPI metadata
     q = 96
@@ -447,7 +453,7 @@ def enhance_custom_thumbnail(
                 canvas.paste(bg_composite, (0, 0))
 
                 # Sharp foreground image (fitted within bounds)
-                pad = 24
+                pad = 12
                 max_fg_h = target_height - (pad * 2)
                 max_fg_w = target_width - (pad * 2)
                 scale_fg = min(max_fg_w / w, max_fg_h / h)
@@ -474,10 +480,10 @@ def enhance_custom_thumbnail(
                 canvas = canvas.convert("RGB")
 
             # Keep color and edge treatment subtle to avoid over-processing.
-            canvas = ImageEnhance.Contrast(canvas).enhance(1.03)
-            canvas = ImageEnhance.Color(canvas).enhance(1.02)
-            canvas = ImageEnhance.Sharpness(canvas).enhance(1.05)
-            canvas = canvas.filter(ImageFilter.UnsharpMask(radius=0.8, percent=70, threshold=3))
+            canvas = ImageEnhance.Contrast(canvas).enhance(1.10)
+            canvas = ImageEnhance.Color(canvas).enhance(1.12)
+            canvas = ImageEnhance.Sharpness(canvas).enhance(1.06)
+            canvas = canvas.filter(ImageFilter.UnsharpMask(radius=0.8, percent=72, threshold=4))
 
             # Telegram video-thumbnail requirements: JPEG, <200 KB, <=320 px.
             q = 96
@@ -655,6 +661,23 @@ def _build_edge_vignette(size, max_alpha: int = 54) -> Image.Image:
     return layer
 
 
+def _horizontal_fade_mask(size, fade_start: int, fade_end: int) -> Image.Image:
+    """Return an L mask that fades from opaque to transparent left-to-right."""
+    width, height = max(1, size[0]), max(1, size[1])
+    fade_start = max(0, min(width, int(fade_start)))
+    fade_end = max(0, min(width, int(fade_end)))
+    if fade_end <= fade_start:
+        raise ValueError("fade_end must be greater than fade_start")
+
+    mask = Image.new("L", (width, height), 255)
+    draw = ImageDraw.Draw(mask)
+    span = fade_end - fade_start
+    for x in range(fade_start, width):
+        alpha = 0 if x >= fade_end else int(255 * (fade_end - x) / span)
+        draw.line((x, 0, x, height - 1), fill=alpha)
+    return mask
+
+
 def _particle_overlay(size, seed: int) -> Image.Image:
     """Scatter restrained, repeatable light flecks over the artwork side only."""
     w, h = max(1, size[0]), max(1, size[1])
@@ -749,15 +772,25 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
         (1.0, (34, 211, 238, 255)),
     ]
 
-    # Left info rail geometry; artwork remains visible beneath the scrim.
+# Reserve a 45% copy rail and a 55% poster side. Portraits remain source-
+# proportional (about 42% canvas width at 460×609); end the blur at 28% so
+# the sharp poster is clearly wider than its blurred support field.
+    TEXT_AREA_RATIO = 0.45
+    POSTER_AREA_RATIO = 0.55
+    BLUR_AREA_RATIO = 0.28
+    TEXT_AREA_WIDTH = int(CANVAS_WIDTH * TEXT_AREA_RATIO)
+    BLUR_AREA_WIDTH = int(CANVAS_WIDTH * BLUR_AREA_RATIO)
+    POSTER_AREA_X = TEXT_AREA_WIDTH
+    POSTER_AREA_WIDTH = int(CANVAS_WIDTH * POSTER_AREA_RATIO)
     RAIL_X = 72
-    RAIL_W = 520
-    ART_BOX_RATIO = 0.72
-    TITLE_BASE_SIZE = 56
-    TITLE_MIN_SIZE = 38
-    EPISODE_SEASON_SIZE = 18
-    EPISODE_COUNT_SIZE = 23
-    EPISODE_CHIP_HEIGHT = 40
+    RAIL_RIGHT_PADDING = 24
+    RAIL_W = TEXT_AREA_WIDTH - RAIL_X - RAIL_RIGHT_PADDING
+    ART_BOX_RATIO = POSTER_AREA_RATIO
+    TITLE_BASE_SIZE = 60
+    TITLE_MIN_SIZE = 36
+    EPISODE_SEASON_SIZE = 20
+    EPISODE_COUNT_SIZE = 25
+    EPISODE_CHIP_HEIGHT = 44
     SYNOPSIS_MAX_LINES = 2
     PANEL = (13, 11, 24, 255)
 
@@ -783,13 +816,12 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
 
             # ── 1. Full-bleed key art with an editorial dark scrim ─────────
             art = _resolve_poster_image(poster_path)
+            portrait_art = art is not None and art.width / max(1, art.height) < 1.30
             if art:
                 art = _cinematic_color_grade(art)
-                art = art.filter(ImageFilter.UnsharpMask(radius=1.2, percent=125, threshold=2))
-                if art.width / max(1, art.height) < 1.30:
-                    # Portrait cover art cannot fill 16:9 without losing faces.
-                    # Blur it behind a sharper right-side crop for a full-bleed
-                    # composition that still preserves the anime character.
+                if portrait_art:
+                    # Use a cropped copy only for the atmospheric backdrop. Keep
+                    # the sharp foreground poster whole and source-proportional.
                     backdrop = art.copy()
                     scale = max(W / backdrop.width, H / backdrop.height)
                     nw, nh = max(1, int(backdrop.width * scale)), max(1, int(backdrop.height * scale))
@@ -799,31 +831,48 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     backdrop = backdrop.crop((bx, by, bx + W, by + H))
                     backdrop = ImageEnhance.Brightness(backdrop.filter(
                         ImageFilter.GaussianBlur(radius=22)
-                    )).enhance(0.62)
-                    canvas = backdrop.convert("RGBA")
+                    )).enhance(0.50)
+                    # Keep the blur behind the left copy, but fade it out at
+                    # 28% so the sharp, full portrait visibly gets more width.
+                    blur_fade_end = self.BLUR_AREA_WIDTH
+                    blur_fade_start = max(self.RAIL_X, blur_fade_end - 180)
+                    backdrop_layer = backdrop.convert("RGBA")
+                    backdrop_layer.putalpha(_horizontal_fade_mask(
+                        (W, H), blur_fade_start, blur_fade_end,
+                    ))
+                    canvas = _multi_gradient((W, H), PORTRAIT_PANEL_STOPS)
+                    # A soft violet bridge makes the intentional space between
+                    # blur and full-height portrait feel designed, not empty.
+                    canvas.alpha_composite(_radial_glow(
+                        (W, H), (int(W * 0.58), int(H * 0.53)),
+                        int(H * 0.34), (126, 103, 255), 24,
+                    ))
+                    canvas.alpha_composite(backdrop_layer)
 
                     box_w = int(W * self.ART_BOX_RATIO)
-                    art_x = W - box_w
-                    scale = max(box_w / art.width, H / art.height)
+                    # Contain (never cover-crop) the sharp poster. A 460×609
+                    # source is enlarged only to about 543×720, not 1280 px.
+                    scale = min(box_w / art.width, H / art.height)
                     nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
                     sharp = art.resize((nw, nh), Image.Resampling.LANCZOS)
-                    ox = max(0, (sharp.width - box_w) // 2)
-                    oy = max(0, int((sharp.height - H) * 0.20)) if sharp.height > H else 0
-                    sharp = sharp.crop((ox, oy, ox + box_w, oy + H))
-                    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    layer.paste(sharp, (art_x, 0))
-                    mask = Image.new("L", (W, H), 0)
-                    md = ImageDraw.Draw(mask)
-                    ramp_start, ramp_end = art_x - 240, art_x + 160
-                    for x in range(W):
-                        if x < ramp_start:
-                            alpha = 0
-                        elif x > ramp_end:
-                            alpha = 255
-                        else:
-                            alpha = int(255 * (x - ramp_start) / max(1, ramp_end - ramp_start))
-                        md.line([(x, 0), (x, H - 1)], fill=alpha)
-                    canvas.paste(layer, (0, 0), mask)
+                    poster_x = self.POSTER_AREA_X + max(0, (self.POSTER_AREA_WIDTH - nw) // 2)
+                    poster_y = (H - nh) // 2
+                    sharp = sharp.convert("RGBA")
+                    fade = Image.new("L", (nw, nh), 255)
+                    fade_draw = ImageDraw.Draw(fade)
+                    fade_width = min(48, nw)
+                    for x in range(fade_width):
+                        alpha = int(255 * (x + 1) / fade_width)
+                        fade_draw.line((x, 0, x, nh - 1), fill=alpha)
+                    sharp.putalpha(fade)
+                    canvas.alpha_composite(sharp, (poster_x, poster_y))
+
+                    frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                    ImageDraw.Draw(frame).rectangle(
+                        (poster_x, poster_y, poster_x + nw - 1, poster_y + nh - 1),
+                        outline=(210, 230, 255, 92), width=1,
+                    )
+                    canvas.alpha_composite(frame)
                 else:
                     scale = max(W / art.width, H / art.height)
                     nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
@@ -855,8 +904,10 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             )
             canvas.alpha_composite(flare.filter(ImageFilter.GaussianBlur(radius=5)))
 
-            # Keep the copy rail compact and let the artwork read through behind it.
-            canvas.alpha_composite(_multi_gradient((W, H), SCRIM_STOPS))
+            # Fade the portrait blur at the title rail; retain the regular
+            # treatment for landscape posters and stills.
+            copy_scrim = PORTRAIT_SCRIM_STOPS if portrait_art else SCRIM_STOPS
+            canvas.alpha_composite(_multi_gradient((W, H), copy_scrim))
 
             # Gentle lower vignette keeps the watermark visible over busy art.
             scrim = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -916,7 +967,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 draw.rounded_rectangle((x0, by, x0 + side, by + side), radius=7,
                                        outline=(255, 255, 255, 110), width=1)
                 mono = (brand[:2] or "AD").upper()
-                font_mono = _get_font(16, bold=True, weight="extrabold")
+                font_mono = _get_font(17, bold=True, weight="extrabold")
                 mb = draw.textbbox((0, 0), mono, font=font_mono)
                 draw.text(
                     (x0 + side // 2 - (mb[2] - mb[0]) // 2 - mb[0],
@@ -925,7 +976,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 )
                 tx_logo = x0 + side + 11
 
-            font_brand = _get_font(18, bold=True, weight="bold")
+            font_brand = _get_font(20, bold=True, weight="bold")
             brand_label = brand.upper()
             if len(brand_label) > 22:
                 brand_label = brand_label[:20] + "…"
@@ -944,14 +995,16 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             ))
 
             eyebrow = ("MOVIE FEATURE" if is_movie else "ANIME SERIES")
-            font_eye = _get_font(18, bold=True, weight="bold")
+            font_eye = _get_font(19, bold=True, weight="bold")
             _tracked_text(draw, (x0, ry + 17), eyebrow, font_eye,
-                          (255, 255, 255, 235), tracking=2)
+                          (255, 143, 112, 255), tracking=2)
 
             # ── 4. Compact title; reserve the right side for key art ────────
             ty = ry + 53
-            clean_title = _clean_text(title).upper()
-            title_max_lines = 2 if len(clean_title) <= 46 else 3
+            clean_title = _clean_text(title).strip().upper()
+            # The 45% copy zone is intentionally narrower; allow one extra
+            # line before shrinking so medium-length titles remain complete.
+            title_max_lines = 3
             title_width = self.RAIL_W
             title_lines, font_title, line_h = _wrap_and_fit_title(
                 draw, clean_title, max_w=title_width,
@@ -969,8 +1022,18 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 sh.putalpha(tmask.point(lambda p: p * 200 // 255))
                 sh = sh.filter(ImageFilter.GaussianBlur(radius=3))
                 canvas.alpha_composite(sh, (x0 - pad_s + 2, ty - pad_s + 4))
-                txt = Image.new("RGBA", tmask.size, (0, 0, 0, 0))
-                txt.paste(Image.new("RGBA", tmask.size, (255, 255, 255, 255)), (0, 0), tmask)
+                # The reference streaming template uses a restrained cool gradient
+                # on display type; keep it nearly white so the long title stays crisp.
+                title_gradient = Image.new("RGB", (1, tmask.height))
+                gradient_pixels = title_gradient.load()
+                gradient_bottom = (220, 227, 246)
+                for gradient_y in range(tmask.height):
+                    blend = gradient_y / max(1, tmask.height - 1)
+                    gradient_pixels[0, gradient_y] = tuple(
+                        round(255 + (channel - 255) * blend) for channel in gradient_bottom
+                    )
+                txt = title_gradient.resize(tmask.size, Image.Resampling.BILINEAR).convert("RGBA")
+                txt.putalpha(tmask)
                 canvas.alpha_composite(txt, (x0 - pad_s, ty - pad_s))
                 ty += line_h
             ty += 20
@@ -1065,15 +1128,18 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
             ty += chip_height + 7
 
             details_line = f"{_format_audio_tag(audio)}  •  {(quality or 'HD').upper()}"
-            font_details = _get_font(16, bold=False, weight="medium")
+            font_details = _get_font(17, bold=False, weight="medium")
             draw.text((x0, ty), details_line, font=font_details, fill=(226, 232, 240, 235))
-            ty += 24
+            ty += 26
 
             synopsis_text = re.sub(r"<[^>]+>", " ", str(synopsis or ""))
             synopsis_text = _clean_text(html.unescape(synopsis_text))
             if synopsis_text:
                 synopsis_text = " ".join(synopsis_text.split())
-                font_synopsis = _get_font(15, bold=False, weight="regular")
+                synopsis_top = ty
+                font_synopsis_label = _get_font(11, bold=True, weight="bold")
+                font_synopsis = _get_font(16, bold=False, weight="regular")
+                synopsis_width = self.RAIL_W - 24
                 synopsis_lines = []
                 current_line = ""
                 words = synopsis_text.split()
@@ -1081,7 +1147,7 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 for word in words:
                     candidate = f"{current_line} {word}".strip()
                     width = draw.textbbox((0, 0), candidate, font=font_synopsis)[2]
-                    if width <= self.RAIL_W:
+                    if width <= synopsis_width:
                         current_line = candidate
                         continue
                     if current_line:
@@ -1097,31 +1163,53 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                     truncated = True
                 if truncated and synopsis_lines:
                     last = synopsis_lines[-1].rstrip(" .")
-                    while last and draw.textbbox((0, 0), last + "…", font=font_synopsis)[2] > self.RAIL_W:
+                    while last and draw.textbbox((0, 0), last + "…", font=font_synopsis)[2] > synopsis_width:
                         last = last.rsplit(" ", 1)[0] if " " in last else ""
                     synopsis_lines[-1] = (last + "…") if last else "…"
+
+                # A restrained frosted panel gives the summary its own hierarchy,
+                # borrowing the streaming template's glass treatment without adding
+                # its extra controls or reducing the copy rail's overall width.
+                panel_top = synopsis_top - 6
+                panel_height = 6 + 17 + len(synopsis_lines) * 22 + 8
+                panel_layer = Image.new(
+                    "RGBA", (self.RAIL_W, panel_height), (0, 0, 0, 0),
+                )
+                panel_draw = ImageDraw.Draw(panel_layer)
+                panel_draw.rounded_rectangle(
+                    (0, 0, self.RAIL_W - 1, panel_height - 1), radius=10,
+                    fill=(255, 255, 255, 10), outline=(255, 255, 255, 42), width=1,
+                )
+                panel_draw.rounded_rectangle(
+                    (12, 11, 15, 25), radius=2, fill=(255, 143, 112, 255),
+                )
+                canvas.alpha_composite(panel_layer, (x0, panel_top))
+                _tracked_text(draw, (x0 + 22, synopsis_top), "SYNOPSIS", font_synopsis_label,
+                              (137, 208, 170, 255), tracking=2)
+                ty = synopsis_top + 17
                 for line in synopsis_lines[:self.SYNOPSIS_MAX_LINES]:
-                    draw.text((x0, ty), line, font=font_synopsis, fill=(235, 238, 244, 225))
-                    ty += 20
-            ty += 12
+                    draw.text((x0 + 12, ty), line, font=font_synopsis, fill=(235, 238, 244, 225))
+                    ty += 22
+            ty += 18 if synopsis_text else 12
 
             # ── 6. Single streaming action (visual treatment only) ──────────
-            font_pill = _get_font(17, bold=True, weight="bold")
+            font_pill = _get_font(18, bold=True, weight="bold")
             # Primary "WATCH NOW" pill (gradient fill + ambient shadow).
             cta = "WATCH NOW"
             cb = draw.textbbox((0, 0), cta, font=font_pill)
-            cw, chh = (cb[2] - cb[0]) + 54, 42
+            cw, chh = (cb[2] - cb[0]) + 54, 44
             sh_cta = Image.new("RGBA", (cw + 24, chh + 24), (0, 0, 0, 0))
             ImageDraw.Draw(sh_cta).rounded_rectangle((12, 12, cw + 12, chh + 12), radius=14, fill=(0, 0, 0, 160))
             canvas.alpha_composite(sh_cta.filter(ImageFilter.GaussianBlur(radius=8)), (x0 - 12, ty - 12 + 3))
             cta_glow = Image.new("RGBA", (cw + 36, chh + 36), (0, 0, 0, 0))
             ImageDraw.Draw(cta_glow).rounded_rectangle(
-                (18, 18, cw + 18, chh + 18), radius=18, fill=(255, 18, 83, 98),
+                (18, 18, cw + 18, chh + 18), radius=18, fill=(220, 60, 158, 82),
             )
             canvas.alpha_composite(cta_glow.filter(ImageFilter.GaussianBlur(radius=11)), (x0 - 18, ty - 18 + 2))
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), (x0, ty, x0 + cw, ty + chh), 14,
-                [(0.0, (230, 0, 58, 255)), (1.0, (247, 28, 73, 255))],
+                [(0.0, (164, 91, 246, 255)), (0.52, (221, 53, 163, 255)),
+                 (1.0, (246, 78, 119, 255))],
             ))
             od.rounded_rectangle(
                 (x0, ty, x0 + cw, ty + chh), radius=14,
@@ -1136,33 +1224,60 @@ class StreamingCardTemplate(BaseThumbnailTemplate):
                 (x0 + 38, ty + (chh - (cb[3] - cb[1])) // 2 - cb[1]),
                 cta, font=font_pill, fill=(255, 255, 255, 255),
             )
-            # ── 7. Watermarks: handle bottom-right, brand note bottom-left ──
-            font_wm = _get_font(16, bold=True, weight="bold")
-            wm = handle.upper()
-            wb = draw.textbbox((0, 0), wm, font=font_wm)
-            ww = wb[2] - wb[0]
-            wmx, wmy = W - 64 - ww, H - 58
-            # Shadow pass on the overlay so it stays a soft shadow (26-170 alpha
-            # written straight onto RGBA would flatten to solid black).
-            od.text((wmx + 2, wmy + 3), wm, font=font_wm, fill=(0, 0, 0, 170))
+            # ── 7. High-contrast channel handle, readable on any poster ─────
             _flush_overlay()
-            draw.text((wmx, wmy), wm, font=font_wm, fill=(255, 255, 255, 235))
+            wm = handle.upper()
+            max_wm_width = int(W * 0.36)
+            wm_size = 20
+            while True:
+                font_wm = _get_font(wm_size, bold=True, weight="bold")
+                wb = draw.textbbox((0, 0), wm, font=font_wm)
+                ww = wb[2] - wb[0]
+                if ww <= max_wm_width or wm_size <= 14:
+                    break
+                wm_size -= 1
+            while ww > max_wm_width and len(wm) > 5:
+                wm = wm[:-2].rstrip() + "…"
+                wb = draw.textbbox((0, 0), wm, font=font_wm)
+                ww = wb[2] - wb[0]
+            wh = wb[3] - wb[1]
+            pill_h = max(38, wh + 12)
+            pill_w = ww + 26
+            pill_x = W - 32 - pill_w
+            pill_y = H - 24 - pill_h
+            pill_box = (pill_x, pill_y, W - 32, H - 24)
             canvas.alpha_composite(_rounded_gradient_layer(
-                (W, H), (wmx, wmy + 22, wmx + ww, wmy + 24), 1, self.ACCENT))
+                (W, H), pill_box, 14,
+                [(0.0, (4, 12, 27, 246)), (1.0, (17, 25, 48, 242))],
+            ))
+            od.rounded_rectangle(
+                pill_box, radius=14, outline=(126, 235, 255, 210), width=1,
+            )
+            _flush_overlay()
+            text_x = pill_x + 13 - wb[0]
+            text_y = pill_y + (pill_h - wh) // 2 - wb[1]
+            draw.text(
+                (text_x, text_y), wm, font=font_wm,
+                fill=(119, 239, 255, 255), stroke_width=1,
+                stroke_fill=(0, 5, 16, 255),
+            )
+            canvas.alpha_composite(_rounded_gradient_layer(
+                (W, H), (pill_x + 12, H - 29, W - 44, H - 27), 1, self.ACCENT,
+            ))
 
             # Small top-right quality badge; keep the label readable but quiet.
             tag = q_label.split(" • ")[0]
-            font_tag = _get_font(16, bold=True, weight="bold")
+            font_tag = _get_font(18, bold=True, weight="bold")
             tb = draw.textbbox((0, 0), tag, font=font_tag)
             tag_width = tb[2] - tb[0]
             tx = W - 64 - tag_width
-            tag_box = (tx - 10, 46, tx + tag_width + 10, 78)
+            tag_box = (tx - 10, 44, tx + tag_width + 10, 82)
             canvas.alpha_composite(_rounded_gradient_layer(
                 (W, H), tag_box, 11,
                 [(0.0, (14, 20, 38, 205)), (1.0, (43, 34, 61, 195))],
             ))
             od.rounded_rectangle(tag_box, radius=11, outline=(255, 255, 255, 72), width=1)
-            draw.text((tx, 54), tag, font=font_tag, fill=(255, 255, 255, 225))
+            draw.text((tx, 54), tag, font=font_tag, fill=(255, 255, 255, 245))
 
             _flush_overlay()  # nothing pending — guarantees no stroke is lost
 
