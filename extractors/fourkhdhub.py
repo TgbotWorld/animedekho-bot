@@ -274,11 +274,13 @@ class FourKHDHubExtractor:
                     qok = 2
                     codec_pref = codec
                 elif q in ("1080p", "1080") and codec in (3, 2):
-                    # 4K stand-in: 1080p H.264 first, then 1080p H.265/HEVC,
-                    # inside the ~900 MB–2 GB band.
-                    in_band = size is not None and _SIZE_BANDS[0][0] <= size <= _SIZE_BANDS[0][1]
-                    if size is not None and not in_band:
-                        continue  # 1080p outside the accepted band is not the 4K proxy
+                    # 4K stand-in: 1080p H.264 first, then 1080p H.265/HEVC.
+                    # The ~900 MB–2 GB band is a *preference* (ranked below,
+                    # via _size_band_tier), NOT a gate: the site also ships
+                    # normal-length episodes at ~300–800 MB, and rejecting
+                    # those made `_pick_mediator` return nothing for every
+                    # episode except the handful of 1 GB+ ones — so a healthy
+                    # source reported "failed on all candidate servers".
                     qok = 1
                     codec_pref = 2 if codec == 3 else 1  # 2 = H.264, 1 = H.265/HEVC
                 else:

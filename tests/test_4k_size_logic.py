@@ -236,6 +236,40 @@ class Test4KSizeLogic(unittest.TestCase):
         ]), 1, 1, "1080p")
         self.assertEqual(label, "1080p")
 
+    def test_fourkhdhub_picks_normal_length_episode_out_of_band(self):
+        """The 900 MB-2 GB band is a preference, not a gate: a normal-length
+        ~630 MB 1080p WEB-DL must still resolve as the 4K tier, or a healthy
+        source fails every episode except the rare 1 GB+ one."""
+        from bs4 import BeautifulSoup
+        from extractors.fourkhdhub import fourkhdhub
+
+        def page(rows):
+            items = "".join(
+                '<div class="episode-download-item">'
+                f'<div class="episode-file-title">{t}</div>'
+                '<div class="episode-file-info">info</div>'
+                f'<a href="{u}">HubCloud</a></div>'
+                for t, u in rows
+            )
+            return BeautifulSoup(f"<html>{items}</html>", "html.parser")
+
+        # Only out-of-band files exist (the common case).
+        link, label, size = fourkhdhub._pick_mediator(page([
+            ("Show.S01E02.1080p.AMZN.WEB-DL.H.264 [629.72 MB]", "https://m/h264"),
+            ("Show.S01E02.1080p.AMZN.WEB-DL.H.265 [285.32 MB]", "https://m/h265"),
+        ]), 1, 2, "4K")
+        self.assertIsNotNone(link)
+        self.assertEqual(label, "4K")
+        self.assertEqual(link, "https://m/h264")  # H.264 preferred, still labelled 4K
+
+        # An in-band file still outranks an out-of-band one.
+        link, label, _ = fourkhdhub._pick_mediator(page([
+            ("Show.S01E01.1080p.AMZN.WEB-DL.H.264 [629.72 MB]", "https://m/small"),
+            ("Show.S01E01.1080p.AMZN.WEB-DL.H.264 [1.61 GB]", "https://m/big"),
+        ]), 1, 1, "4K")
+        self.assertEqual(link, "https://m/big")
+        self.assertEqual(label, "4K")
+
 
 if __name__ == "__main__":
     unittest.main()
